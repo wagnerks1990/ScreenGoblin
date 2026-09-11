@@ -26,17 +26,36 @@ export class MemoryStore implements DataStore {
   async ping() {}
   async findUserByEmail(email: string) {
     return (
-      this.users.find((u) => u.email.toLowerCase() === email.toLowerCase()) ??
-      null
+      this.users.find(
+        (u) => u.email.toLowerCase() === email.toLowerCase() && !u.disabledAt,
+      ) ?? null
     );
   }
+  async findSessionUser(userId: string, organizationId: string) {
+    return (
+      this.users.find(
+        (u) =>
+          u.id === userId &&
+          u.organizationId === organizationId &&
+          !u.disabledAt,
+      ) ?? null
+    );
+  }
+  private publicScreen(screen: ScreenRecord): ScreenRecord {
+    const safe = { ...screen };
+    delete safe.deviceTokenHash;
+    return safe;
+  }
   async listScreens(org: string) {
-    return this.screens.filter((x) => x.organizationId === org);
+    return this.screens
+      .filter((x) => x.organizationId === org)
+      .map((x) => this.publicScreen(x));
   }
   async getScreen(org: string, screenId: string) {
     return (
-      this.screens.find((x) => x.organizationId === org && x.id === screenId) ??
-      null
+      this.screens
+        .filter((x) => x.organizationId === org && x.id === screenId)
+        .map((x) => this.publicScreen(x))[0] ?? null
     );
   }
   async createScreen(
@@ -68,7 +87,9 @@ export class MemoryStore implements DataStore {
       >
     >,
   ) {
-    const x = await this.getScreen(org, screenId);
+    const x = this.screens.find(
+      (screen) => screen.organizationId === org && screen.id === screenId,
+    );
     if (!x) return null;
     Object.assign(x, data, { updatedAt: now() });
     return x;
@@ -130,10 +151,12 @@ export class MemoryStore implements DataStore {
     return x;
   }
   async authenticateDevice(screenId: string) {
-    return (
-      this.screens.find((x) => x.id === screenId && !x.credentialRevokedAt) ??
-      null
+    const screen = this.screens.find(
+      (x) => x.id === screenId && !x.credentialRevokedAt,
     );
+    return screen?.deviceTokenHash
+      ? { ...screen, deviceTokenHash: screen.deviceTokenHash }
+      : null;
   }
   async heartbeat(screenId: string, data: Partial<ScreenRecord>) {
     const x = this.screens.find((s) => s.id === screenId);

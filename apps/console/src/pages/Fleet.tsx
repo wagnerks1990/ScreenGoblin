@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   MonitorCog,
   MoreHorizontal,
@@ -28,7 +28,12 @@ import {
 } from "../components";
 import { api } from "../api";
 
-export function Fleet() {
+export function Fleet({ canManage = true }: { canManage?: boolean }) {
+  const [fleetScreens, setFleetScreens] = useState<ScreenSummary[]>(
+    api.hasLiveSession() ? [] : screens,
+  );
+  const [loadError, setLoadError] = useState("");
+  const [source, setSource] = useState<"live" | "demo">("demo");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All statuses");
   const [selected, setSelected] = useState<ScreenSummary | null>(null);
@@ -40,21 +45,44 @@ export function Fleet() {
   const [pairError, setPairError] = useState("");
   const filtered = useMemo(
     () =>
-      screens.filter(
+      fleetScreens.filter(
         (s) =>
           (s.name + s.location).toLowerCase().includes(query.toLowerCase()) &&
           (status === "All statuses" || s.status === status.toLowerCase()),
       ),
-    [query, status],
+    [fleetScreens, query, status],
   );
+  useEffect(() => {
+    void api
+      .screens()
+      .then((result) => {
+        setFleetScreens(result.data);
+        setSource(result.source);
+        setLoadError("");
+      })
+      .catch((error: unknown) => {
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Live screens could not be loaded",
+        );
+      });
+  }, []);
   return (
     <>
+      {loadError && (
+        <div className="operational-error" role="alert">
+          Live screen data is unavailable: {loadError}. No demo records were
+          substituted.
+        </div>
+      )}
       <PageHeader
         eyebrow="Operations"
         title="Screen fleet"
         description="Monitor, troubleshoot, and manage every player."
         actions={
           <Button
+            disabled={!canManage}
             icon={<MonitorCog size={18} />}
             onClick={async () => {
               setPairOpen(true);
@@ -81,6 +109,11 @@ export function Fleet() {
           </Button>
         }
       />
+      <p className="data-source-label">
+        {source === "live"
+          ? "Live API data"
+          : "Clearly labeled demonstration data"}
+      </p>
       <div className="toolbar">
         <SearchBox
           value={query}
@@ -175,19 +208,19 @@ export function Fleet() {
               <span>Last heartbeat {selected.lastSeenAt}</span>
             </div>
             <div className="command-grid">
-              <button>
+              <button disabled title="Not available in this pilot">
                 <Camera />
                 <span>Screenshot</span>
               </button>
-              <button>
+              <button disabled title="Not available in this pilot">
                 <RotateCw />
                 <span>Refresh</span>
               </button>
-              <button>
+              <button disabled title="Not available in this pilot">
                 <Power />
                 <span>Restart</span>
               </button>
-              <button>
+              <button disabled title="Not available in this pilot">
                 <Trash2 />
                 <span>Clear cache</span>
               </button>

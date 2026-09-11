@@ -44,12 +44,30 @@ export function App() {
   const [createOpen, setCreateOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [liveSession, setLiveSession] = useState(api.hasLiveSession());
+  const [sessionUser, setSessionUser] = useState(api.currentUser());
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   const location = useLocation();
+  const canAdmin =
+    !liveSession || ["OWNER", "ADMIN"].includes(sessionUser?.role ?? "");
+  const canPublish =
+    !liveSession ||
+    ["OWNER", "ADMIN", "PUBLISHER"].includes(sessionUser?.role ?? "");
   useEffect(() => setMobileOpen(false), [location.pathname]);
+  useEffect(() => {
+    const refreshSession = () => {
+      setLiveSession(api.hasLiveSession());
+      setSessionUser(api.currentUser());
+    };
+    window.addEventListener("screengoblin:session-changed", refreshSession);
+    return () =>
+      window.removeEventListener(
+        "screengoblin:session-changed",
+        refreshSession,
+      );
+  }, []);
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
@@ -84,29 +102,39 @@ export function App() {
               {label === "Screen fleet" && <em>2</em>}
             </NavLink>
           ))}
-          <div className="nav-section-label">Control</div>
-          <NavLink
-            to="/emergency"
-            className={({ isActive }) =>
-              `nav-link nav-alert ${isActive ? "active" : ""}`
-            }
-          >
-            <Siren size={19} />
-            <span>Emergency center</span>
-          </NavLink>
-          <NavLink
-            to="/settings"
-            className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}
-          >
-            <Settings size={19} />
-            <span>Settings</span>
-          </NavLink>
+          {canAdmin && (
+            <>
+              <div className="nav-section-label">Control</div>
+              <NavLink
+                to="/emergency"
+                className={({ isActive }) =>
+                  `nav-link nav-alert ${isActive ? "active" : ""}`
+                }
+              >
+                <Siren size={19} />
+                <span>Emergency center</span>
+              </NavLink>
+              <NavLink
+                to="/settings"
+                className={({ isActive }) =>
+                  `nav-link ${isActive ? "active" : ""}`
+                }
+              >
+                <Settings size={19} />
+                <span>Settings</span>
+              </NavLink>
+            </>
+          )}
         </nav>
         <div className="sidebar-foot">
           <div className="workspace-mark">CH</div>
           <div>
-            <b>CASD Technology</b>
-            <span>District workspace</span>
+            <b>{liveSession ? "Connected workspace" : "ScreenGoblin Demo"}</b>
+            <span>
+              {liveSession
+                ? sessionUser?.organizationId
+                : "Demonstration workspace"}
+            </span>
           </div>
           <button aria-label="Workspace options">•••</button>
         </div>
@@ -135,6 +163,7 @@ export function App() {
                 if (liveSession) {
                   api.logout();
                   setLiveSession(false);
+                  setSessionUser(undefined);
                 } else {
                   setLoginOpen(true);
                 }
@@ -148,7 +177,12 @@ export function App() {
               <i />
             </button>
             <button className="profile" aria-label="Open profile menu">
-              KW
+              {(sessionUser?.name ?? "Demo Operator")
+                .split(/\s+/)
+                .map((part) => part[0])
+                .join("")
+                .slice(0, 2)
+                .toUpperCase()}
             </button>
           </div>
         </header>
@@ -160,15 +194,38 @@ export function App() {
                 <Dashboard
                   key={liveSession ? "live" : "demo"}
                   onCreate={() => setCreateOpen(true)}
+                  canCreate={canPublish}
                 />
               }
             />
             <Route path="/media" element={<MediaVault />} />
             <Route path="/playlists" element={<Playlists />} />
             <Route path="/schedules" element={<Schedules />} />
-            <Route path="/screens" element={<Fleet />} />
-            <Route path="/emergency" element={<Emergency />} />
-            <Route path="/settings" element={<SettingsPage />} />
+            <Route
+              path="/screens"
+              element={
+                <Fleet
+                  key={liveSession ? "live" : "demo"}
+                  canManage={canAdmin}
+                />
+              }
+            />
+            <Route
+              path="/emergency"
+              element={
+                canAdmin ? <Emergency /> : <Navigate to="/dashboard" replace />
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                canAdmin ? (
+                  <SettingsPage />
+                ) : (
+                  <Navigate to="/dashboard" replace />
+                )
+              }
+            />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </main>
@@ -232,11 +289,20 @@ export function App() {
       </Modal>
       <Modal
         open={loginOpen}
-        onClose={() => setLoginOpen(false)}
+        onClose={() => {
+          setPassword("");
+          setLoginOpen(false);
+        }}
         title="Connect to ScreenGoblin"
         footer={
           <>
-            <Button variant="secondary" onClick={() => setLoginOpen(false)}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setPassword("");
+                setLoginOpen(false);
+              }}
+            >
               Keep demo mode
             </Button>
             <Button
@@ -245,14 +311,18 @@ export function App() {
                 setLoggingIn(true);
                 setLoginError("");
                 try {
-                  await api.login(email, password);
+                  const session = await api.login(email, password);
                   setLiveSession(true);
+                  setSessionUser(session.user);
+                  setEmail("");
+                  setPassword("");
                   setLoginOpen(false);
                 } catch (error) {
                   setLoginError(
                     error instanceof Error ? error.message : "Login failed",
                   );
                 } finally {
+                  setPassword("");
                   setLoggingIn(false);
                 }
               }}

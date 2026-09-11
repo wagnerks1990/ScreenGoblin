@@ -33,6 +33,7 @@ export default function App() {
             credentials.apiBaseUrl,
             credentials.deviceToken,
             credentials.screenId,
+            credentials.manifestVerificationKey,
           )
         : undefined,
     [credentials],
@@ -46,9 +47,16 @@ export default function App() {
     ])
       .then(([id, savedCredentials, savedManifest]) => {
         setInstallationId(id);
-        setCredentials(savedCredentials);
-        setManifest(savedManifest);
-        setFallback(Boolean(savedManifest));
+        if (savedCredentials && !savedCredentials.manifestVerificationKey) {
+          void store.clear();
+          setCredentials(undefined);
+          setManifest(undefined);
+          setFallback(false);
+        } else {
+          setCredentials(savedCredentials);
+          setManifest(savedManifest);
+          setFallback(Boolean(savedManifest));
+        }
         setReady(true);
       })
       .catch(() => {

@@ -14,9 +14,10 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 4. Deploy to a staging host and run smoke tests with an offline player.
 5. During the maintenance window, run `docker compose --env-file deploy/.env pull` for referenced images and `docker compose --env-file deploy/.env build --pull` for application images.
 6. Run `docker compose --env-file deploy/.env up -d` and inspect `docker compose --env-file deploy/.env ps`.
-7. Verify readiness, login, publish, pairing, manifest download, media checksum, heartbeat, and last-known-good playback.
+7. On a new installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Confirm the owner can sign in, then remove all `SEED_*` values from the host environment.
+8. Verify readiness, login, publish, pairing, Ed25519 manifest verification, media checksum, heartbeat, and last-known-good playback.
 
-Do not seed a reusable administrator password. Rotate or remove bootstrap credentials after the first successful login.
+Do not run the bootstrap profile as part of normal startup. It refuses to reset an existing owner password or grant owner to an existing unrelated user. Remove bootstrap credentials after the first successful login.
 
 ## Observe
 

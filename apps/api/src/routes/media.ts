@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { requireRole, sendNotFound } from "../utils/http.js";
+import { ApiError, requireRole, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
 const body = z
   .object({
@@ -22,10 +22,27 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
   }));
   app.post("/media", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
-    const x = await app.store.createMedia(
-      request.user.organizationId,
-      body.parse(request.body),
-    );
+    const input = body.parse(request.body);
+    const mediaUrl = new URL(input.url);
+    const isLocalDevelopmentUrl =
+      mediaUrl.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "::1"].includes(mediaUrl.hostname);
+    if (mediaUrl.protocol !== "https:" && !isLocalDevelopmentUrl)
+      throw new ApiError(
+        422,
+        "MEDIA_URL_NOT_ALLOWED",
+        "Media must use HTTPS or a loopback development URL",
+      );
+    if (
+      app.config.mediaAllowedOrigins.length > 0 &&
+      !app.config.mediaAllowedOrigins.includes(mediaUrl.origin)
+    )
+      throw new ApiError(
+        422,
+        "MEDIA_ORIGIN_NOT_ALLOWED",
+        "Media must use an approved content origin",
+      );
+    const x = await app.store.createMedia(request.user.organizationId, input);
     await app.store.audit({
       organizationId: request.user.organizationId,
       actorUserId: request.user.sub,
@@ -44,6 +61,17 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
     const { id } = params.parse(request.params);
     if (!(await app.store.deleteMedia(request.user.organizationId, id)))
       return sendNotFound(reply);
+    await app.store.audit({
+      organizationId: request.user.organizationId,
+      actorUserId: request.user.sub,
+      actorType: "user",
+      action: "media.deleted",
+      entityType: "media",
+      entityId: id,
+      ipAddress: request.ip,
+      requestId: request.id,
+      metadata: {},
+    });
     return reply.code(204).send();
   });
 };

@@ -24,7 +24,10 @@ const screenStatus = (x: Record<string, unknown>): ScreenRecord["status"] => {
   if (ageMs > 2 * 60_000) return "warning";
   return "online";
 };
-const screenDto = (x: Record<string, unknown>): ScreenRecord => ({
+const screenDto = (
+  x: Record<string, unknown>,
+  includeCredential = false,
+): ScreenRecord => ({
   id: String(x.id),
   organizationId: String(x.organizationId),
   name: String(x.name),
@@ -34,7 +37,9 @@ const screenDto = (x: Record<string, unknown>): ScreenRecord => ({
   resolution: String(x.resolution),
   tags: x.tags as string[],
   ...(x.installationId ? { installationId: String(x.installationId) } : {}),
-  ...(x.deviceTokenHash ? { deviceTokenHash: String(x.deviceTokenHash) } : {}),
+  ...(includeCredential && x.deviceTokenHash
+    ? { deviceTokenHash: String(x.deviceTokenHash) }
+    : {}),
   ...(x.model ? { model: String(x.model) } : {}),
   ...(x.osVersion ? { osVersion: String(x.osVersion) } : {}),
   ...(x.playerVersion ? { playerVersion: String(x.playerVersion) } : {}),
@@ -132,12 +137,12 @@ export class PrismaStore implements DataStore {
     await this.prisma.$disconnect();
   }
   async findUserByEmail(email: string) {
-    const x = await this.prisma.user.findUnique({
-      where: { email },
+    const x = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
       include: { memberships: { take: 1 } },
     });
     const m = x?.memberships[0];
-    return x && m
+    return x && !x.disabledAt && m
       ? ({
           id: x.id,
           email: x.email,
@@ -146,6 +151,29 @@ export class PrismaStore implements DataStore {
           organizationId: m.organizationId,
           role: m.role,
         } satisfies SessionUser)
+      : null;
+  }
+  async findSessionUser(userId: string, organizationId: string) {
+    const x = await this.prisma.user.findFirst({
+      where: {
+        id: userId,
+        disabledAt: null,
+        memberships: { some: { organizationId } },
+      },
+      include: {
+        memberships: { where: { organizationId }, take: 1 },
+      },
+    });
+    const membership = x?.memberships[0];
+    return x && membership
+      ? {
+          id: x.id,
+          email: x.email,
+          name: x.name,
+          passwordHash: x.passwordHash,
+          organizationId,
+          role: membership.role,
+        }
       : null;
   }
   async listScreens(org: string) {
@@ -270,7 +298,7 @@ export class PrismaStore implements DataStore {
     const x = await this.prisma.screen.findFirst({
       where: { id, credentialRevokedAt: null },
     });
-    return x ? screenDto(x) : null;
+    return x?.deviceTokenHash ? screenDto(x, true) : null;
   }
   async heartbeat(id: string, data: Partial<ScreenRecord>) {
     const x = await this.prisma.screen.findUnique({ where: { id } });

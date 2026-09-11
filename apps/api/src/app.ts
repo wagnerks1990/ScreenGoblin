@@ -20,10 +20,14 @@ import { deviceRoutes, pairingAdminRoutes } from "./routes/devices.js";
 export interface BuildOptions {
   store?: DataStore;
   jwtSecret: string;
-  manifestSigningSecret: string;
+  manifestSigningPrivateKey: string;
+  pairingCodePepper: string;
   emergencyPublishingEnabled?: boolean;
   corsOrigins?: string[];
-  logger?: boolean;
+  logger?: boolean | string;
+  trustProxy?: boolean | string[];
+  mediaAllowedOrigins?: string[];
+  publicApiUrl?: string;
 }
 export async function buildApp(
   options: BuildOptions,
@@ -31,6 +35,7 @@ export async function buildApp(
   const app = Fastify({
     logger: options.logger
       ? {
+          level: options.logger === true ? "info" : options.logger,
           redact: [
             "req.headers.authorization",
             "req.headers.x-device-token",
@@ -38,14 +43,17 @@ export async function buildApp(
           ],
         }
       : false,
-    bodyLimit: 10 * 1024 * 1024,
-    trustProxy: true,
+    bodyLimit: 2 * 1024 * 1024,
+    trustProxy: options.trustProxy ?? false,
     requestIdHeader: "x-request-id",
   });
   app.decorate("store", options.store ?? new PrismaStore());
   app.decorate("config", {
-    manifestSigningSecret: options.manifestSigningSecret,
+    manifestSigningPrivateKey: options.manifestSigningPrivateKey,
+    pairingCodePepper: options.pairingCodePepper,
     emergencyPublishingEnabled: options.emergencyPublishingEnabled ?? false,
+    mediaAllowedOrigins: options.mediaAllowedOrigins ?? [],
+    ...(options.publicApiUrl ? { publicApiUrl: options.publicApiUrl } : {}),
   });
   app.addHook("onClose", async () => {
     await app.store.close?.();
@@ -58,6 +66,10 @@ export async function buildApp(
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
   await app.register(jwt, { secret: options.jwtSecret });
   await app.register(authPlugin);
+  app.addHook("onSend", async (request, reply) => {
+    if (request.url.startsWith("/api/"))
+      reply.header("Cache-Control", "no-store");
+  });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError)
       return reply.code(400).send({

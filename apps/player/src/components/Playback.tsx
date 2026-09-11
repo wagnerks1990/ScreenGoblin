@@ -102,7 +102,8 @@ export function Playback({
         <iframe
           src={source}
           title="Signage web content"
-          sandbox="allow-scripts allow-same-origin allow-forms"
+          sandbox="allow-scripts allow-forms"
+          referrerPolicy="no-referrer"
         />
       )}
       {source && item.kind === "template" && template && (

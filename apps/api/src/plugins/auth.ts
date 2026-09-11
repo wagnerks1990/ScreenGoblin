@@ -14,6 +14,16 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
         "A valid access token is required",
       );
     }
+    const session = await app.store.findSessionUser(
+      request.user.sub,
+      request.user.organizationId,
+    );
+    if (!session || session.role !== request.user.role)
+      throw new ApiError(
+        401,
+        "SESSION_REVOKED",
+        "This session is no longer valid",
+      );
   });
   app.decorate("authenticateDevice", async (request) => {
     const screenId = request.headers["x-screen-id"];

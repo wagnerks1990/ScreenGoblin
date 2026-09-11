@@ -9,6 +9,7 @@ export interface SessionUser {
   passwordHash: string;
   organizationId: string;
   role: Role;
+  disabledAt?: string;
 }
 export interface ScreenRecord {
   id: string;
@@ -118,6 +119,10 @@ export interface DataStore {
   ping(): Promise<void>;
   close?(): Promise<void>;
   findUserByEmail(email: string): Promise<SessionUser | null>;
+  findSessionUser(
+    userId: string,
+    organizationId: string,
+  ): Promise<SessionUser | null>;
   listScreens(orgId: string): Promise<ScreenRecord[]>;
   getScreen(orgId: string, id: string): Promise<ScreenRecord | null>;
   createScreen(

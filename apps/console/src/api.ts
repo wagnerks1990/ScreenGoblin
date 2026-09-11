@@ -4,18 +4,23 @@ import { demoFleet, screens } from "./data";
 export type ApiResult<T> = { data: T; source: "live" | "demo" };
 export interface LiveSession {
   accessToken: string;
-  user: { name: string; email: string; role: string };
+  user: {
+    name: string;
+    email: string;
+    role: "OWNER" | "ADMIN" | "PUBLISHER" | "VIEWER";
+    organizationId: string;
+  };
 }
 
 const baseUrl =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "/api/v1";
 
 async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
+  const accessToken = window.sessionStorage.getItem("sg_access_token");
+  if (!accessToken) return { data: fallback, source: "demo" };
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 2500);
   try {
-    const accessToken = window.sessionStorage.getItem("sg_access_token");
-    if (!accessToken) throw new Error("No live API session");
     const response = await fetch(`${baseUrl}${path}`, {
       headers: {
         Accept: "application/json",
@@ -23,10 +28,15 @@ async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
       },
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    if (!response.ok) {
+      if (response.status === 401) {
+        window.sessionStorage.removeItem("sg_access_token");
+        window.sessionStorage.removeItem("sg_session_user");
+        window.dispatchEvent(new Event("screengoblin:session-changed"));
+      }
+      throw new Error(`Live API returned HTTP ${response.status}`);
+    }
     return { data: (await response.json()) as T, source: "live" };
-  } catch {
-    return { data: fallback, source: "demo" };
   } finally {
     window.clearTimeout(timeout);
   }
@@ -56,15 +66,33 @@ async function mutate<T>(path: string, init: RequestInit): Promise<T> {
 export const api = {
   hasLiveSession: () =>
     Boolean(window.sessionStorage.getItem("sg_access_token")),
+  currentUser: (): LiveSession["user"] | undefined => {
+    const raw = window.sessionStorage.getItem("sg_session_user");
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw) as LiveSession["user"];
+    } catch {
+      window.sessionStorage.removeItem("sg_session_user");
+      return undefined;
+    }
+  },
   login: async (email: string, password: string): Promise<LiveSession> => {
     const session = await mutate<LiveSession>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
     window.sessionStorage.setItem("sg_access_token", session.accessToken);
+    window.sessionStorage.setItem(
+      "sg_session_user",
+      JSON.stringify(session.user),
+    );
     return session;
   },
-  logout: () => window.sessionStorage.removeItem("sg_access_token"),
+  logout: () => {
+    window.sessionStorage.removeItem("sg_access_token");
+    window.sessionStorage.removeItem("sg_session_user");
+    window.dispatchEvent(new Event("screengoblin:session-changed"));
+  },
   createPairingCode: () =>
     mutate<{ code: string; expiresAt: string }>("/pairing-codes", {
       method: "POST",

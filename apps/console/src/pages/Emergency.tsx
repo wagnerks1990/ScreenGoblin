@@ -59,7 +59,6 @@ export function Emergency() {
           <div className="form-row">
             <Field label="Duration">
               <select>
-                <option>Until manually cleared</option>
                 <option>15 minutes</option>
                 <option>30 minutes</option>
                 <option>1 hour</option>

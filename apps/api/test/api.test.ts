@@ -5,6 +5,7 @@ import { MemoryStore } from "../src/store/memory.js";
 import type { FastifyInstance } from "fastify";
 
 const secret = "test-secret-that-is-longer-than-thirty-two-characters";
+const signingKey = Buffer.alloc(32, 7).toString("base64url");
 let app: FastifyInstance;
 let store: MemoryStore;
 let token: string;
@@ -31,7 +32,8 @@ beforeEach(async () => {
   app = await buildApp({
     store,
     jwtSecret: secret,
-    manifestSigningSecret: secret,
+    manifestSigningPrivateKey: signingKey,
+    pairingCodePepper: secret,
   });
   token = app.jwt.sign({
     sub: store.users[0]!.id,
@@ -109,6 +111,52 @@ describe("authentication and organization RBAC", () => {
     });
     expect(r.statusCode).toBe(404);
   });
+  it("revokes an existing token after a user is disabled or their role changes", async () => {
+    store.users[0]!.disabledAt = new Date().toISOString();
+    const disabled = await app.inject({
+      url: "/api/v1/screens",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(disabled.statusCode).toBe(401);
+    expect(disabled.json().error.code).toBe("SESSION_REVOKED");
+
+    delete store.users[0]!.disabledAt;
+    store.users[0]!.role = "VIEWER";
+    const downgraded = await app.inject({
+      url: "/api/v1/screens",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(downgraded.statusCode).toBe(401);
+    expect(downgraded.json().error.code).toBe("SESSION_REVOKED");
+  });
+
+  it("marks management responses as non-cacheable", async () => {
+    const response = await app.inject({
+      url: "/api/v1/screens",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("persists screen metadata updates without exposing internal credentials", async () => {
+    const created = await store.createScreen("org-a", {
+      name: "Lobby",
+      location: "First floor",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/screens/${created.id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: "Main Lobby" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect((await store.getScreen("org-a", created.id))?.name).toBe(
+      "Main Lobby",
+    );
+  });
 });
 
 describe("device lifecycle", () => {
@@ -164,6 +212,13 @@ describe("device lifecycle", () => {
       items: [],
     });
     expect(manifest.json().signature).toBeTypeOf("string");
+    expect(manifest.json().signatureAlgorithm).toBe("Ed25519");
+    expect(credentials.manifestVerificationKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const screens = await app.inject({
+      url: "/api/v1/screens",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(screens.body).not.toContain("deviceTokenHash");
   });
   it("rejects bad device credentials", async () => {
     const r = await app.inject({
@@ -174,6 +229,26 @@ describe("device lifecycle", () => {
       },
     });
     expect(r.statusCode).toBe(401);
+  });
+});
+
+describe("media trust boundary", () => {
+  it("rejects executable and non-HTTPS media URLs", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Unsafe web content",
+        kind: "web",
+        mimeType: "text/html",
+        url: "javascript:alert(1)",
+        checksumSha256: "0".repeat(64),
+        sizeBytes: 1,
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.code).toBe("MEDIA_URL_NOT_ALLOWED");
   });
 });
 

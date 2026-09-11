@@ -58,7 +58,7 @@ export function SettingsPage() {
             <>
               <div className="form-row">
                 <Field label="Workspace name">
-                  <input defaultValue="CASD Technology Lab" />
+                  <input defaultValue="Example Organization" />
                 </Field>
                 <Field label="Timezone">
                   <select defaultValue="America/New_York">

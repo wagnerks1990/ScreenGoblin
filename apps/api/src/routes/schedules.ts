@@ -86,6 +86,17 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
     const { id } = params.parse(request.params);
     if (!(await app.store.deleteSchedule(request.user.organizationId, id)))
       return sendNotFound(reply);
+    await app.store.audit({
+      organizationId: request.user.organizationId,
+      actorUserId: request.user.sub,
+      actorType: "user",
+      action: "schedule.deleted",
+      entityType: "schedule",
+      entityId: id,
+      ipAddress: request.ip,
+      requestId: request.id,
+      metadata: {},
+    });
     return reply.code(204).send();
   });
 };

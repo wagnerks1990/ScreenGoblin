@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleRecord } from "../src/domain/types.js";
-import { matchesScheduleWindow, validTimeZone } from "../src/utils/schedule.js";
+import {
+  compareSchedulePrecedence,
+  matchesScheduleWindow,
+  validTimeZone,
+} from "../src/utils/schedule.js";
 
 const schedule: ScheduleRecord = {
   id: "cm123schedule",
@@ -38,5 +42,21 @@ describe("schedule time zone window", () => {
   it("rejects unknown time zones", () => {
     expect(validTimeZone("America/New_York")).toBe(true);
     expect(validTimeZone("Mars/Olympus_Mons")).toBe(false);
+  });
+
+  it("resolves equal-priority conflicts deterministically", () => {
+    const older = { ...schedule, id: "schedule-b" };
+    const newer = {
+      ...schedule,
+      id: "schedule-z",
+      startsAt: "2021-01-01T00:00:00.000Z",
+    };
+    const sameStartLowerId = { ...newer, id: "schedule-a" };
+    expect([older, newer].sort(compareSchedulePrecedence)[0]?.id).toBe(
+      "schedule-z",
+    );
+    expect(
+      [newer, sameStartLowerId].sort(compareSchedulePrecedence)[0]?.id,
+    ).toBe("schedule-a");
   });
 });

@@ -36,6 +36,9 @@ Run the full validation gate before opening a pull request:
 npm run validate
 ```
 
+`validate` generates the Prisma client before formatting, linting, type checks,
+tests, and production builds, so it works from a clean `npm ci` checkout.
+
 ## Container deployment
 
 The supplied Compose stack is intended for one pre-production host. It runs Caddy, the console, a browser-hosted player build, the API, PostgreSQL, Redis, and MinIO.
@@ -47,8 +50,15 @@ chmod 600 deploy/.env
 docker compose --env-file deploy/.env config
 docker compose --env-file deploy/.env build
 docker compose --env-file deploy/.env up -d
+docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed
 docker compose --env-file deploy/.env ps
 ```
+
+Run the bootstrap profile only for the first organization owner. It refuses
+placeholder/short credentials and never resets an existing password. Remove the
+`SEED_*` values from the deployment environment after the owner can sign in.
+Changing the manifest signing key requires controlled re-enrollment of players;
+players pin its public verification key during pairing.
 
 Point `SCREEN_GOBLIN_HOST` and `PLAYER_HOST` DNS records at the host. Caddy obtains TLS certificates automatically for public names. Do not expose PostgreSQL, Redis, MinIO, or the Caddy admin endpoint to the network.
 

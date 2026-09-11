@@ -2,80 +2,53 @@ import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { hash } from "bcryptjs";
 const prisma = new PrismaClient();
-const email = process.env.SEED_ADMIN_EMAIL ?? "admin@screengoblin.local";
-const password = process.env.SEED_ADMIN_PASSWORD ?? "ChangeMe-Now-123!";
+const required = (name: string) => {
+  const value = process.env[name]?.trim();
+  if (!value || /^replace-with-/i.test(value))
+    throw new Error(`${name} is required and may not be a placeholder`);
+  return value;
+};
+const email = required("SEED_ADMIN_EMAIL").toLowerCase();
+const password = required("SEED_ADMIN_PASSWORD");
+const organizationName = required("SEED_ORGANIZATION_NAME");
+const organizationSlug = required("SEED_ORGANIZATION_SLUG");
+const administratorName = required("SEED_ADMIN_NAME");
+if (password.length < 16)
+  throw new Error("SEED_ADMIN_PASSWORD must contain at least 16 characters");
 const passwordHash = await hash(password, 12);
 const organization = await prisma.organization.upsert({
-  where: { slug: "demo-school" },
+  where: { slug: organizationSlug },
   update: {},
-  create: { name: "ScreenGoblin Demo School", slug: "demo-school" },
+  create: { name: organizationName, slug: organizationSlug },
 });
-const user = await prisma.user.upsert({
+const existing = await prisma.user.findUnique({
   where: { email },
-  // Re-running deployment must never reset an existing administrator password.
-  update: { name: "Demo Administrator" },
-  create: { email, name: "Demo Administrator", passwordHash },
+  include: { memberships: true },
 });
-await prisma.membership.upsert({
-  where: {
-    organizationId_userId: { organizationId: organization.id, userId: user.id },
-  },
-  update: { role: "OWNER" },
-  create: { organizationId: organization.id, userId: user.id, role: "OWNER" },
-});
-const screen = await prisma.screen.upsert({
-  where: { installationId: "demo-lobby-player" },
-  update: {},
-  create: {
-    organizationId: organization.id,
-    name: "Main Lobby",
-    location: "High School > Main Lobby",
-    tags: ["lobby", "student-facing"],
-    installationId: "demo-lobby-player",
-  },
-});
-const asset = await prisma.mediaAsset.upsert({
-  where: { id: "demo-welcome-asset" },
-  update: {},
-  create: {
-    id: "demo-welcome-asset",
-    organizationId: organization.id,
-    name: "Welcome to ScreenGoblin",
-    kind: "IMAGE",
-    mimeType: "image/png",
-    url: "https://example.invalid/demo/welcome.png",
-    checksumSha256:
-      "0000000000000000000000000000000000000000000000000000000000000000",
-    sizeBytes: 0,
-  },
-});
-const playlist = await prisma.playlist.upsert({
-  where: {
-    organizationId_name: {
-      organizationId: organization.id,
-      name: "Welcome Rotation",
-    },
-  },
-  update: {},
-  create: {
-    organizationId: organization.id,
-    name: "Welcome Rotation",
-    description: "Seeded prototype playlist",
-    items: { create: { assetId: asset.id, position: 0, durationSeconds: 15 } },
-  },
-});
-const existing = await prisma.schedule.findFirst({
-  where: { organizationId: organization.id, name: "Always On Demo" },
-});
-if (!existing)
-  await prisma.schedule.create({
+if (existing) {
+  const alreadyOwner = existing.memberships.some(
+    (membership) =>
+      membership.organizationId === organization.id &&
+      membership.role === "OWNER",
+  );
+  if (!alreadyOwner)
+    throw new Error(
+      "Bootstrap email already exists without the requested owner membership; refusing to change privileges",
+    );
+  console.log(
+    `Bootstrap owner ${email} already exists; no credentials changed.`,
+  );
+} else {
+  await prisma.user.create({
     data: {
-      organizationId: organization.id,
-      playlistId: playlist.id,
-      name: "Always On Demo",
-      startsAt: new Date("2020-01-01T00:00:00Z"),
-      targets: { create: { screenId: screen.id } },
+      email,
+      name: administratorName,
+      passwordHash,
+      memberships: {
+        create: { organizationId: organization.id, role: "OWNER" },
+      },
     },
   });
-console.log(`Ensured bootstrap organization and administrator ${email}.`);
+  console.log(`Created bootstrap organization owner ${email}.`);
+}
 await prisma.$disconnect();

@@ -40,7 +40,11 @@ export class IndexedDbPlayerStore implements PlayerStore {
   async activateManifest(value: PlayerManifest): Promise<void> {
     const active = await this.getActiveManifest();
     const entries: Array<[string, unknown]> = [["active-manifest", value]];
-    if (active) entries.push(["previous-manifest", active]);
+    // Emergency content is an overlay, never part of the normal rollback
+    // chain. Repeated emergency polls must preserve the last verified normal
+    // release, and returning to normal must not make a cleared alert rollbackable.
+    if (active && active.priority !== "emergency")
+      entries.push(["previous-manifest", active]);
     await write(entries);
   }
 

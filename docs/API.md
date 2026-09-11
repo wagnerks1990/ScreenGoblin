@@ -32,7 +32,7 @@ Every user resource query must include the authenticated organization boundary. 
 
 ## Caching and consistency
 
-Mutable management responses default to `Cache-Control: no-store`. Published media may be immutable and long-lived when addressed by checksum. Manifests include a unique version, validity window, checksums, and signature. A player activates a manifest only when every required asset has been verified.
+Mutable management responses use `Cache-Control: no-store`. Published media may be immutable and long-lived when addressed by checksum. Manifests include a unique version, validity window, checksums, `signatureAlgorithm: Ed25519`, and a signature. Pairing pins `manifestVerificationKey`; a player verifies the signed envelope and screen binding, then activates only after every required asset has been verified.
 
 ## Health endpoints
 

@@ -1,5 +1,5 @@
 {
-  admin 0.0.0.0:2019
+  admin off
   email {$ACME_EMAIL:}
 }
 
@@ -31,5 +31,11 @@
 {$PLAYER_HOST:player.localhost} {
   encode zstd gzip
   reverse_proxy player-web:8080
-  header -Server
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    -Server
+  }
 }

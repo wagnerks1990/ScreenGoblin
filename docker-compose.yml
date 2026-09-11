@@ -92,11 +92,15 @@ services:
       dockerfile: deploy/docker/api.Dockerfile
       target: build
     restart: "no"
+    profiles: [bootstrap]
     command: ["npm", "run", "prisma:seed", "-w", "@screengoblin/api"]
     environment:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:?set SEED_ADMIN_EMAIL}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?set SEED_ADMIN_PASSWORD}
+      SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:?set SEED_ADMIN_NAME}
+      SEED_ORGANIZATION_NAME: ${SEED_ORGANIZATION_NAME:?set SEED_ORGANIZATION_NAME}
+      SEED_ORGANIZATION_SLUG: ${SEED_ORGANIZATION_SLUG:?set SEED_ORGANIZATION_SLUG}
     depends_on:
       api-migrate:
         condition: service_completed_successfully
@@ -120,8 +124,11 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
-      MANIFEST_SIGNING_SECRET: ${MANIFEST_SIGNING_SECRET:?set MANIFEST_SIGNING_SECRET}
+      PAIRING_CODE_PEPPER: ${PAIRING_CODE_PEPPER:?set PAIRING_CODE_PEPPER}
+      MANIFEST_SIGNING_PRIVATE_KEY: ${MANIFEST_SIGNING_PRIVATE_KEY:?set MANIFEST_SIGNING_PRIVATE_KEY}
       CORS_ORIGINS: https://${SCREEN_GOBLIN_HOST},https://${PLAYER_HOST},https://localhost,capacitor://localhost
+      PUBLIC_API_URL: https://${SCREEN_GOBLIN_HOST}
+      MEDIA_ALLOWED_ORIGINS: https://${SCREEN_GOBLIN_HOST}
       S3_ENDPOINT: http://minio:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-screengoblin-media}
@@ -129,9 +136,8 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
       S3_FORCE_PATH_STYLE: "true"
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL}
-      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      TRUST_PROXY_RANGES: loopback,linklocal,uniquelocal
       EMERGENCY_FEATURE_ENABLED: ${EMERGENCY_FEATURE_ENABLED:-false}
     depends_on:
       postgres:
@@ -141,8 +147,6 @@ services:
       minio-init:
         condition: service_completed_successfully
       api-migrate:
-        condition: service_completed_successfully
-      api-seed:
         condition: service_completed_successfully
     healthcheck:
       test:
