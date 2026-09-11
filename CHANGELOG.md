@@ -44,6 +44,7 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Add reproducible image-scan, SBOM, release-evidence, PostgreSQL backup/restore,
   object-storage recovery, and retained-image rollback workflows. Evidence is
   explicitly unsigned until protected production signing is implemented.
+- Use MinIO's official Quay registry for the pinned server and client images.
 
 ## 0.1.0 — 2026-09-11
 

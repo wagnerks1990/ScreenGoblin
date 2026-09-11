@@ -6,8 +6,8 @@ command -v docker >/dev/null
 command -v sha256sum >/dev/null
 
 readonly POSTGRES_FIXTURE="${POSTGRES_FIXTURE_IMAGE:-postgres:17-alpine}"
-readonly MINIO_FIXTURE="${MINIO_FIXTURE_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"
-readonly MC_FIXTURE="${MC_FIXTURE_IMAGE:-minio/mc:RELEASE.2025-04-16T18-13-26Z}"
+readonly MINIO_FIXTURE="${MINIO_FIXTURE_IMAGE:-quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z}"
+readonly MC_FIXTURE="${MC_FIXTURE_IMAGE:-quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z}"
 readonly ALPINE_FIXTURE="${ALPINE_FIXTURE_IMAGE:-alpine:3.22}"
 readonly ROLLBACK_DOCKERFILE="${ROLLBACK_DOCKERFILE:-deploy/docker/api.Dockerfile}"
 readonly EVIDENCE_DIR="${RECOVERY_EVIDENCE_DIR:-recovery-evidence}"
