@@ -49,7 +49,10 @@ docker run --detach --pull never --name "$pg_container" --network "$network" \
   --env POSTGRES_PASSWORD=recovery-test-only --env POSTGRES_USER=screengoblin \
   --env POSTGRES_DB=screengoblin "$pg_image" >/dev/null
 for attempt in {1..60}; do
-  if docker exec "$pg_container" pg_isready -U screengoblin -d screengoblin >/dev/null 2>&1; then break; fi
+  # The image's temporary initialization server can accept connections before
+  # POSTGRES_DB has been created. Probe the exact database, not just the socket.
+  if docker exec "$pg_container" psql -U screengoblin -d screengoblin \
+    -Atc 'SELECT 1' >/dev/null 2>&1; then break; fi
   [[ "$attempt" -lt 60 ]] || { echo "PostgreSQL fixture did not become ready" >&2; exit 1; }
   sleep 1
 done

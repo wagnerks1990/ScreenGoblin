@@ -49,6 +49,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   from the final API runtime image.
 - Apply available Alpine security updates in the final Console and Player images
   and upload each image's SARIF report under a distinct code-scanning category.
+- Make the recovery drill wait for the requested PostgreSQL database instead of
+  accepting the image's temporary initialization server as ready.
 
 ## 0.1.0 — 2026-09-11
 
