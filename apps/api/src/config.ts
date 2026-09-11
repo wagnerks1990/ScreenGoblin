@@ -8,6 +8,7 @@ const schema = z
     HOST: z.string().default("0.0.0.0"),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     DATABASE_URL: z.string().min(1),
+    REDIS_URL: z.string().default(""),
     JWT_SECRET: z.string().min(32),
     PAIRING_CODE_PEPPER: z.string().min(32),
     MANIFEST_SIGNING_PRIVATE_KEY: z
@@ -25,6 +26,12 @@ const schema = z
   })
   .superRefine((value, context) => {
     if (value.NODE_ENV !== "production") return;
+    if (!/^rediss?:\/\//.test(value.REDIS_URL))
+      context.addIssue({
+        code: "custom",
+        path: ["REDIS_URL"],
+        message: "must be a redis:// or rediss:// URL in production",
+      });
     if (new URL(value.PUBLIC_API_URL).protocol !== "https:")
       context.addIssue({
         code: "custom",

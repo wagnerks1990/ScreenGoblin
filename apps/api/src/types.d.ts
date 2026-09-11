@@ -1,5 +1,6 @@
 import "@fastify/jwt";
 import type { DataStore, Role, ScreenRecord } from "./domain/types.js";
+import type { RateLimitBudget } from "./utils/rate-limit.js";
 declare module "@fastify/jwt" {
   interface FastifyJWT {
     payload: { sub: string; organizationId: string; role: Role; email: string };
@@ -9,6 +10,7 @@ declare module "@fastify/jwt" {
 declare module "fastify" {
   interface FastifyInstance {
     store: DataStore;
+    rateLimitBudget: RateLimitBudget;
     config: {
       manifestSigningPrivateKey: string;
       pairingCodePepper: string;

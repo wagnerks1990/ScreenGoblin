@@ -23,19 +23,33 @@ Independent passes covered backend/application security, Console UX/accessibilit
 - Pairing creation and media/playlist/schedule lifecycle events now produce audit records.
 - Schedule conflicts now have deterministic priority/start/ID ordering; expired media is excluded and release identity includes schedule timing.
 - Vitest was upgraded to the advisory-fixed major release; the complete npm audit reports zero known vulnerabilities.
+- Production request protection now requires Redis and applies distributed,
+  fail-closed login, pairing, heartbeat, and manifest budgets without placing
+  raw account, code, device, or source identifiers in backend keys.
+- The Android wrapper creates a non-exportable P-256 Keystore identity key and
+  exposes a constrained, domain-separated signing operation. Server enrollment
+  and proof verification remain intentionally disabled.
+- Keyboard form submission, dialog focus management, operational status
+  announcements, and complete session clearing on unauthorized mutations have
+  automated regressions.
+- Image scanning, SBOM/release evidence, guarded PostgreSQL backup/restore, and
+  disposable database/object/image recovery workflows are implemented for CI
+  evidence; artifact signing and real-environment recovery evidence remain open.
+- Governance, privacy, incident, SLO, supported-device, authorization, and
+  immutable-release documents now exist as explicit unapproved NO-GO plans.
 - Reproducible validation, changelog, contributor/agent invariants, AI boundaries, and corrected current-state protocol documentation were added.
 
 ## Remaining blocking work
 
-1. Native Android Keystore device keypair/proof-of-possession or mTLS, credential rotation/revocation/re-enrollment/decommission, and verified local erasure.
-2. Durable Redis-backed distributed pairing/login/device rate limits, per-code attempt budgets, collision handling, and abuse alerts.
+1. Server enrollment and replay-safe verification of the Android Keystore key, credential rotation/revocation/re-enrollment/decommission, and verified local erasure.
+2. Pairing-code collision handling, abuse alert delivery/telemetry, and production threshold calibration for the distributed request budgets.
 3. First-class location/group/screen permission scopes and separate publish, device-control, audit, and emergency capabilities.
 4. Immutable asset/content/playlist/manifest releases with draft, review, independent approval, publish, target snapshot, rollback parent, and optimistic concurrency.
 5. Server-owned upload, type detection, malware scanning/transcoding, private media delivery, signed URL expiry, and tenant/object-storage isolation.
 6. Emergency step-up MFA, independent approval, idempotent signed activation/clear, per-device received/verified/rendered/restored acknowledgements, partial-delivery escalation, and tabletop/physical-device evidence.
 7. Durable two-slot native content cache with decode probes, storage reservation/GC, crash/power-loss tests, bundled neutral fallback, proof of play, screenshots, watchdog, commands, and update rings.
 8. PostgreSQL-backed tenant/integrity/concurrency tests, browser E2E/accessibility/visual tests, Android emulator tests, supported physical-device matrix, load/soak/offline-window evidence, and measurable release thresholds.
-9. Immutable image/APK release artifacts, digest pinning, image-layer scans, SBOM/provenance/signing, protected release environment, migration compatibility, executable rollback, and complete encrypted database/object restore drills with measured RPO/RTO.
-10. Data-flow inventory, screenshot/log retention, no-student-PII profile, privacy/content policy, subprocessor and counsel review, incident ownership, SLOs/alerts, and go/no-go evidence records.
+9. Registry promotion, immutable image/APK artifacts, digest pinning, provenance/signing, protected release environments, migration compatibility, off-host encrypted restoration, and measured RPO/RTO. CI image scans, SBOM generation, and disposable rollback drills are implemented but are not production evidence.
+10. Approval of the draft data-flow, retention, no-student-PII, incident, SLO, supported-device, and go/no-go records, plus privacy/content policy, subprocessor review, counsel review, and named operational ownership.
 
 These are real release gates, not documentation cleanup. No checkmark in `docs/PREPRODUCTION.md` should be changed until reproducible evidence exists.

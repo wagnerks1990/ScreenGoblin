@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import jwt from "@fastify/jwt";
 import rateLimit from "@fastify/rate-limit";
+import type { Redis } from "ioredis";
 import { ZodError } from "zod";
 import type { DataStore } from "./domain/types.js";
 import { PrismaStore } from "./store/prisma.js";
@@ -16,6 +17,12 @@ import { scheduleRoutes } from "./routes/schedules.js";
 import { emergencyRoutes } from "./routes/emergencies.js";
 import { auditRoutes } from "./routes/audits.js";
 import { deviceRoutes, pairingAdminRoutes } from "./routes/devices.js";
+import {
+  MemoryRateLimitBudget,
+  opaqueRateLimitKey,
+  RedisRateLimitBudget,
+  type RateLimitBudget,
+} from "./utils/rate-limit.js";
 
 export interface BuildOptions {
   store?: DataStore;
@@ -28,10 +35,16 @@ export interface BuildOptions {
   trustProxy?: boolean | string[];
   mediaAllowedOrigins?: string[];
   publicApiUrl?: string;
+  redis?: Redis;
+  rateLimitBudget?: RateLimitBudget;
+  requireRedis?: boolean;
+  closeRedisOnClose?: boolean;
 }
 export async function buildApp(
   options: BuildOptions,
 ): Promise<FastifyInstance> {
+  if (options.requireRedis && !options.redis)
+    throw new Error("Redis is required for production request protection");
   const app = Fastify({
     logger: options.logger
       ? {
@@ -48,6 +61,13 @@ export async function buildApp(
     requestIdHeader: "x-request-id",
   });
   app.decorate("store", options.store ?? new PrismaStore());
+  app.decorate(
+    "rateLimitBudget",
+    options.rateLimitBudget ??
+      (options.redis
+        ? new RedisRateLimitBudget(options.redis)
+        : new MemoryRateLimitBudget()),
+  );
   app.decorate("config", {
     manifestSigningPrivateKey: options.manifestSigningPrivateKey,
     pairingCodePepper: options.pairingCodePepper,
@@ -57,17 +77,26 @@ export async function buildApp(
   });
   app.addHook("onClose", async () => {
     await app.store.close?.();
+    if (options.redis && options.closeRedisOnClose) await options.redis.quit();
   });
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
     origin: options.corsOrigins ?? ["http://localhost:5173"],
     credentials: true,
   });
-  await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
+  await app.register(rateLimit, {
+    max: 120,
+    timeWindow: "1 minute",
+    redis: options.redis,
+    skipOnError: false,
+    nameSpace: "screengoblin:request:",
+    keyGenerator: (request) =>
+      opaqueRateLimitKey(options.pairingCodePepper, "source", request.ip),
+  });
   await app.register(jwt, { secret: options.jwtSecret });
   await app.register(authPlugin);
   app.addHook("onSend", async (request, reply) => {
-    if (request.url.startsWith("/api/"))
+    if (request.url.startsWith("/api/") || request.url.startsWith("/health/"))
       reply.header("Cache-Control", "no-store");
   });
   app.setErrorHandler((error, request, reply) => {
@@ -113,16 +142,27 @@ export async function buildApp(
       requestId: request.id,
     });
   });
-  app.get("/health/live", async () => ({ status: "ok" }));
-  app.get("/health/ready", async (_request, reply) => {
-    try {
-      await app.store.ping();
-      return { status: "ready" };
-    } catch {
-      app.log.error("Database readiness check failed");
-      return reply.code(503).send({ status: "not_ready" });
-    }
-  });
+  app.get(
+    "/health/live",
+    { config: { rateLimit: false } },
+    async (_request, reply) => reply.code(204).send(),
+  );
+  app.get(
+    "/health/ready",
+    { config: { rateLimit: false } },
+    async (_request, reply) => {
+      try {
+        await app.store.ping();
+        if (options.redis) await options.redis.ping();
+        else if (options.requireRedis)
+          throw new Error("Required request-protection store is unavailable");
+        return reply.code(204).send();
+      } catch {
+        app.log.error("Readiness dependency check failed");
+        return reply.code(503).send();
+      }
+    },
+  );
   await app.register(
     async (api) => {
       await api.register(authRoutes);

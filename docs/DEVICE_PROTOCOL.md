@@ -2,7 +2,22 @@
 
 ## Trust model
 
-The prototype creates a random installation ID and stores its unique bearer credential in the player WebView's IndexedDB. This is **not** platform-protected native key storage. Pairing codes are short-lived, single-use, and stored using a deployment-specific HMAC pepper, but distributed/per-code attempt budgets are not implemented yet. Before a real fleet pilot, device identity must use non-exportable asymmetric key material in Android Keystore and server-verified proof of possession. Sharing one fleet API key is prohibited.
+The Android wrapper creates a non-exportable P-256 signing key in Android
+Keystore, preferring StrongBox when the device advertises it and falling back to
+the platform Keystore provider. It exposes the public SPKI, its SHA-256 key
+fingerprint, and a constrained signing operation; private-key bytes never cross
+into the WebView. This is only the client foundation: the current server does
+not enroll the public key, issue proof challenges, verify signatures, or attest
+the reported hardware security level. The unique bearer credential stored in
+the player WebView's IndexedDB therefore remains authoritative and is not
+platform-protected native storage. Sharing one fleet API key is prohibited.
+
+Existing locally stored installation IDs are preserved for prototype upgrade
+compatibility. New Android installs use the public-key fingerprint; browsers
+and PWAs use a persisted random UUID. Pairing codes are short-lived, single-use,
+and stored using a deployment-specific HMAC pepper. Before a real fleet pilot,
+the server must bind the key during enrollment and require fresh, replay-safe
+proof of possession for sensitive device operations.
 
 ## Enrollment
 
@@ -10,9 +25,21 @@ The prototype creates a random installation ID and stores its unique bearer cred
 2. The operator enters that code on the unpaired player.
 3. The player exchanges the code plus installation metadata over TLS.
 4. The server atomically consumes the code and issues a device credential.
-5. The player stores the credential in platform-protected storage and begins heartbeats.
+5. The player stores the transitional credential in IndexedDB and begins heartbeats.
 
-Codes expire after ten minutes. The prototype applies an in-process source rate limit; durable distributed limits, operator confirmation, safe re-enrollment, rotation, and decommissioning remain release gates.
+Codes expire after ten minutes. Durable distributed limits, operator
+confirmation, safe re-enrollment, rotation, and decommissioning remain release
+gates.
+
+### Android challenge-signing contract (client foundation)
+
+`DeviceIdentity.signChallenge` accepts an unpadded base64url value that decodes
+to 16–512 bytes. It signs the UTF-8 domain separator
+`ScreenGoblin device proof v1` followed by a zero byte and the decoded challenge
+using `SHA256withECDSA`. The returned signature is ASN.1 DER encoded and then
+unpadded base64url encoded (`ES256-DER`). A future server verifier must reproduce
+that exact byte sequence, enforce one-time challenge expiry and device binding,
+and reject replays. This operation is currently unused by the bearer-token API.
 
 ## Heartbeat
 

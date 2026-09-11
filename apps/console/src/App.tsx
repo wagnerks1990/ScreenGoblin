@@ -68,6 +68,23 @@ export function App() {
         refreshSession,
       );
   }, []);
+  const connectLive = async () => {
+    setLoggingIn(true);
+    setLoginError("");
+    try {
+      const session = await api.login(email, password);
+      setLiveSession(true);
+      setSessionUser(session.user);
+      setEmail("");
+      setPassword("");
+      setLoginOpen(false);
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "Login failed");
+    } finally {
+      setPassword("");
+      setLoggingIn(false);
+    }
+  };
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
@@ -294,6 +311,10 @@ export function App() {
           setLoginOpen(false);
         }}
         title="Connect to ScreenGoblin"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void connectLive();
+        }}
         footer={
           <>
             <Button
@@ -307,52 +328,40 @@ export function App() {
             </Button>
             <Button
               disabled={loggingIn || !email || password.length < 8}
-              onClick={async () => {
-                setLoggingIn(true);
-                setLoginError("");
-                try {
-                  const session = await api.login(email, password);
-                  setLiveSession(true);
-                  setSessionUser(session.user);
-                  setEmail("");
-                  setPassword("");
-                  setLoginOpen(false);
-                } catch (error) {
-                  setLoginError(
-                    error instanceof Error ? error.message : "Login failed",
-                  );
-                } finally {
-                  setPassword("");
-                  setLoggingIn(false);
-                }
-              }}
+              type="submit"
             >
               {loggingIn ? "Connecting…" : "Connect live"}
             </Button>
           </>
         }
       >
-        <p className="modal-intro">
-          Sign in with the administrator created during deployment. Credentials
-          stay in this browser tab and are cleared when it closes.
-        </p>
-        <Field label="Email">
-          <input
-            type="email"
-            autoComplete="username"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-          />
-        </Field>
-        <Field label="Password">
-          <input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-        </Field>
-        {loginError && <p className="error-message">{loginError}</p>}
+        <>
+          <p className="modal-intro">
+            Sign in with the administrator created during deployment.
+            Credentials stay in this browser tab and are cleared when it closes.
+          </p>
+          <Field label="Email">
+            <input
+              type="email"
+              autoComplete="username"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </Field>
+          <Field label="Password">
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </Field>
+          {loginError && (
+            <p className="error-message" role="alert">
+              {loginError}
+            </p>
+          )}
+        </>
       </Modal>
     </div>
   );

@@ -13,7 +13,7 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 
 ## Architecture invariants
 
-- Players connect outbound over TLS and use unique credentials. The current bearer credential is transitional; production requires non-exportable Android Keystore identity and proof of possession.
+- Players connect outbound over TLS and use unique credentials. The Android wrapper now creates a non-exportable Keystore identity key, but the current bearer credential remains authoritative; production requires server enrollment and replay-safe proof of possession.
 - Manifests bind to a screen, carry a validity window, and are signed with Ed25519. Players pin the verification key during trusted enrollment and verify before staging.
 - Non-web assets are size/hash verified before atomic activation. Emergency overlays never enter the normal rollback chain.
 - Live operational data must fail visibly. Never replace a failed authenticated request with demo values.
@@ -22,7 +22,7 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 
 ## Deliberately disabled or incomplete
 
-Emergency activation, remote commands, screenshots, proof of play, uploads/scanning, immutable approval releases, scoped location authorization, MFA/SSO, update rings, and native Keystore credentials are not complete release capabilities. Do not create UI or documentation that implies otherwise.
+Emergency activation, remote commands, screenshots, proof of play, uploads/scanning, immutable approval releases, scoped location authorization, MFA/SSO, update rings, and server-bound Keystore proof of possession are not complete release capabilities. Do not create UI or documentation that implies otherwise.
 
 ## AI boundaries
 

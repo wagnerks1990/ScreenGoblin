@@ -117,10 +117,12 @@ export function Playback({
         </section>
       )}
       {manifest.priority === "emergency" && (
-        <div className="emergency-label">Emergency message</div>
+        <div className="emergency-label" role="alert">
+          Emergency message
+        </div>
       )}
       {(offline || fallback) && (
-        <div className="status-pill">
+        <div className="status-pill" role="status">
           {fallback ? "Playing saved schedule" : "Offline"}
         </div>
       )}

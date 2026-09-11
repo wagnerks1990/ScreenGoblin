@@ -15,6 +15,12 @@ export interface LiveSession {
 const baseUrl =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "/api/v1";
 
+function clearSession() {
+  window.sessionStorage.removeItem("sg_access_token");
+  window.sessionStorage.removeItem("sg_session_user");
+  window.dispatchEvent(new Event("screengoblin:session-changed"));
+}
+
 async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
   const accessToken = window.sessionStorage.getItem("sg_access_token");
   if (!accessToken) return { data: fallback, source: "demo" };
@@ -30,9 +36,7 @@ async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
     });
     if (!response.ok) {
       if (response.status === 401) {
-        window.sessionStorage.removeItem("sg_access_token");
-        window.sessionStorage.removeItem("sg_session_user");
-        window.dispatchEvent(new Event("screengoblin:session-changed"));
+        clearSession();
       }
       throw new Error(`Live API returned HTTP ${response.status}`);
     }
@@ -54,6 +58,7 @@ async function mutate<T>(path: string, init: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
+    if (response.status === 401) clearSession();
     const payload = (await response.json().catch(() => undefined)) as
       { error?: { message?: string } } | undefined;
     throw new Error(
@@ -89,9 +94,7 @@ export const api = {
     return session;
   },
   logout: () => {
-    window.sessionStorage.removeItem("sg_access_token");
-    window.sessionStorage.removeItem("sg_session_user");
-    window.dispatchEvent(new Event("screengoblin:session-changed"));
+    clearSession();
   },
   createPairingCode: () =>
     mutate<{ code: string; expiresAt: string }>("/pairing-codes", {

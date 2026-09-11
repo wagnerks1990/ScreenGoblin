@@ -6,7 +6,10 @@
 {$SCREEN_GOBLIN_HOST:localhost} {
   encode zstd gzip
 
-  @api path /api /api/* /health/*
+  @readiness path /health/ready
+  respond @readiness 404
+
+  @api path /api /api/* /health/live
   handle @api {
     reverse_proxy api:3001
   }

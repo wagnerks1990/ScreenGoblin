@@ -11,6 +11,9 @@ COPY apps/player ./apps/player
 RUN npm run build -w @screengoblin/contracts && npm run build -w @screengoblin/player
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine
+USER root
+RUN apk upgrade --no-cache
+USER 101
 COPY deploy/nginx/spa.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/player/dist /usr/share/nginx/html
 EXPOSE 8080

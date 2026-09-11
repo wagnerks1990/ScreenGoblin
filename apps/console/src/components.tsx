@@ -1,4 +1,10 @@
-import type { ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  type FormEventHandler,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { X, Search, ChevronDown } from "lucide-react";
 
 export function PageHeader({
@@ -151,6 +157,8 @@ export function Drawer({
   eyebrow?: string;
   children: ReactNode;
 }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogLifecycle(open, onClose, dialogRef);
   if (!open) return null;
   return (
     <div
@@ -161,10 +169,12 @@ export function Drawer({
       }}
     >
       <aside
+        ref={dialogRef}
         className="drawer"
         role="dialog"
         aria-modal="true"
         aria-labelledby="drawer-title"
+        tabIndex={-1}
       >
         <header className="drawer-header">
           <div>
@@ -191,14 +201,19 @@ export function Modal({
   title,
   children,
   footer,
+  onSubmit,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  onSubmit?: FormEventHandler<HTMLFormElement>;
 }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogLifecycle(open, onClose, dialogRef);
   if (!open) return null;
+  const DialogRoot = onSubmit ? "form" : "section";
   return (
     <div
       className="overlay modal-overlay"
@@ -207,11 +222,16 @@ export function Modal({
         if (e.currentTarget === e.target) onClose();
       }}
     >
-      <section
+      <DialogRoot
+        ref={(node) => {
+          dialogRef.current = node;
+        }}
         className="modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
+        tabIndex={-1}
+        onSubmit={onSubmit}
       >
         <header className="drawer-header">
           <h2 id="modal-title">{title}</h2>
@@ -225,9 +245,44 @@ export function Modal({
         </header>
         <div className="modal-body">{children}</div>
         {footer && <footer className="modal-footer">{footer}</footer>}
-      </section>
+      </DialogRoot>
     </div>
   );
+}
+
+function useDialogLifecycle(
+  open: boolean,
+  onClose: () => void,
+  dialogRef: RefObject<HTMLElement | null>,
+) {
+  const openerRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    openerRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    dialogRef.current?.focus();
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onCloseRef.current();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      openerRef.current?.focus();
+      openerRef.current = null;
+    };
+  }, [dialogRef, open]);
 }
 
 export function Field({
