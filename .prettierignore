@@ -1,0 +1,5 @@
+node_modules
+dist
+coverage
+apps/player/android
+public/brand

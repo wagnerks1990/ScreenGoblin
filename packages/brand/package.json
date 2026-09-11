@@ -1,0 +1,14 @@
+{
+  "name": "@screengoblin/brand",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tokens": "./src/tokens.json",
+    "./theme.css": "./src/theme.css"
+  },
+  "files": [
+    "src",
+    "assets"
+  ]
+}

@@ -1,0 +1,36 @@
+name: Container scan
+
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "docker-compose.yml"
+      - "package-lock.json"
+      - "apps/**"
+      - "packages/**"
+  schedule:
+    - cron: "41 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.32.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif

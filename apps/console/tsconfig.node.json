@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "moduleResolution": "Bundler"
+  },
+  "include": ["vite.config.ts", "eslint.config.js"]
+}

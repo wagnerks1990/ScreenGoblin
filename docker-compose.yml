@@ -1,0 +1,260 @@
+name: screengoblin
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--maxmemory-policy",
+        "noeviction",
+      ]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      MINIO_API_CORS_ALLOW_ORIGIN: https://${SCREEN_GOBLIN_HOST},https://${PLAYER_HOST},https://localhost,capacitor://localhost
+    volumes:
+      - object-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    restart: "no"
+    entrypoint: ["/bin/sh", "/create-bucket.sh"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-screengoblin-media}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
+    volumes:
+      - ./deploy/minio/create-bucket.sh:/create-bucket.sh:ro
+      - ./deploy/minio/api-policy.json:/api-policy.json:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [backend]
+
+  api-migrate:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+      target: build
+    restart: "no"
+    command: ["npm", "run", "prisma:migrate", "-w", "@screengoblin/api"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  api-seed:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+      target: build
+    restart: "no"
+    command: ["npm", "run", "prisma:seed", "-w", "@screengoblin/api"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:?set SEED_ADMIN_EMAIL}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?set SEED_ADMIN_PASSWORD}
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
+    networks: [backend]
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3001
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      MANIFEST_SIGNING_SECRET: ${MANIFEST_SIGNING_SECRET:?set MANIFEST_SIGNING_SECRET}
+      CORS_ORIGINS: https://${SCREEN_GOBLIN_HOST},https://${PLAYER_HOST},https://localhost,capacitor://localhost
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-screengoblin-media}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
+      S3_FORCE_PATH_STYLE: "true"
+      S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      EMERGENCY_FEATURE_ENABLED: ${EMERGENCY_FEATURE_ENABLED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      api-migrate:
+        condition: service_completed_successfully
+      api-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [backend]
+
+  console:
+    build:
+      context: .
+      dockerfile: deploy/docker/console.Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,mode=0755
+      - /var/run:size=1m,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:8080/healthz",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [frontend]
+
+  player-web:
+    build:
+      context: .
+      dockerfile: deploy/docker/player.Dockerfile
+      args:
+        VITE_API_URL: https://${SCREEN_GOBLIN_HOST}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,mode=0755
+      - /var/run:size=1m,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:8080/healthz",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [frontend]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      SCREEN_GOBLIN_HOST: ${SCREEN_GOBLIN_HOST:-localhost}
+      PLAYER_HOST: ${PLAYER_HOST:-player.localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      S3_BUCKET: ${S3_BUCKET:-screengoblin-media}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      console:
+        condition: service_healthy
+      player-web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [frontend, backend]
+
+volumes:
+  postgres-data:
+  redis-data:
+  object-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  frontend:
+  backend:
+    internal: true

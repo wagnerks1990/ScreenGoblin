@@ -1,0 +1,28 @@
+{
+  "name": "screengoblin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Android-first digital signage management platform",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "concurrently -n api,console,player -c green,cyan,yellow \"npm run dev -w @screengoblin/api\" \"npm run dev -w @screengoblin/console\" \"npm run dev -w @screengoblin/player\"",
+    "format:check": "prettier --check .",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:coverage": "npm run test:coverage --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "validate": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
+  }
+}

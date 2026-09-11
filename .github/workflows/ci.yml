@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: screengoblin_test
+          POSTGRES_USER: screengoblin
+          POSTGRES_PASSWORD: test-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U screengoblin -d screengoblin_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://screengoblin:test-only-password@127.0.0.1:5432/screengoblin_test?schema=public
+      JWT_SECRET: ci-only-jwt-secret-at-least-32-characters
+      MANIFEST_SIGNING_SECRET: ci-only-signing-secret-at-least-32-chars
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run prisma:generate -w @screengoblin/api
+      - run: npm run prisma:migrate -w @screengoblin/api
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:coverage
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-builds
+          path: |
+            apps/console/dist
+            apps/player/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - run: npm run android:sync -w @screengoblin/player
+      - name: Validate and build debug APK
+        working-directory: apps/player/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon lint testDebugUnitTest assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: player-debug-apk
+          path: apps/player/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: web-api
+    env:
+      SCREEN_GOBLIN_HOST: signage.example.test
+      PLAYER_HOST: player.example.test
+      POSTGRES_DB: screengoblin
+      POSTGRES_USER: screengoblin
+      POSTGRES_PASSWORD: ci-compose-password
+      DATABASE_URL: postgresql://screengoblin:ci-compose-password@postgres:5432/screengoblin?schema=public
+      JWT_SECRET: ci-only-jwt-secret-at-least-32-characters
+      MANIFEST_SIGNING_SECRET: ci-only-signing-secret-at-least-32-chars
+      MINIO_ROOT_USER: ci-minio
+      MINIO_ROOT_PASSWORD: ci-only-minio-password
+      S3_ACCESS_KEY_ID: ci-api
+      S3_SECRET_ACCESS_KEY: ci-only-api-storage-password
+      S3_PUBLIC_BASE_URL: https://signage.example.test/media
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker compose build api console player-web

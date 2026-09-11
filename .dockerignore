@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+**/node_modules
+**/dist
+**/coverage
+**/.env
+**/.env.*
+!deploy/.env.example
+*.log
+project_sources
+apps/player/android/.gradle
+apps/player/android/local.properties
+apps/player/android/app/build

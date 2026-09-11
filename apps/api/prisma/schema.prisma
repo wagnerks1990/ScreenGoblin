@@ -1,0 +1,244 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  PUBLISHER
+  VIEWER
+}
+
+enum ScreenStatus {
+  ONLINE
+  WARNING
+  OFFLINE
+  FALLBACK
+}
+
+enum Orientation {
+  LANDSCAPE
+  PORTRAIT
+}
+
+enum MediaKind {
+  IMAGE
+  VIDEO
+  WEB
+  TEMPLATE
+}
+
+enum SchedulePriority {
+  NORMAL
+  CAMPAIGN
+  PRIORITY
+  EMERGENCY
+}
+
+enum PairingStatus {
+  PENDING
+  CLAIMED
+  EXPIRED
+  REVOKED
+}
+
+model Organization {
+  id          String              @id @default(cuid())
+  name        String
+  slug        String              @unique
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  memberships Membership[]
+  screens     Screen[]
+  media       MediaAsset[]
+  playlists   Playlist[]
+  schedules   Schedule[]
+  pairings    PairingCode[]
+  emergencies EmergencyOverride[]
+  audits      AuditEvent[]
+}
+
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  name         String
+  passwordHash String
+  disabledAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  memberships  Membership[]
+  audits       AuditEvent[]
+}
+
+model Membership {
+  id             String       @id @default(cuid())
+  organizationId String
+  userId         String
+  role           OrgRole
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model Screen {
+  id                  String           @id @default(cuid())
+  organizationId      String
+  name                String
+  location            String           @default("")
+  status              ScreenStatus     @default(OFFLINE)
+  orientation         Orientation      @default(LANDSCAPE)
+  resolution          String           @default("1920x1080")
+  tags                String[]         @default([])
+  installationId      String?          @unique
+  deviceTokenHash     String?
+  model               String?
+  osVersion           String?
+  playerVersion       String?
+  manifestVersion     String?
+  nowPlayingAssetId   String?
+  uptimeSeconds       BigInt?
+  freeStorageBytes    BigInt?
+  networkType         String?
+  lastSeenAt          DateTime?
+  credentialRevokedAt DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  organization        Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  schedules           ScheduleTarget[]
+  pairingCodes        PairingCode[]
+
+  @@index([organizationId, status])
+}
+
+model PairingCode {
+  id             String        @id @default(cuid())
+  organizationId String
+  screenId       String?
+  codeHash       String        @unique
+  status         PairingStatus @default(PENDING)
+  expiresAt      DateTime
+  claimedAt      DateTime?
+  createdAt      DateTime      @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  screen         Screen?       @relation(fields: [screenId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status, expiresAt])
+}
+
+model MediaAsset {
+  id              String         @id @default(cuid())
+  organizationId  String
+  name            String
+  kind            MediaKind
+  mimeType        String
+  url             String
+  checksumSha256  String
+  sizeBytes       BigInt
+  durationSeconds Int?
+  expiresAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  playlistItems   PlaylistItem[]
+
+  @@index([organizationId, createdAt])
+}
+
+model Playlist {
+  id             String         @id @default(cuid())
+  organizationId String
+  name           String
+  description    String         @default("")
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  items          PlaylistItem[]
+  schedules      Schedule[]
+
+  @@unique([organizationId, name])
+}
+
+model PlaylistItem {
+  id              String     @id @default(cuid())
+  playlistId      String
+  assetId         String
+  position        Int
+  durationSeconds Int
+  playlist        Playlist   @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  asset           MediaAsset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([playlistId, position])
+}
+
+model Schedule {
+  id                String           @id @default(cuid())
+  organizationId    String
+  playlistId        String
+  name              String
+  priority          SchedulePriority @default(NORMAL)
+  startsAt          DateTime
+  endsAt            DateTime?
+  timezone          String           @default("UTC")
+  daysOfWeek        Int[]            @default([])
+  dailyStartMinutes Int?
+  dailyEndMinutes   Int?
+  enabled           Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  playlist          Playlist         @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  targets           ScheduleTarget[]
+
+  @@index([organizationId, startsAt, endsAt])
+}
+
+model ScheduleTarget {
+  scheduleId String
+  screenId   String
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  screen     Screen   @relation(fields: [screenId], references: [id], onDelete: Cascade)
+
+  @@id([scheduleId, screenId])
+}
+
+model EmergencyOverride {
+  id              String       @id @default(cuid())
+  organizationId  String
+  title           String
+  message         String
+  backgroundColor String       @default("#C1121F")
+  targetScreenIds String[]
+  startsAt        DateTime     @default(now())
+  expiresAt       DateTime
+  clearedAt       DateTime?
+  createdById     String
+  createdAt       DateTime     @default(now())
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, expiresAt, clearedAt])
+}
+
+model AuditEvent {
+  id             String       @id @default(cuid())
+  organizationId String
+  actorUserId    String?
+  actorType      String
+  action         String
+  entityType     String
+  entityId       String?
+  ipAddress      String?
+  requestId      String?
+  metadata       Json         @default("{}")
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorUser      User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+}

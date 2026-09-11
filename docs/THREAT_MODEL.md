@@ -1,0 +1,41 @@
+# Threat model
+
+## Scope and assets
+
+This model covers the console, API, database, object storage, reverse proxy, and Android-oriented players. The most important assets are publishing authority, emergency controls, device credentials, user sessions, tenant data, media integrity, audit history, and display availability.
+
+ScreenGoblin is not currently a certified emergency-notification or life-safety system.
+
+## Trust boundaries
+
+- User browser to public reverse proxy/API.
+- API to PostgreSQL, Redis, and object storage on the private container network.
+- Untrusted player networks to the public API and media endpoint.
+- CI and administrators to deployment infrastructure and signing secrets.
+- Uploaded content crossing into object storage and player renderers.
+
+## Principal threats and controls
+
+| Threat                        | Impact                      | Required control                                                                                                                     |
+| ----------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Credential theft              | Account/device takeover     | MFA/SSO before production, short user sessions, unique revocable device tokens, secret redaction                                     |
+| Cross-tenant access           | Data or screen compromise   | Organization scoping in every query, negative authorization tests, server-generated object keys                                      |
+| Pairing-code guessing         | Rogue device enrollment     | Short expiry, one-time atomic use, hash at rest, attempt and source rate limits                                                      |
+| Manifest or media tampering   | Unapproved display content  | TLS, canonical manifest signature, SHA-256 asset checks, atomic activation                                                           |
+| Malicious upload              | Player/browser compromise   | Type sniffing, size limits, malware scan, image/video transcoding, reject active HTML by default                                     |
+| Stored XSS/template injection | Admin session compromise    | Output encoding, sanitized templates, CSP, no arbitrary scripts, isolated web content                                                |
+| SSRF from URL content         | Internal service access     | URL allowlist, DNS/IP revalidation, block private/link-local networks, fetch proxy limits                                            |
+| Emergency misuse              | Panic or unsafe instruction | Separate permission, clear scope/expiry, re-authentication and two-person approval in production, immutable audit                    |
+| Replay/forged commands        | Fleet disruption            | Commands disabled in prototype; require signed expiring IDs, replay cache, authorization, and allowlisted handlers before enablement |
+| Denial of service             | Console/API outage          | Request/body limits, rate limits, backoff/jitter, quotas, cached playback                                                            |
+| Dependency/build compromise   | Supply-chain execution      | lockfile, protected branches, dependency review, CodeQL, secret scan, image scan, signed artifacts/SBOM before production            |
+| Database/object loss          | Lost schedules/media/audit  | Encrypted versioned backups, restore drills, retention and off-host copies                                                           |
+| Screenshot privacy leak       | Unintended personal data    | Role-gate, audit, short retention, encryption, disable per location where required                                                   |
+
+## Container posture
+
+Only ports 80/443 are published. Data services use an internal network. Application/static containers run read-only with dropped Linux capabilities and `no-new-privileges`; persistent data uses named volumes. Secrets are injected at runtime and must move from an environment file to a secret manager for production. Pin images by digest and generate an SBOM for release candidates.
+
+## Security validation gate
+
+Before production, complete authentication/authorization tests, upload fuzzing, dependency and container scanning, restore testing, TLS validation, player downgrade/rollback testing, external penetration testing, and an emergency-workflow tabletop exercise. Track accepted risk with an owner and review date.
