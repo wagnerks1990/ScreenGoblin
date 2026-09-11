@@ -108,6 +108,9 @@ jobs:
       S3_PUBLIC_BASE_URL: https://signage.example.test/media
       SEED_ADMIN_EMAIL: admin@screengoblin.example.test
       SEED_ADMIN_PASSWORD: ci-only-seed-password
+      SEED_ADMIN_NAME: CI Administrator
+      SEED_ORGANIZATION_NAME: ScreenGoblin CI
+      SEED_ORGANIZATION_SLUG: screengoblin-ci
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: docker compose config --quiet
