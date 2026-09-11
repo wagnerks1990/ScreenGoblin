@@ -45,6 +45,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   object-storage recovery, and retained-image rollback workflows. Evidence is
   explicitly unsigned until protected production signing is implemented.
 - Use MinIO's official Quay registry for the pinned server and client images.
+- Apply available Debian security updates and remove unused npm/Corepack tooling
+  from the final API runtime image.
 
 ## 0.1.0 — 2026-09-11
 
