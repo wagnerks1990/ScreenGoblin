@@ -3,9 +3,11 @@ WORKDIR /app
 ARG VITE_API_BASE_URL=/api/v1
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 COPY package.json package-lock.json* tsconfig.base.json ./
+COPY packages/brand/package.json ./packages/brand/
 COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages/contracts/
 COPY apps/console/package.json apps/console/tsconfig*.json ./apps/console/
 RUN npm ci
+COPY packages/brand ./packages/brand
 COPY packages/contracts ./packages/contracts
 COPY apps/console ./apps/console
 RUN npm run build -w @screengoblin/contracts && npm run build -w @screengoblin/console
