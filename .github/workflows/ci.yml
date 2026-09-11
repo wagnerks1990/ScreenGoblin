@@ -104,6 +104,8 @@ jobs:
       S3_ACCESS_KEY_ID: ci-api
       S3_SECRET_ACCESS_KEY: ci-only-api-storage-password
       S3_PUBLIC_BASE_URL: https://signage.example.test/media
+      SEED_ADMIN_EMAIL: admin@screengoblin.example.test
+      SEED_ADMIN_PASSWORD: ci-only-seed-password
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: docker compose config --quiet
