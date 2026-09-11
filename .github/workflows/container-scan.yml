@@ -22,15 +22,25 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: aquasecurity/trivy-action@dc5a429b52fcf669ce959baa2c2dd26090d2a6c4 # v0.32.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+      # The upstream composite action contains tag-based nested actions, which
+      # violate this repository's full-SHA Actions policy. Install the immutable
+      # upstream release asset directly and verify its published SHA-256 digest.
+      - name: Install Trivy 0.74.0
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$RUNNER_TEMP/trivy.tar.gz" \
+            https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+          echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
+          tar --extract --gzip --file "$RUNNER_TEMP/trivy.tar.gz" --directory "$RUNNER_TEMP" trivy
+      - name: Scan repository
+        run: |
+          "$RUNNER_TEMP/trivy" fs \
+            --format sarif \
+            --output trivy-results.sarif \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            .
       - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3
         if: always()
         with:
