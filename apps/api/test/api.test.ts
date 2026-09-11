@@ -3,6 +3,7 @@ import { hash } from "bcryptjs";
 import { buildApp } from "../src/app.js";
 import { MemoryStore } from "../src/store/memory.js";
 import type { FastifyInstance } from "fastify";
+import { MemoryRateLimitBudget } from "../src/utils/rate-limit.js";
 
 const secret = "test-secret-that-is-longer-than-thirty-two-characters";
 const signingKey = Buffer.alloc(32, 7).toString("base64url");
@@ -45,10 +46,56 @@ beforeEach(async () => {
 
 describe("health and error contract", () => {
   it("reports liveness and readiness", async () => {
-    expect((await app.inject({ url: "/health/live" })).statusCode).toBe(200);
-    expect((await app.inject({ url: "/health/ready" })).json()).toEqual({
-      status: "ready",
+    const live = await app.inject({ url: "/health/live" });
+    const ready = await app.inject({ url: "/health/ready" });
+    expect(live.statusCode).toBe(204);
+    expect(ready.statusCode).toBe(204);
+    expect(live.body).toBe("");
+    expect(ready.body).toBe("");
+    expect(live.headers["cache-control"]).toBe("no-store");
+    expect(ready.headers["cache-control"]).toBe("no-store");
+  });
+  it("does not identify the dependency that failed readiness", async () => {
+    store.ping = async () => {
+      throw new Error("sensitive database detail");
+    };
+    const ready = await app.inject({ url: "/health/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.body).toBe("");
+    expect(ready.body).not.toContain("database");
+  });
+  it("requires Redis when production request protection is enabled", async () => {
+    await expect(
+      buildApp({
+        store,
+        jwtSecret: secret,
+        manifestSigningPrivateKey: signingKey,
+        pairingCodePepper: secret,
+        requireRedis: true,
+      }),
+    ).rejects.toThrow("Redis is required");
+  });
+  it("includes Redis in readiness without exposing its failure", async () => {
+    const redis = {
+      defineCommand(name: string) {
+        Object.assign(this, { [name]: () => undefined });
+      },
+      ping: async () => {
+        throw new Error("sensitive redis detail");
+      },
+    };
+    const redisApp = await buildApp({
+      store,
+      jwtSecret: secret,
+      manifestSigningPrivateKey: signingKey,
+      pairingCodePepper: secret,
+      redis: redis as never,
+      rateLimitBudget: new MemoryRateLimitBudget(),
     });
+    const ready = await redisApp.inject({ url: "/health/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.body).toBe("");
+    await redisApp.close();
   });
   it("returns safe validation errors", async () => {
     const r = await app.inject({
@@ -74,6 +121,32 @@ describe("authentication and organization RBAC", () => {
     expect(r.statusCode).toBe(200);
     expect(r.json().accessToken).toBeTypeOf("string");
     expect(r.body).not.toContain("passwordHash");
+  });
+  it("limits login attempts for the same normalized account", async () => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: {
+          email:
+            attempt % 2 === 0
+              ? "MISSING@EXAMPLE.TEST"
+              : " missing@example.test ",
+          password: "incorrect password",
+        },
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: {
+        email: "missing@example.test",
+        password: "incorrect password",
+      },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json().error.code).toBe("RATE_LIMITED");
   });
   it("denies a viewer mutation", async () => {
     const viewer = app.jwt.sign({
@@ -160,6 +233,38 @@ describe("authentication and organization RBAC", () => {
 });
 
 describe("device lifecycle", () => {
+  it("limits repeated guesses of the same pairing code", async () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/device/pair",
+        payload: {
+          code: "123456",
+          device: {
+            installationId: `installation-${attempt}`,
+            model: "Test player",
+            osVersion: "14",
+            playerVersion: "0.1.0",
+          },
+        },
+      });
+      expect(response.statusCode).toBe(404);
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/pair",
+      payload: {
+        code: "123456",
+        device: {
+          installationId: "installation-final",
+          model: "Test player",
+          osVersion: "14",
+          playerVersion: "0.1.0",
+        },
+      },
+    });
+    expect(limited.statusCode).toBe(429);
+  });
   it("pairs, heartbeats, and receives a signed offline-safe manifest", async () => {
     const code = (
       await app.inject({

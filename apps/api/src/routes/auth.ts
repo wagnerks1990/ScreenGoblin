@@ -2,6 +2,10 @@ import type { FastifyPluginAsync } from "fastify";
 import { compare } from "bcryptjs";
 import { z } from "zod";
 import { ApiError } from "../utils/http.js";
+import {
+  enforceRateLimitBudget,
+  opaqueRateLimitKey,
+} from "../utils/rate-limit.js";
 
 // Cost-12 bcrypt hash used only to equalize failed-login work when the account
 // does not exist. It is not a credential for any ScreenGoblin account.
@@ -9,12 +13,49 @@ const DUMMY_PASSWORD_HASH =
   "$2b$12$C6UzMDM.H6dfI/f/IKcEe.82jG7y4g4AY8I8HibLFSWafVkx8S4hS";
 
 const loginSchema = z
-  .object({ email: z.email().max(254), password: z.string().min(8).max(200) })
+  .object({
+    email: z
+      .string()
+      .transform((value) => value.trim().toLowerCase())
+      .pipe(z.email().max(254)),
+    password: z.string().min(8).max(200),
+  })
   .strict();
 export const authRoutes: FastifyPluginAsync = async (app) => {
   app.post(
     "/auth/login",
-    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: "1 minute",
+          keyGenerator: (request) =>
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "login-source",
+              request.ip,
+            ),
+        },
+      },
+      preHandler: async (request) => {
+        const email =
+          typeof request.body === "object" &&
+          request.body !== null &&
+          "email" in request.body &&
+          typeof request.body.email === "string"
+            ? request.body.email.trim().toLowerCase()
+            : "invalid";
+        await enforceRateLimitBudget(
+          app.rateLimitBudget,
+          opaqueRateLimitKey(
+            app.config.pairingCodePepper,
+            "login-account",
+            email,
+          ),
+          10,
+        );
+      },
+    },
     async (request) => {
       const input = loginSchema.parse(request.body);
       const user = await app.store.findUserByEmail(input.email);

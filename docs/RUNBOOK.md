@@ -36,20 +36,34 @@ Logs must carry a request ID and must not contain passwords, JWTs, device tokens
 
 Back up to encrypted off-host storage. Keep database and object-store backups from a consistent release window. Redis is not authoritative.
 
-Database backup example:
+Create a checksum-bound PostgreSQL custom-format dump without overwriting an existing backup:
 
 ```bash
-docker compose --env-file deploy/.env exec -T postgres \
-  pg_dump --format=custom --no-owner --username "$POSTGRES_USER" "$POSTGRES_DB" > screengoblin.dump
+SCREENGOBLIN_ENV_FILE=deploy/.env \
+POSTGRES_BACKUP_DIR=/path/to/encrypted/off-host/staging \
+deploy/scripts/postgres-backup.sh
 ```
 
-The shell environment running that example must contain the same variables as `deploy/.env`. Never place backups in the web root. Test restoration into an isolated environment at least quarterly and verify a sample manifest can be reconstructed with its media.
+The script writes a restrictive-permission dump and adjacent `.sha256`, refuses collisions, and verifies the checksum. Never place backups in the web root. Move both files to encrypted off-host storage using an independently monitored job.
+
+Restore into the safe default `screengoblin_restore_validation` database:
+
+```bash
+SCREENGOBLIN_ENV_FILE=deploy/.env \
+deploy/scripts/postgres-restore.sh /path/to/screengoblin-TIMESTAMP.dump
+```
+
+The restore requires the adjacent checksum and refuses to replace any existing database by default. Restoring into a protected database requires the explicit `ALLOW_DANGEROUS_RESTORE=I_UNDERSTAND_THIS_CAN_DESTROY_DATA` acknowledgement; replacing an existing database separately requires `ALLOW_EXISTING_RESTORE_DATABASE=I_UNDERSTAND_THIS_OVERWRITES_A_DATABASE`. Take a fresh backup, stop writers, and obtain the operational approval required by local policy before either override. Do not use an override for routine validation.
+
+Object storage needs a matching versioned backup and integrity inventory; the PostgreSQL scripts do not back up MinIO. Test restoration into an isolated environment at least quarterly and verify a sample manifest can be reconstructed with its media. `.github/workflows/recovery-drill.yml` exercises disposable PostgreSQL dump/restore, MinIO object delete/restore/byte comparison, and retained-image rollback monthly and when its implementation changes. It pulls exact fixture tags once, records their resolved repository digests, and uses those immutable digests with `--pull never` during the drill. Runtime fixture resolution is test evidence, not production provenance. Passing CI is development evidence, not proof that off-site production backups, credentials, RPO, or RTO work.
 
 ## Roll back
 
 Application rollback is safe only when the old application supports the migrated schema. Prefer forward-compatible, expand/migrate/contract database changes. Redeploy the prior image tag, verify readiness, and document the incident. Do not automatically reverse a destructive migration; restore the verified backup when required.
 
 Players retain a last-known-good manifest and should be released in rings: development, lab, pilot site, then broad fleet. Stop rollout when crash rate, fallback state, or heartbeat loss exceeds the agreed threshold.
+
+The release-evidence workflow retains checksum-bound local Docker archives for tags/manual runs, but those artifacts are explicitly unsigned and are not production releases. A production rollback must use an approved, signed, immutable registry digest whose schema compatibility and retention have been verified. See `docs/RELEASE_EVIDENCE.md`.
 
 ## Incident priorities
 

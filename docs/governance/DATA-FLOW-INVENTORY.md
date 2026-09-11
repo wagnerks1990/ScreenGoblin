@@ -1,0 +1,52 @@
+# Data-flow inventory
+
+## Status
+
+**Draft — unapproved. This document does not authorize production or PII use.** Validate it against the deployed configuration, vendors, contracts, and network design before any pilot. The approved pilot profile remains non-PII and non-life-safety only.
+
+## Data classification
+
+| Class                       | Examples                                                                                   | Pilot rule                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| Public content              | Approved signage images, videos, public event copy                                         | Allowed after human publishing review                                                  |
+| Operational                 | Screen name, location label, player version, heartbeat, storage, network type              | Allowed when minimized; treat as internal                                              |
+| Security                    | Password hashes, session/device credentials, signing material, audit records, IP addresses | Restricted; never expose in UI, logs, URLs, or exports without an approved need        |
+| Personal information        | Names, email addresses, IP addresses when linkable to a person                             | Staff account minimum only; approval and notice required                               |
+| Student/visitor information | Student names, images, identifiers, schedules, behavior, attendance, demographics          | Prohibited in the pilot                                                                |
+| Secrets                     | JWT/signing keys, database and object-store credentials, pairing pepper                    | Secret manager only; never content, source control, telemetry, or backup documentation |
+
+## System inventory
+
+| Component          | Receives                                                 | Stores                                            | Sends                                             | Boundary and current gap                                                                                                   |
+| ------------------ | -------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Console browser    | Staff credentials, content metadata, operational state   | In-memory access token and UI state               | TLS API requests                                  | Production SSO/MFA and scoped authorization are not implemented                                                            |
+| Control-plane API  | Auth, publishing metadata, enrollment, heartbeat         | PostgreSQL records and audit events               | Database, Redis, object storage, signed manifests | Upload security, immutable releases, complete transactional audit, and server-side device proof of possession remain gates |
+| PostgreSQL         | Accounts, memberships, screens, schedules, audit records | Authoritative control-plane data                  | API query results and backups                     | Tenant-safe composite constraints and approved retention jobs remain gates                                                 |
+| Redis              | Rate-limit and ephemeral coordination state              | Non-authoritative short-lived keys                | API decisions                                     | Production requires private networking, authentication where supported, and monitored availability                         |
+| Object storage     | Approved media objects and metadata                      | Media and backup objects                          | Immutable media delivery and backup restore       | Upload scanning/private delivery and approved lifecycle rules remain gates                                                 |
+| Reverse proxy      | TLS requests and limited connection metadata             | Access logs according to deployment policy        | API/static responses                              | Logs must redact credentials and follow approved retention                                                                 |
+| Player             | Pairing material, manifests, media                       | Device identity, active and last-known-good media | Pairing, heartbeat, manifest polling              | Native proof of possession, verified erasure, and physical-device validation remain gates                                  |
+| CI/release systems | Source, test results, image metadata                     | Logs, SBOMs, scan and build artifacts             | Images and evidence artifacts                     | Production signing, provenance, protected environments, and retention approvals remain gates                               |
+
+## Expected flows
+
+1. **Staff authentication:** browser → reverse proxy → API → PostgreSQL. Passwords are used only for verification and must never enter logs. Tokens are returned only to the authenticated browser.
+2. **Content preparation:** browser → API → metadata store/object storage. The current prototype does not implement a production-safe binary upload pipeline.
+3. **Publish and assignment:** authorized user → API → immutable release records → audit transaction. This is a target flow; the immutable release and approval records are not implemented.
+4. **Device enrollment:** player → API with short-lived pairing code and device identity → PostgreSQL. Bearer credentials are transitional; server-verified asymmetric proof of possession remains incomplete.
+5. **Playback delivery:** player → API for a screen-bound signed manifest → immutable media origin. The player verifies the signature and asset hashes before activation and retains last-known-good content.
+6. **Telemetry:** player → API → PostgreSQL/monitoring. Collect operational health only; no camera, microphone, audience analytics, demographic inference, or nearby-device tracking.
+7. **Backup and recovery:** PostgreSQL/object storage → encrypted off-host backup → isolated restoration. Production storage, key custody, and restore evidence are not approved.
+
+## Third parties and transfers
+
+No third-party processor, subprocessors, analytics provider, crash reporter, CDN, AI provider, or external monitoring service is approved by this draft. Before enabling one, record its purpose, fields, region, retention, deletion process, contract/DPA, breach terms, access model, and owner. AI must never receive secrets, device credentials, private infrastructure details, student information, or unpublished sensitive content.
+
+## Validation and approval record
+
+| Required review                       | Owner | Evidence                     | Status                         |
+| ------------------------------------- | ----- | ---------------------------- | ------------------------------ |
+| Architecture and actual network paths | TBD   | Diagram/config review        | **NO-GO — not reviewed**       |
+| Privacy and data classification       | TBD   | Privacy decision record      | **NO-GO — not approved**       |
+| Security controls and threat model    | TBD   | Security assessment          | **NO-GO — not approved**       |
+| Vendors/subprocessors and contracts   | TBD   | Approved register/agreements | **NO-GO — none approved here** |

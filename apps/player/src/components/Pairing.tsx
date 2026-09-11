@@ -44,7 +44,14 @@ export function Pairing({ installationId, defaultApiUrl, onPaired }: Props) {
 
   return (
     <main className="pairing-shell">
-      <section className="pairing-card" aria-live="polite">
+      <form
+        className="pairing-card"
+        aria-live="polite"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void connect();
+        }}
+      >
         <img
           className="pairing-logo"
           src="/brand/logo.png"
@@ -78,14 +85,18 @@ export function Pairing({ installationId, defaultApiUrl, onPaired }: Props) {
           />
         </label>
         <button
-          onClick={connect}
+          type="submit"
           disabled={working || !secureServerAddress || !/^\d{6}$/.test(code)}
         >
           {working ? "Connecting…" : "Connect screen"}
         </button>
-        {error && <p className="error">{error}</p>}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
         <footer>Player ID {installationId.slice(0, 8).toUpperCase()}</footer>
-      </section>
+      </form>
     </main>
   );
 }

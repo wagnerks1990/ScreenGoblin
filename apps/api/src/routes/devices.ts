@@ -11,6 +11,10 @@ import {
 } from "../utils/crypto.js";
 import { opaqueId } from "../utils/validation.js";
 import { compareSchedulePrecedence } from "../utils/schedule.js";
+import {
+  enforceRateLimitBudget,
+  opaqueRateLimitKey,
+} from "../utils/rate-limit.js";
 
 const claim = z
   .object({
@@ -40,34 +44,109 @@ const heartbeat = z
 
 export const pairingAdminRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
-  app.post("/pairing-codes", async (request, reply) => {
-    requireRole(request, ["OWNER", "ADMIN"]);
-    const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
-    const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-    const pairing = await app.store.createPairing(
-      request.user.organizationId,
-      pairingCodeHash(code, app.config.pairingCodePepper),
-      expiresAt,
-    );
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "pairing.created",
-      entityType: "pairing",
-      entityId: pairing.id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: { expiresAt },
-    });
-    return reply.code(201).send({ code, expiresAt });
-  });
+  app.post(
+    "/pairing-codes",
+    {
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: "1 minute",
+          keyGenerator: (request) =>
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "pairing-create-source",
+              request.ip,
+            ),
+        },
+      },
+      preHandler: async (request) => {
+        requireRole(request, ["OWNER", "ADMIN"]);
+        await Promise.all([
+          enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "pairing-create-org",
+              request.user.organizationId,
+            ),
+            20,
+          ),
+          enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "pairing-create-operator",
+              request.user.sub,
+            ),
+            10,
+          ),
+        ]);
+      },
+    },
+    async (request, reply) => {
+      const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+      const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+      const pairing = await app.store.createPairing(
+        request.user.organizationId,
+        pairingCodeHash(code, app.config.pairingCodePepper),
+        expiresAt,
+      );
+      await app.store.audit({
+        organizationId: request.user.organizationId,
+        actorUserId: request.user.sub,
+        actorType: "user",
+        action: "pairing.created",
+        entityType: "pairing",
+        entityId: pairing.id,
+        ipAddress: request.ip,
+        requestId: request.id,
+        metadata: { expiresAt },
+      });
+      return reply.code(201).send({ code, expiresAt });
+    },
+  );
 };
 
 export const deviceRoutes: FastifyPluginAsync = async (app) => {
+  const sourceBudget =
+    (dimension: string, maximum: number) =>
+    async (request: Parameters<typeof app.authenticateDevice>[0]) =>
+      enforceRateLimitBudget(
+        app.rateLimitBudget,
+        opaqueRateLimitKey(app.config.pairingCodePepper, dimension, request.ip),
+        maximum,
+      );
+
   app.post(
     "/pair",
-    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: "1 minute",
+          keyGenerator: (request) =>
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "pair-source",
+              request.ip,
+            ),
+        },
+      },
+      preHandler: async (request) => {
+        const code =
+          typeof request.body === "object" &&
+          request.body !== null &&
+          "code" in request.body &&
+          typeof request.body.code === "string"
+            ? request.body.code
+            : "invalid";
+        await enforceRateLimitBudget(
+          app.rateLimitBudget,
+          opaqueRateLimitKey(app.config.pairingCodePepper, "pair-code", code),
+          5,
+        );
+      },
+    },
     async (request, reply) => {
       const input = claim.parse(request.body);
       const token = randomToken();
@@ -107,7 +186,20 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
   );
   app.post(
     "/heartbeat",
-    { onRequest: [app.authenticateDevice] },
+    {
+      onRequest: [sourceBudget("heartbeat-source", 60), app.authenticateDevice],
+      config: { rateLimit: false },
+      preHandler: async (request) =>
+        enforceRateLimitBudget(
+          app.rateLimitBudget,
+          opaqueRateLimitKey(
+            app.config.pairingCodePepper,
+            "heartbeat-device",
+            request.device!.id,
+          ),
+          30,
+        ),
+    },
     async (request) => {
       const input = heartbeat.parse(request.body);
       if (input.installationId !== request.device?.installationId)
@@ -126,7 +218,20 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
   );
   app.get(
     "/manifest",
-    { onRequest: [app.authenticateDevice] },
+    {
+      onRequest: [sourceBudget("manifest-source", 120), app.authenticateDevice],
+      config: { rateLimit: false },
+      preHandler: async (request) =>
+        enforceRateLimitBudget(
+          app.rateLimitBudget,
+          opaqueRateLimitKey(
+            app.config.pairingCodePepper,
+            "manifest-device",
+            request.device!.id,
+          ),
+          60,
+        ),
+    },
     async (request) => {
       const screen = request.device!;
       const generatedAt = new Date().toISOString();

@@ -16,32 +16,70 @@ permissions:
   contents: read
   security-events: write
 
+concurrency:
+  group: container-scan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  scan:
+  repository:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
       # The upstream composite action contains tag-based nested actions, which
       # violate this repository's full-SHA Actions policy. Install the immutable
       # upstream release asset directly and verify its published SHA-256 digest.
-      - name: Install Trivy 0.74.0
+      - name: Install verified Trivy 0.74.0
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
             --output "$RUNNER_TEMP/trivy.tar.gz" \
             https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
           echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
           tar --extract --gzip --file "$RUNNER_TEMP/trivy.tar.gz" --directory "$RUNNER_TEMP" trivy
-      - name: Scan repository
+      - name: Create repository SARIF
         run: |
           "$RUNNER_TEMP/trivy" fs \
             --format sarif \
-            --output trivy-results.sarif \
+            --output trivy-repository.sarif \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
-            --exit-code 1 \
             .
+      - name: Block unresolved high and critical findings
+        run: |
+          "$RUNNER_TEMP/trivy" fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed .
       - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3
-        if: always()
+        if: always() && hashFiles('trivy-repository.sarif') != ''
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: trivy-repository.sarif
+          category: trivy-repository
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - name: Install verified Trivy 0.74.0
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$RUNNER_TEMP/trivy.tar.gz" \
+            https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+          echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
+          tar --extract --gzip --file "$RUNNER_TEMP/trivy.tar.gz" --directory "$RUNNER_TEMP" trivy
+      - name: Build final images, SBOMs, SARIF, and enforce findings
+        env:
+          RELEASE_EVIDENCE_DIR: container-scan-evidence
+          RELEASE_EVIDENCE_ID: ${{ github.sha }}
+          TRIVY_BIN: ${{ runner.temp }}/trivy
+        run: deploy/scripts/build-release-evidence.sh
+      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.17
+        if: always() && hashFiles('container-scan-evidence/sarif/*.sarif') != ''
+        with:
+          sarif_file: container-scan-evidence/sarif
+          category: trivy-final-images
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && hashFiles('container-scan-evidence/**') != ''
+        with:
+          name: container-scan-evidence
+          path: container-scan-evidence
+          if-no-files-found: error
+          retention-days: 14

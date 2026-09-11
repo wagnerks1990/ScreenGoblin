@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Add the Android Keystore P-256 device-identity foundation with StrongBox
+  preference, public-key fingerprint installation IDs for new Android installs,
+  and domain-separated challenge signing. Server-side enrollment and proof
+  verification remain a release gate.
+- Require a reachable Redis backend in production and apply fail-closed,
+  distributed, HMAC-keyed login, pairing, heartbeat, and manifest budgets.
 - Replace shared-secret manifest MACs with Ed25519 signatures verified by the player using a public key pinned during enrollment.
 - Revalidate users, memberships, and roles on authenticated requests so disablement or role changes revoke existing tokens immediately.
 - Remove device credential verifier hashes from management responses.
@@ -19,6 +25,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Fixed
 
+- Make Console login and Player pairing keyboard-submittable, restore focus
+  after accessible dialogs close, announce operational player states, and clear
+  the complete Console session after unauthorized mutations.
 - Preserve the last verified normal manifest across repeated emergency polls, early clear, expiry, reboot, and later playback rollback.
 - Make emergency manifest versions and durations stable across polling.
 - Stop authenticated Console failures from silently displaying demo fleet data.
@@ -30,6 +39,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 - Replace automatic demo seeding with an explicit one-time bootstrap profile that refuses placeholders and never resets an existing owner password or grants unexpected privileges.
 - Add contributor/agent invariants and AI safety context.
+- Add explicit NO-GO governance templates for data flows, the non-PII pilot profile, retention/deletion, required approvals, incident response, SLOs, release evidence, and supported-device validation.
+- Document the compatibility-oriented design for scoped capabilities, tenant-safe database constraints, immutable releases and approvals, transactional audit/outbox writes, and staged authorization enforcement.
+- Add reproducible image-scan, SBOM, release-evidence, PostgreSQL backup/restore,
+  object-storage recovery, and retained-image rollback workflows. Evidence is
+  explicitly unsigned until protected production signing is implemented.
 
 ## 0.1.0 — 2026-09-11
 

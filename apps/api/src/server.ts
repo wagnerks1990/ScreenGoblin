@@ -1,7 +1,28 @@
 import "dotenv/config";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { Redis } from "ioredis";
 const config = loadConfig();
+const redis = config.REDIS_URL
+  ? new Redis(config.REDIS_URL, {
+      lazyConnect: true,
+      connectTimeout: 2_000,
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+    })
+  : undefined;
+if (redis) {
+  redis.on("error", () => {
+    console.error("Redis request-protection connection error");
+  });
+  try {
+    await redis.connect();
+    await redis.ping();
+  } catch {
+    redis.disconnect();
+    throw new Error("Redis request-protection backend is unavailable");
+  }
+}
 const app = await buildApp({
   jwtSecret: config.JWT_SECRET,
   manifestSigningPrivateKey: config.MANIFEST_SIGNING_PRIVATE_KEY,
@@ -21,6 +42,9 @@ const app = await buildApp({
       : config.TRUST_PROXY_RANGES.split(",")
           .map((value) => value.trim())
           .filter(Boolean),
+  ...(redis ? { redis } : {}),
+  requireRedis: config.NODE_ENV === "production",
+  closeRedisOnClose: true,
 });
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

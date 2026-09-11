@@ -33,6 +33,62 @@ describe("authenticated live data boundary", () => {
     expect(api.currentUser()).toBeUndefined();
   });
 
+  it("clears the complete browser session after an unauthorized mutation", async () => {
+    window.sessionStorage.setItem("sg_access_token", "expired-token");
+    window.sessionStorage.setItem(
+      "sg_session_user",
+      JSON.stringify({
+        name: "Administrator",
+        email: "admin@example.test",
+        role: "ADMIN",
+        organizationId: "org-a",
+      }),
+    );
+    const changed = vi.fn();
+    window.addEventListener("screengoblin:session-changed", changed, {
+      once: true,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: { message: "Unauthorized" } }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(api.createPairingCode()).rejects.toThrow("Unauthorized");
+    expect(api.hasLiveSession()).toBe(false);
+    expect(api.currentUser()).toBeUndefined();
+    expect(changed).toHaveBeenCalledOnce();
+  });
+
+  it("stores a successful live login for the active browser tab", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            accessToken: "live-token",
+            user: {
+              name: "Operator",
+              email: "operator@example.test",
+              role: "ADMIN",
+              organizationId: "org-a",
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await api.login("operator@example.test", "valid-password");
+
+    expect(api.hasLiveSession()).toBe(true);
+    expect(api.currentUser()?.email).toBe("operator@example.test");
+  });
+
   it("uses demonstration data only when no live session was requested", async () => {
     const result = await api.screens();
     expect(result.source).toBe("demo");

@@ -4,7 +4,7 @@ Fastify/TypeScript control-plane API for the ScreenGoblin pre-production prototy
 
 ## Run locally
 
-Requires Node 22+ and PostgreSQL 17+.
+Requires Node 22+, PostgreSQL 17+, and Redis 7+.
 
 ```bash
 cp apps/api/.env.example apps/api/.env
@@ -15,7 +15,7 @@ npm run prisma:seed -w @screengoblin/api
 npm run dev -w @screengoblin/api
 ```
 
-The API listens on port `3000` by default. Replace both secrets and the seeded password before exposing the service. `/health/live` verifies the process; `/health/ready` also checks PostgreSQL.
+The API listens on port `3000` by default. Replace both secrets and the seeded password before exposing the service. `/health/live` returns an empty `204` when the process is alive. The internal-only `/health/ready` returns an empty `204` only when PostgreSQL and the production Redis request-protection backend are reachable; failures return an empty `503` without identifying the failed dependency.
 
 ## API surface
 
@@ -43,7 +43,7 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
 - OWNER/ADMIN control screens and emergency takeovers; PUBLISHER may manage ordinary content and schedules; VIEWER is read-only.
 - Emergency publishing is supplemental—not a life-safety or mass-notification system—and is disabled by default. Set `EMERGENCY_FEATURE_ENABLED=true` only after local policy, authorization, failover, and end-to-end device acknowledgment have been validated.
 - Database queries include organization scope. Public screen responses explicitly exclude device verifier hashes. Device tokens are SHA-256 hashed and short pairing codes use a deployment-specific HMAC pepper at rest; native non-exportable device identity and durable distributed pairing-attempt budgets remain release gates.
-- Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled.
+- Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
 - Media upload/transcoding and object-storage presigning are intentionally adapter boundaries. This prototype stores validated metadata only.
 
 ## Validation

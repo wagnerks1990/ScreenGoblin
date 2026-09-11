@@ -4,6 +4,7 @@ import { loadConfig } from "../src/config.js";
 const base = {
   NODE_ENV: "production",
   DATABASE_URL: "postgresql://example.invalid/screengoblin",
+  REDIS_URL: "redis://redis.example.test:6379/0",
   JWT_SECRET: "jwt-secret-that-is-at-least-thirty-two-characters",
   PAIRING_CODE_PEPPER: "pairing-pepper-that-is-at-least-thirty-two-characters",
   MANIFEST_SIGNING_PRIVATE_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -30,5 +31,12 @@ describe("production configuration", () => {
     expect(loadConfig(base).PUBLIC_API_URL).toBe(
       "https://signage.example.test",
     );
+  });
+
+  it("requires a Redis request-protection backend in production", () => {
+    expect(() => loadConfig({ ...base, REDIS_URL: "" })).toThrow();
+    expect(() =>
+      loadConfig({ ...base, REDIS_URL: "https://example.test" }),
+    ).toThrow();
   });
 });
