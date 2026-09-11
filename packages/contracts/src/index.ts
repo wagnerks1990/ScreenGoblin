@@ -30,6 +30,7 @@ export interface PlaybackManifest {
   screenId: string;
   priority: SchedulePriority;
   items: PlaylistItem[];
+  signatureAlgorithm: "Ed25519";
   signature: string;
 }
 
@@ -61,6 +62,7 @@ export interface PairingResponse {
   deviceToken: string;
   apiBaseUrl: string;
   heartbeatIntervalSeconds: number;
+  manifestVerificationKey: string;
 }
 
 export interface HeartbeatRequest {

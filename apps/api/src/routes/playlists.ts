@@ -56,6 +56,17 @@ export const playlistRoutes: FastifyPluginAsync = async (app) => {
       ...input,
       items: input.items.map((i) => ({ id: "", ...i })),
     });
+    await app.store.audit({
+      organizationId: request.user.organizationId,
+      actorUserId: request.user.sub,
+      actorType: "user",
+      action: "playlist.created",
+      entityType: "playlist",
+      entityId: x.id,
+      ipAddress: request.ip,
+      requestId: request.id,
+      metadata: { itemCount: x.items.length },
+    });
     return reply.code(201).send(x);
   });
   app.delete("/playlists/:id", async (request, reply) => {
@@ -63,6 +74,17 @@ export const playlistRoutes: FastifyPluginAsync = async (app) => {
     const { id } = params.parse(request.params);
     if (!(await app.store.deletePlaylist(request.user.organizationId, id)))
       return sendNotFound(reply);
+    await app.store.audit({
+      organizationId: request.user.organizationId,
+      actorUserId: request.user.sub,
+      actorType: "user",
+      action: "playlist.deleted",
+      entityType: "playlist",
+      entityId: id,
+      ipAddress: request.ip,
+      requestId: request.id,
+      metadata: {},
+    });
     return reply.code(204).send();
   });
 };

@@ -1,25 +1,57 @@
 :root {
-  font-family: Inter, Arial, sans-serif;
-  color: #e7edf5;
-  background: #08111f;
+  font-family: var(--sg-font);
+  color: var(--sg-text);
+  background: var(--sg-midnight);
   font-synthesis: none;
-  --green: #7cfc00;
-  --green-2: #22c55e;
-  --midnight: #0f172a;
-  --slate: #334155;
-  --light: #f8fafc;
-  --amber: #f59e0b;
-  --red: #f05b67;
-  --blue: #4fa7ff;
+  --green: var(--sg-green);
+  --green-2: var(--sg-green-secondary);
+  --midnight: var(--sg-midnight);
+  --slate: var(--sg-slate);
+  --light: var(--sg-light);
+  --amber: var(--sg-highlight);
+  --red: var(--sg-danger);
+  --blue: var(--sg-info);
   --violet: #9b87f5;
-  --panel: #101e2e;
-  --panel-2: #142537;
-  --border: #26384b;
-  --muted: #91a2b6;
-  --radius: 14px;
+  --panel: var(--sg-surface);
+  --panel-2: var(--sg-surface-raised);
+  --border: var(--sg-border);
+  --muted: var(--sg-text-muted);
+  --text-muted: var(--sg-text-muted);
+  --radius: var(--sg-radius-lg);
   line-height: 1.5;
   font-weight: 400;
   color-scheme: dark;
+}
+
+.operational-error {
+  display: flex;
+  gap: 0.75rem;
+  margin: 0 1.5rem 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #ef4444;
+  border-radius: 0.75rem;
+  background: #3f151b;
+  color: #fff;
+}
+
+.data-source-label {
+  margin: -0.75rem 1.5rem 1rem;
+  color: var(--text-muted, #a8b6c7);
+  font-size: 0.8rem;
+}
+
+.command-grid button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.asset-info,
+.playlist-info,
+.playlist-foot,
+.attention-copy,
+.tag-row {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 * {
   box-sizing: border-box;

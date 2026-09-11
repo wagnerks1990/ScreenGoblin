@@ -17,32 +17,62 @@ import { activity, demoFleet, screens as fallbackScreens } from "../data";
 import { Button, PageHeader, Panel, Preview, Status } from "../components";
 import { Link } from "react-router-dom";
 
-export function Dashboard({ onCreate }: { onCreate: () => void }) {
+export function Dashboard({
+  onCreate,
+  canCreate,
+}: {
+  onCreate: () => void;
+  canCreate: boolean;
+}) {
   const [fleet, setFleet] = useState<FleetSummary>(demoFleet);
   const [screens, setScreens] = useState<ScreenSummary[]>(fallbackScreens);
   const [source, setSource] = useState<"live" | "demo">("demo");
+  const [loadError, setLoadError] = useState("");
   useEffect(() => {
-    void Promise.all([api.fleet(), api.screens()]).then(
-      ([fleetResult, screensResult]) => {
+    void Promise.all([api.fleet(), api.screens()])
+      .then(([fleetResult, screensResult]) => {
         setFleet(fleetResult.data);
         setScreens(screensResult.data);
+        setLoadError("");
         setSource(
           fleetResult.source === "live" && screensResult.source === "live"
             ? "live"
             : "demo",
         );
-      },
-    );
+      })
+      .catch((error: unknown) => {
+        setFleet({ total: 0, online: 0, warning: 0, offline: 0, fallback: 0 });
+        setScreens([]);
+        setSource("live");
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Live fleet data could not be loaded",
+        );
+      });
   }, []);
   const alerts = screens.filter((screen) => screen.status !== "online");
   return (
     <>
+      {loadError && (
+        <div className="operational-error" role="alert">
+          <TriangleAlert size={18} />
+          <span>
+            <b>Live data unavailable.</b> {loadError}. Displayed values are
+            stale and must not be used as current fleet status.
+          </span>
+        </div>
+      )}
       <PageHeader
         eyebrow="Friday, September 11"
-        title="Good evening, Kyle."
+        title="Screen operations overview"
         description="Here’s what’s happening across your screens."
         actions={
-          <Button onClick={onCreate} icon={<Plus size={18} />}>
+          <Button
+            disabled={!canCreate}
+            onClick={onCreate}
+            icon={<Plus size={18} />}
+          >
             Create announcement
           </Button>
         }
@@ -52,21 +82,29 @@ export function Dashboard({ onCreate }: { onCreate: () => void }) {
           icon={<MonitorCheck />}
           value={fleet.online}
           label="Screens online"
-          detail={`${Math.round((fleet.online / fleet.total) * 100)}% of fleet`}
+          detail={
+            fleet.total
+              ? `${Math.round((fleet.online / fleet.total) * 100)}% of fleet`
+              : "No current fleet data"
+          }
           tone="green"
         />
         <Metric
           icon={<Play />}
-          value="8"
+          value={source === "demo" ? "8" : "—"}
           label="Active playlists"
-          detail="Across 42 screens"
+          detail={
+            source === "demo" ? "Demonstration data" : "Not available from API"
+          }
           tone="blue"
         />
         <Metric
           icon={<CalendarClock />}
-          value="3"
+          value={source === "demo" ? "3" : "—"}
           label="Scheduled today"
-          detail="Next change at 3:00 PM"
+          detail={
+            source === "demo" ? "Demonstration data" : "Not available from API"
+          }
           tone="violet"
         />
         <Metric
@@ -131,7 +169,7 @@ export function Dashboard({ onCreate }: { onCreate: () => void }) {
               className="donut"
               style={
                 {
-                  "--percent": `${Math.round((fleet.online / fleet.total) * 100) * 3.6}deg`,
+                  "--percent": `${fleet.total ? Math.round((fleet.online / fleet.total) * 100) * 3.6 : 0}deg`,
                 } as React.CSSProperties
               }
             >
@@ -164,43 +202,49 @@ export function Dashboard({ onCreate }: { onCreate: () => void }) {
           <div className="panel-heading">
             <div>
               <h2>Playing now</h2>
-              <p>Latest confirmed screenshots</p>
+              <p>
+                {source === "demo"
+                  ? "Illustrative demonstration previews"
+                  : "Screenshot capture is not enabled in this pilot"}
+              </p>
             </div>
             <button className="text-button">
               <RefreshCw size={14} /> Refresh
             </button>
           </div>
           <div className="now-grid">
-            {screens.slice(0, 3).map((screen, index) => (
-              <article key={screen.id} className="now-card">
-                <Preview
-                  title={
-                    index === 0
-                      ? "GOOD MORNING"
-                      : index === 1
-                        ? "CLUB FAIR"
-                        : "TODAY'S MENU"
-                  }
-                  subtitle={
-                    index === 0
-                      ? "Here’s what’s happening today"
-                      : index === 1
-                        ? "Find your people · Sept 18"
-                        : "Fresh choices, every day"
-                  }
-                  tone={
-                    index === 0 ? "green" : index === 1 ? "violet" : "amber"
-                  }
-                />
-                <div>
-                  <span>
-                    <b>{screen.name}</b>
-                    <small>{screen.location}</small>
-                  </span>
-                  <Status value={screen.status} />
-                </div>
-              </article>
-            ))}
+            {screens
+              .slice(0, source === "demo" ? 3 : 0)
+              .map((screen, index) => (
+                <article key={screen.id} className="now-card">
+                  <Preview
+                    title={
+                      index === 0
+                        ? "GOOD MORNING"
+                        : index === 1
+                          ? "CLUB FAIR"
+                          : "TODAY'S MENU"
+                    }
+                    subtitle={
+                      index === 0
+                        ? "Here’s what’s happening today"
+                        : index === 1
+                          ? "Find your people · Sept 18"
+                          : "Fresh choices, every day"
+                    }
+                    tone={
+                      index === 0 ? "green" : index === 1 ? "violet" : "amber"
+                    }
+                  />
+                  <div>
+                    <span>
+                      <b>{screen.name}</b>
+                      <small>{screen.location}</small>
+                    </span>
+                    <Status value={screen.status} />
+                  </div>
+                </article>
+              ))}
           </div>
         </Panel>
         <Panel>
@@ -211,7 +255,7 @@ export function Dashboard({ onCreate }: { onCreate: () => void }) {
             </div>
           </div>
           <ol className="activity-list">
-            {activity.map((item) => (
+            {(source === "demo" ? activity : []).map((item) => (
               <li key={item.title}>
                 <span className="activity-dot" />
                 <div>
@@ -224,6 +268,9 @@ export function Dashboard({ onCreate }: { onCreate: () => void }) {
                 </time>
               </li>
             ))}
+            {source === "live" && (
+              <li>Live activity reporting is not enabled.</li>
+            )}
           </ol>
         </Panel>
       </div>

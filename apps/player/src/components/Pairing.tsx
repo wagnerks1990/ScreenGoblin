@@ -13,6 +13,18 @@ export function Pairing({ installationId, defaultApiUrl, onPaired }: Props) {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string>();
   const [working, setWorking] = useState(false);
+  const secureServerAddress = (() => {
+    try {
+      const value = new URL(apiUrl);
+      return (
+        value.protocol === "https:" ||
+        (value.protocol === "http:" &&
+          ["localhost", "127.0.0.1", "::1"].includes(value.hostname))
+      );
+    } catch {
+      return false;
+    }
+  })();
 
   const connect = async () => {
     setError(undefined);
@@ -67,9 +79,7 @@ export function Pairing({ installationId, defaultApiUrl, onPaired }: Props) {
         </label>
         <button
           onClick={connect}
-          disabled={
-            working || !/^https?:\/\//.test(apiUrl) || !/^\d{6}$/.test(code)
-          }
+          disabled={working || !secureServerAddress || !/^\d{6}$/.test(code)}
         >
           {working ? "Connecting…" : "Connect screen"}
         </button>

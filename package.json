@@ -15,14 +15,16 @@
     "test": "npm run test --workspaces --if-present",
     "test:coverage": "npm run test:coverage --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "validate": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
+    "validate": "npm run prisma:generate -w @screengoblin/api && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^5.0.0",
     "concurrently": "^9.2.1",
     "prettier": "^3.6.2",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^5.0.0"
   }
 }

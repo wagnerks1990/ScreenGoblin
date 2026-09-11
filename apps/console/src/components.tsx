@@ -272,7 +272,7 @@ export function Preview({
         <span>{subtitle}</span>
       </div>
       <div className="preview-footer">
-        <span>CASD</span>
+        <span>DEMO</span>
         <span>FRI · SEP 11</span>
       </div>
     </div>

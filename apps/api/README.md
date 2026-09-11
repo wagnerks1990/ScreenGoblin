@@ -4,7 +4,7 @@ Fastify/TypeScript control-plane API for the ScreenGoblin pre-production prototy
 
 ## Run locally
 
-Requires Node 22+ and PostgreSQL 16+.
+Requires Node 22+ and PostgreSQL 17+.
 
 ```bash
 cp apps/api/.env.example apps/api/.env
@@ -36,13 +36,13 @@ Player endpoints use `X-Screen-Id` and `X-Device-Token` after the initial pairin
 - `POST /api/v1/device/heartbeat`
 - `GET /api/v1/device/manifest`
 
-The manifest contains SHA-256 asset checksums and an HMAC-SHA256 signature. Players must download and verify every asset before atomically activating a manifest, retaining the previous complete manifest as last-known-good content.
+The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing pins the deployment public key; players verify the signed envelope and expected screen ID before downloading assets and atomically activating a manifest. Emergency overlays never replace the normal last-known-good rollback baseline.
 
 ## Security and scope
 
 - OWNER/ADMIN control screens and emergency takeovers; PUBLISHER may manage ordinary content and schedules; VIEWER is read-only.
 - Emergency publishing is supplemental—not a life-safety or mass-notification system—and is disabled by default. Set `EMERGENCY_FEATURE_ENABLED=true` only after local policy, authorization, failover, and end-to-end device acknowledgment have been validated.
-- Database queries include organization scope. Device tokens and pairing codes are SHA-256 hashed at rest; their source values have sufficient entropy or short expiry.
+- Database queries include organization scope. Public screen responses explicitly exclude device verifier hashes. Device tokens are SHA-256 hashed and short pairing codes use a deployment-specific HMAC pepper at rest; native non-exportable device identity and durable distributed pairing-attempt budgets remain release gates.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled.
 - Media upload/transcoding and object-storage presigning are intentionally adapter boundaries. This prototype stores validated metadata only.
 

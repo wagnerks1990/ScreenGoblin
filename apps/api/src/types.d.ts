@@ -10,8 +10,11 @@ declare module "fastify" {
   interface FastifyInstance {
     store: DataStore;
     config: {
-      manifestSigningSecret: string;
+      manifestSigningPrivateKey: string;
+      pairingCodePepper: string;
       emergencyPublishingEnabled: boolean;
+      mediaAllowedOrigins: string[];
+      publicApiUrl?: string;
     };
     authenticate: (
       request: FastifyRequest,

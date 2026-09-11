@@ -1,4 +1,5 @@
 import type { Credentials, Heartbeat, PlayerManifest } from "./types";
+import { verifyManifestSignature } from "./crypto";
 
 const trim = (url: string) => url.replace(/\/+$/, "");
 
@@ -7,6 +8,7 @@ export class PlayerApi {
     private readonly apiBaseUrl: string,
     private readonly token?: string,
     private readonly screenId?: string,
+    private readonly manifestVerificationKey?: string,
   ) {}
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -56,9 +58,24 @@ export class PlayerApi {
         asset: Omit<PlayerManifest["items"][number], "durationSeconds">;
         durationSeconds: number;
       }>;
+      signatureAlgorithm: "Ed25519";
+      signature: string;
     }>("/manifest", { cache: "no-store" });
+    const { signature, signatureAlgorithm, ...unsigned } = response;
+    if (
+      !this.screenId ||
+      response.screenId !== this.screenId ||
+      signatureAlgorithm !== "Ed25519" ||
+      !this.manifestVerificationKey ||
+      !(await verifyManifestSignature(
+        unsigned,
+        signature,
+        this.manifestVerificationKey,
+      ))
+    )
+      throw new Error("Manifest signature or screen binding is invalid");
     return {
-      ...response,
+      ...unsigned,
       items: response.items.map(({ asset, durationSeconds }) => ({
         ...asset,
         durationSeconds,

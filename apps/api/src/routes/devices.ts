@@ -2,8 +2,15 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { createHash, randomInt } from "node:crypto";
 import { ApiError, requireRole } from "../utils/http.js";
-import { randomToken, sha256, signManifest } from "../utils/crypto.js";
+import {
+  manifestVerificationKey,
+  pairingCodeHash,
+  randomToken,
+  sha256,
+  signManifest,
+} from "../utils/crypto.js";
 import { opaqueId } from "../utils/validation.js";
+import { compareSchedulePrecedence } from "../utils/schedule.js";
 
 const claim = z
   .object({
@@ -30,7 +37,6 @@ const heartbeat = z
     occurredAt: z.iso.datetime(),
   })
   .strict();
-const weight = { normal: 0, campaign: 1, priority: 2, emergency: 3 };
 
 export const pairingAdminRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
@@ -38,11 +44,22 @@ export const pairingAdminRoutes: FastifyPluginAsync = async (app) => {
     requireRole(request, ["OWNER", "ADMIN"]);
     const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
     const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-    await app.store.createPairing(
+    const pairing = await app.store.createPairing(
       request.user.organizationId,
-      sha256(code),
+      pairingCodeHash(code, app.config.pairingCodePepper),
       expiresAt,
     );
+    await app.store.audit({
+      organizationId: request.user.organizationId,
+      actorUserId: request.user.sub,
+      actorType: "user",
+      action: "pairing.created",
+      entityType: "pairing",
+      entityId: pairing.id,
+      ipAddress: request.ip,
+      requestId: request.id,
+      metadata: { expiresAt },
+    });
     return reply.code(201).send({ code, expiresAt });
   });
 };
@@ -55,7 +72,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       const input = claim.parse(request.body);
       const token = randomToken();
       const screen = await app.store.claimPairing(
-        sha256(input.code),
+        pairingCodeHash(input.code, app.config.pairingCodePepper),
         input.device,
         sha256(token),
       );
@@ -78,8 +95,13 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(201).send({
         screenId: screen.id,
         deviceToken: token,
-        apiBaseUrl: `${request.protocol}://${request.host}/api/v1/device`,
+        apiBaseUrl: `${(
+          app.config.publicApiUrl ?? `${request.protocol}://${request.host}`
+        ).replace(/\/+$/, "")}/api/v1/device`,
         heartbeatIntervalSeconds: 60,
+        manifestVerificationKey: manifestVerificationKey(
+          app.config.manifestSigningPrivateKey,
+        ),
       });
     },
   );
@@ -116,6 +138,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           )
         : null;
       let priority: "normal" | "campaign" | "priority" | "emergency" = "normal";
+      let releaseIdentity = "no-schedule";
+      let validUntil = new Date(Date.now() + 5 * 60_000).toISOString();
       let items: Array<{
         id: string;
         asset: {
@@ -133,6 +157,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       }> = [];
       if (emergency) {
         priority = "emergency";
+        releaseIdentity = `emergency:${emergency.id}:${emergency.expiresAt}`;
+        validUntil = emergency.expiresAt;
         const raw = JSON.stringify({
           title: emergency.title,
           message: emergency.message,
@@ -155,7 +181,9 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
             durationSeconds: Math.max(
               1,
               Math.ceil(
-                (new Date(emergency.expiresAt).getTime() - Date.now()) / 1000,
+                (new Date(emergency.expiresAt).getTime() -
+                  new Date(emergency.startsAt).getTime()) /
+                  1000,
               ),
             ),
           },
@@ -167,10 +195,16 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
             screen.id,
             generatedAt,
           )
-        ).sort((a, b) => weight[b.priority] - weight[a.priority]);
+        ).sort(compareSchedulePrecedence);
         const selected = schedules[0];
         if (selected) {
           priority = selected.priority;
+          releaseIdentity = `schedule:${selected.id}:${selected.updatedAt}`;
+          if (
+            selected.endsAt &&
+            new Date(selected.endsAt).getTime() < new Date(validUntil).getTime()
+          )
+            validUntil = selected.endsAt;
           const playlist = await app.store.getPlaylist(
             screen.organizationId,
             selected.playlistId,
@@ -194,7 +228,9 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                 ): x is {
                   item: (typeof playlist.items)[number];
                   asset: NonNullable<typeof x.asset>;
-                } => Boolean(x.asset),
+                } =>
+                  Boolean(x.asset) &&
+                  (!x.asset?.expiresAt || x.asset.expiresAt > generatedAt),
               )
               .map(({ item, asset }) => ({
                 id: item.id,
@@ -215,21 +251,26 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         }
       }
       const version = sha256(
-        JSON.stringify({ screenId: screen.id, priority, items }),
+        JSON.stringify({
+          screenId: screen.id,
+          releaseIdentity,
+          priority,
+          validUntil,
+          items,
+        }),
       );
       const unsigned = {
         version,
         generatedAt,
-        validUntil:
-          emergency?.expiresAt ??
-          new Date(Date.now() + 5 * 60_000).toISOString(),
+        validUntil,
         screenId: screen.id,
         priority,
         items,
       };
       return {
         ...unsigned,
-        signature: signManifest(unsigned, app.config.manifestSigningSecret),
+        signatureAlgorithm: "Ed25519",
+        signature: signManifest(unsigned, app.config.manifestSigningPrivateKey),
       };
     },
   );

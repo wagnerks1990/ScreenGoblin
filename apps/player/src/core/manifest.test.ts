@@ -43,7 +43,8 @@ class MemoryStore implements PlayerStore {
     return this.previous;
   }
   async activateManifest(value: PlayerManifest) {
-    this.previous = this.active;
+    if (this.active && this.active.priority !== "emergency")
+      this.previous = this.active;
     this.active = value;
   }
   async rollback() {
@@ -116,6 +117,26 @@ describe("manifest transaction", () => {
     expect(recovered?.version).toBe("normal-last-known-good");
     expect(store.active?.priority).toBe("normal");
   });
+
+  it("preserves the normal baseline across repeated emergency polls and clear", async () => {
+    const store = new MemoryStore();
+    const manager = new ManifestManager(store, new MemoryAssets());
+    const normal = { ...valid, version: "normal-v1" };
+    const emergency = {
+      ...valid,
+      version: "emergency-v1",
+      priority: "emergency" as const,
+    };
+    store.active = normal;
+    await manager.stageAndActivate(emergency);
+    await manager.stageAndActivate({ ...emergency, version: "emergency-v2" });
+    expect(store.previous?.version).toBe("normal-v1");
+
+    const restored = { ...normal, version: "normal-v2" };
+    await manager.stageAndActivate(restored);
+    expect((await manager.rollback())?.priority).toBe("normal");
+    expect((await manager.rollback())?.version).toBe("normal-v1");
+  });
 });
 
 describe("manifest validation", () => {
@@ -131,5 +152,29 @@ describe("manifest validation", () => {
         items: [{ ...valid.items[0], kind: "web", checksumSha256: "" }],
       }),
     ).not.toThrow();
+  });
+  it("rejects executable URLs and oversized assets", () => {
+    expect(() =>
+      assertManifest({
+        ...valid,
+        items: [{ ...valid.items[0], url: "javascript:alert(1)" }],
+      }),
+    ).toThrow(ManifestError);
+    expect(() =>
+      assertManifest({
+        ...valid,
+        items: [{ ...valid.items[0], sizeBytes: 2 * 1024 * 1024 * 1024 + 1 }],
+      }),
+    ).toThrow(ManifestError);
+  });
+
+  it("rejects manifests generated too far in the future", () => {
+    expect(() =>
+      assertManifest({
+        ...valid,
+        generatedAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        validUntil: new Date(Date.now() + 20 * 60_000).toISOString(),
+      }),
+    ).toThrow("generation time is too far in the future");
   });
 });

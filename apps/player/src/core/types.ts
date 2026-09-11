@@ -26,6 +26,7 @@ export interface Credentials {
   deviceToken: string;
   apiBaseUrl: string;
   heartbeatIntervalSeconds: number;
+  manifestVerificationKey: string;
 }
 
 export interface PairingSession {

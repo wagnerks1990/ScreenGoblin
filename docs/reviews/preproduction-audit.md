@@ -1,11 +1,13 @@
 # ScreenGoblin pre-production implementation audit
 
+> **Status update:** This document records the baseline release-gate audit. Several implementation findings were remediated in the [2026-09-11 agent hardening review](./2026-09-11-agent-hardening.md); the unchecked release gates and the “not ready” verdict remain authoritative until their evidence is complete.
+
 **Review date:** 2026-09-11  
 **Scope:** Current prototype architecture/schema/contracts, the project handoff, and Brand Package v1. This is an implementation gate, not a legal certification or a claim that ScreenGoblin is an emergency-notification system.
 
 ## Verdict
 
-**Not ready for a pre-production pilot yet.** The concept and ADR establish the correct high-level boundaries—organization scoping, unique device credentials, complete-manifest activation, last-known-good playback, expiring commands, and explicit emergency expiry—but the current data model does not yet enforce several of them. The P0 gates below must pass before a school network or real screen is connected.
+**Not ready for a pre-production pilot yet.** The concept and ADR establish the correct high-level boundaries—organization scoping, unique device credentials, complete-manifest activation, last-known-good playback, expiring commands, and explicit emergency expiry—but the product does not yet enforce or provide evidence for all of them. The P0 gates below must pass before a school network or real screen is connected.
 
 The highest-risk omissions are:
 

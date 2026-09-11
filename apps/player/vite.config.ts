@@ -6,7 +6,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? "0.1.0"),
   },
-  build: { sourcemap: true, target: "es2022" },
+  build: { sourcemap: false, target: "es2022" },
   test: {
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",

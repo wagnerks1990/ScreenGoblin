@@ -10,6 +10,24 @@ const weekdayIndex: Record<string, number> = {
   Sat: 6,
 };
 
+const priorityWeight: Record<ScheduleRecord["priority"], number> = {
+  normal: 0,
+  campaign: 1,
+  priority: 2,
+  emergency: 3,
+};
+
+export function compareSchedulePrecedence(
+  left: ScheduleRecord,
+  right: ScheduleRecord,
+): number {
+  return (
+    priorityWeight[right.priority] - priorityWeight[left.priority] ||
+    right.startsAt.localeCompare(left.startsAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
 export function validTimeZone(value: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
