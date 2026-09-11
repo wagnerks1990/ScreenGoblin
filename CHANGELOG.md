@@ -47,6 +47,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Use MinIO's official Quay registry for the pinned server and client images.
 - Apply available Debian security updates and remove unused npm/Corepack tooling
   from the final API runtime image.
+- Apply available Alpine security updates in the final Console and Player images
+  and upload each image's SARIF report under a distinct code-scanning category.
 
 ## 0.1.0 — 2026-09-11
 
