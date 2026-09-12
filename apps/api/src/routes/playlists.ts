@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { ApiError, requireRole, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
+import { managementPlaylist } from "./management-dto.js";
 const body = z
   .object({
     name: z.string().trim().min(1).max(140),
@@ -31,14 +32,17 @@ const params = z.object({ id: opaqueId });
 export const playlistRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
   app.get("/playlists", async (request) => ({
-    data: await app.store.listPlaylists(request.user.organizationId),
+    data: (await app.store.listPlaylists(request.user.organizationId)).map(
+      managementPlaylist,
+    ),
   }));
   app.get("/playlists/:id", async (request, reply) => {
     const { id } = params.parse(request.params);
-    return (
-      (await app.store.getPlaylist(request.user.organizationId, id)) ??
-      sendNotFound(reply)
+    const playlist = await app.store.getPlaylist(
+      request.user.organizationId,
+      id,
     );
+    return playlist ? managementPlaylist(playlist) : sendNotFound(reply);
   });
   app.post("/playlists", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
@@ -76,7 +80,7 @@ export const playlistRoutes: FastifyPluginAsync = async (app) => {
         "INVALID_ASSET",
         "Playlist contains an unknown asset",
       );
-    return reply.code(201).send(result.value);
+    return reply.code(201).send(managementPlaylist(result.value));
   });
   app.delete("/playlists/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);

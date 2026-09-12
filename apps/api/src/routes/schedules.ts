@@ -8,6 +8,7 @@ import {
   schedulePublicationKeyHash,
   schedulePublicationRequestDigest,
 } from "../releases/canonical.js";
+import { managementSchedule } from "./management-dto.js";
 const body = z
   .object({
     playlistId: opaqueId,
@@ -52,7 +53,9 @@ const idempotencyKey = z
 export const scheduleRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
   app.get("/schedules", async (request) => ({
-    data: await app.store.listSchedules(request.user.organizationId),
+    data: (await app.store.listSchedules(request.user.organizationId)).map(
+      managementSchedule,
+    ),
   }));
   app.post("/schedules", async (request, reply) => {
     requireCapability(request, CAPABILITIES.releasePublish);
@@ -124,7 +127,7 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
       const [code, message] = errors[result.reason];
       throw new ApiError(422, code, message);
     }
-    return reply.code(201).send(result.schedule);
+    return reply.code(201).send(managementSchedule(result.schedule));
   });
   app.delete("/schedules/:id", async (request, reply) => {
     requireCapability(request, CAPABILITIES.releaseWithdraw);

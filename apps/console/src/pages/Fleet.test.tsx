@@ -60,9 +60,13 @@ it("keeps authenticated fleet loading and detail states operationally truthful",
     name: "Authenticated Fleet Screen",
   });
   expect(within(drawer).getByText("Screen preview unavailable")).toBeTruthy();
-  expect(
-    within(drawer).getByText("Not exposed by the current Console contract"),
-  ).toBeTruthy();
+  expect(within(drawer).getByText("Player reports")).toBeTruthy();
+  expect(within(drawer).getByText("asset-live")).toBeTruthy();
+  expect(within(drawer).getByText("wifi")).toBeTruthy();
+  expect(within(drawer).getByText("42s")).toBeTruthy();
+  expect(within(drawer).getByText("1.0 KiB")).toBeTruthy();
+  expect(within(drawer).getAllByText("Not reported").length).toBeGreaterThan(0);
+  expect(within(drawer).queryByText("Morning announcements")).toBeNull();
   expect(within(drawer).queryByText("LAST KNOWN GOOD")).toBeNull();
   expect(within(drawer).queryByText("Ethernet · 94 Mbps")).toBeNull();
   expect(within(drawer).queryByText("18.2 GB free")).toBeNull();

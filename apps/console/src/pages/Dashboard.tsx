@@ -11,14 +11,17 @@ import {
   CalendarClock,
   Activity,
 } from "lucide-react";
-import type { FleetSummary, ScreenSummary } from "@screengoblin/contracts";
+import type { FleetSummary, ManagementScreen } from "@screengoblin/contracts";
+import type { DemoScreen } from "../data";
 import { api } from "../api";
 import { activity } from "../data";
 import { Button, PageHeader, Panel, Preview, Status } from "../components";
 import { Link } from "react-router-dom";
 
 export function Dashboard() {
-  const [screens, setScreens] = useState<ScreenSummary[]>([]);
+  const [screens, setScreens] = useState<Array<ManagementScreen | DemoScreen>>(
+    [],
+  );
   const [loadState, setLoadState] = useState<
     "loading" | "live" | "demo" | "error"
   >("loading");
@@ -324,7 +327,9 @@ export function Dashboard() {
   );
 }
 
-function summarizeFleet(screens: ScreenSummary[]): FleetSummary {
+function summarizeFleet(
+  screens: Array<ManagementScreen | DemoScreen>,
+): FleetSummary {
   return screens.reduce<FleetSummary>(
     (summary, screen) => {
       summary.total += 1;

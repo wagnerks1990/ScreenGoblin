@@ -16,7 +16,7 @@ const replacementTestScreen = {
   orientation: "landscape",
   resolution: "1920 × 1080",
   lastSeenAt: "Just now",
-  nowPlaying: "Welcome",
+  nowPlayingAssetId: "asset-welcome",
   playerVersion: "1.0.0",
   tags: ["test"],
 };
@@ -421,7 +421,7 @@ describe("ScreenGoblin console", () => {
     );
     await user.click(screen.getByText("Main Lobby"));
     expect(screen.getByRole("dialog", { name: "Main Lobby" })).toBeTruthy();
-    expect(screen.getByText("Device health")).toBeTruthy();
+    expect(screen.getByText("Player reports")).toBeTruthy();
     expect(
       screen.queryByRole("button", { name: "Replace device identity" }),
     ).toBeNull();
@@ -446,7 +446,7 @@ describe("ScreenGoblin console", () => {
       orientation: "landscape",
       resolution: "1920 × 1080",
       lastSeenAt: "Just now",
-      nowPlaying: "Welcome",
+      nowPlayingAssetId: "asset-welcome",
       playerVersion: "1.0.0",
       tags: ["lobby"],
     };

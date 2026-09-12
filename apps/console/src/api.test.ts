@@ -188,6 +188,84 @@ describe("authenticated live data boundary", () => {
     expect(result).toEqual({ data: [], source: "live" });
   });
 
+  it("loads playlist and schedule records only through authenticated reads", async () => {
+    window.sessionStorage.setItem("sg_access_token", "live-token");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "playlist-1",
+                name: "Live rotation",
+                description: "",
+                items: [],
+                createdAt: "2030-01-01T00:00:00.000Z",
+                updatedAt: "2030-01-01T00:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "schedule-1",
+                playlistId: "playlist-1",
+                name: "Configured rotation",
+                priority: "normal",
+                startsAt: "2030-01-01T00:00:00.000Z",
+                timezone: "UTC",
+                daysOfWeek: [],
+                enabled: true,
+                screenIds: [],
+                createdAt: "2030-01-01T00:00:00.000Z",
+                updatedAt: "2030-01-01T00:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.playlists()).resolves.toHaveLength(1);
+    await expect(api.schedules()).resolves.toHaveLength(1);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/playlists",
+      "/api/v1/schedules",
+    ]);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init).toMatchObject({
+        headers: expect.objectContaining({
+          Authorization: "Bearer live-token",
+        }),
+      });
+    }
+  });
+
+  it("does not provide playlist or schedule fixture fallbacks without a live session", async () => {
+    await expect(api.playlists()).rejects.toThrow("Connect the Console");
+    await expect(api.schedules()).rejects.toThrow("Connect the Console");
+  });
+
+  it("invalidates the live session instead of substituting fixtures for a failed management read", async () => {
+    window.sessionStorage.setItem("sg_access_token", "expired-token");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status: 401 })),
+    );
+
+    await expect(api.playlists()).rejects.toThrow("HTTP 401");
+    expect(api.hasLiveSession()).toBe(false);
+    expect(api.demoAllowed()).toBe(false);
+    await expect(api.schedules()).rejects.toThrow("Live session expired");
+  });
+
   it("uses the authenticated staged device replacement endpoints", async () => {
     window.sessionStorage.setItem("sg_access_token", "admin-token");
     const fetchMock = vi

@@ -1,6 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+const apiBaseUrl =
+  process.env.E2E_API_BASE_URL ?? "http://127.0.0.1:3000/api/v1";
+
 function requiredOwnerCredentials() {
   const email = process.env.SEED_ADMIN_EMAIL?.trim();
   const password = process.env.SEED_ADMIN_PASSWORD;
@@ -21,6 +24,14 @@ async function loginAsSeededOwner(page: Page) {
   await expect(
     page.getByRole("button", { name: "Disconnect live" }),
   ).toBeVisible();
+}
+
+async function liveHeaders(page: Page) {
+  const accessToken = await page.evaluate(() =>
+    window.sessionStorage.getItem("sg_access_token"),
+  );
+  expect(accessToken).toBeTruthy();
+  return { Authorization: `Bearer ${accessToken}` };
 }
 
 async function expectNoWcag21AAViolations(page: Page, state: string) {
@@ -76,6 +87,37 @@ test("demo, dialog, drawer, and live fleet states meet automated WCAG 2.1 A/AA c
   await page.getByRole("link", { name: "Overview" }).click();
   await expect(page.getByText("Live API data")).toBeVisible();
   await expectNoWcag21AAViolations(page, "live dashboard");
+
+  const headers = await liveHeaders(page);
+  const playlistName = `Accessibility playlist ${Date.now()}`;
+  const created = await page.request.post(`${apiBaseUrl}/playlists`, {
+    headers,
+    data: { name: playlistName, description: "", items: [] },
+  });
+  expect(created.status()).toBe(201);
+  const playlist = (await created.json()) as { id: string };
+
+  try {
+    await page.getByRole("link", { name: "Playlists" }).click();
+    await expect(page.getByText("Live API data")).toBeVisible();
+    await expectNoWcag21AAViolations(page, "live playlists");
+    await page.getByRole("button", { name: `View ${playlistName}` }).click();
+    await expect(
+      page.getByRole("dialog", { name: playlistName }),
+    ).toBeVisible();
+    await expectNoWcag21AAViolations(page, "live playlist drawer");
+    await page.getByRole("button", { name: "Close details" }).click();
+  } finally {
+    const removed = await page.request.delete(
+      `${apiBaseUrl}/playlists/${encodeURIComponent(playlist.id)}`,
+      { headers },
+    );
+    expect(removed.status()).toBe(204);
+  }
+
+  await page.getByRole("link", { name: "Schedules" }).click();
+  await expect(page.getByText("Live API data")).toBeVisible();
+  await expectNoWcag21AAViolations(page, "live schedules");
 });
 
 test("skip navigation and modal and drawer focus containment work in Chromium", async ({
