@@ -44,10 +44,52 @@ affected sessions atomically; do not issue direct SQL updates for these fields.
 
 The schedule-publication idempotency migration is additive and creates an
 empty tenant-owned command ledger. It does not rewrite schedules or releases.
-Ledger response bodies are replayable for 30 days and are compacted when that
-same key is presented after expiry; the remaining key tombstones are
-retained with release and audit history and must not be manually pruned or
-reused. Restore validation includes a representative ledger relationship.
+Ledger response bodies are replayable for 30 days. Each successful authorized
+publication also compacts at most 100 expired response bodies, using the
+database clock.
+The remaining key tombstones are retained with release and audit history and
+must not be manually pruned or reused. This is opportunistic maintenance during
+ordinary publication, not a scheduled worker. Restore validation includes a
+representative ledger relationship.
+
+## Verifying interrupted historical migrations
+
+The following already-shipped migrations contain multiple statements and were
+not wrapped in an explicit transaction:
+
+- `20260912130000_user_sessions`
+- `20260912150000_session_authority_epochs`
+- `20260912151000_location_foundation`
+- `20260912152000_schedule_publication_idempotency`
+
+Do not edit these historical migration files or their checksums. If deployment
+was interrupted while one was running, stop application writers, take a backup,
+and inspect both Prisma's recorded state and the database objects before taking
+any repair action:
+
+```bash
+npm exec -w @screengoblin/api -- prisma migrate status
+```
+
+```sql
+SELECT migration_name, started_at, finished_at, rolled_back_at, logs
+FROM "_prisma_migrations"
+WHERE finished_at IS NULL AND rolled_back_at IS NULL;
+```
+
+Compare every statement in the affected migration with the live schema,
+including indexes, constraints, and data backfills. When practical, restore a
+copy of the database and use `prisma migrate diff` against
+`apps/api/prisma/schema.prisma` as additional evidence; do not execute an
+unreviewed generated diff against production.
+
+The preferred recovery is restoring the pre-migration backup and rerunning the
+migration. If that is not possible, prepare and review an exact forward or
+reverse repair. Use `prisma migrate resolve --rolled-back <migration>` only
+after reversing every partial statement, or `--applied <migration>` only after
+independently verifying that every statement and backfill completed. Never mark
+a partial migration merely to unblock deployment. This recovery is manual;
+there is no automatic verification or repair process.
 
 The device operational-truth migration clears stale heartbeat/playback fields
 and marks screens offline when an explicit credential-revocation marker exists.
@@ -191,6 +233,16 @@ The release-evidence workflow retains checksum-bound local Docker archives for t
 After containment, rotate exposed secrets, retain audit/log evidence, identify affected tenants/screens, restore trusted content, and write a blameless review with corrective owners and dates.
 
 ## Routine maintenance
+
+Successful device-challenge issuance opportunistically removes at most 100
+challenges whose expiry is at least 24 hours old. Successful authorized
+schedule publication similarly clears at most 100
+expired idempotency response bodies while retaining their key tombstones. Both
+use the database clock and run in the enclosing transaction, and locked rows
+are skipped so concurrent requests can keep making progress. There is no
+scheduled maintenance worker, so monitor table size and ordinary issuance and
+publication traffic; use a reviewed explicit maintenance procedure if traffic
+is insufficient to keep up with retention.
 
 - Weekly: review offline screens, failed jobs, capacity, certificate expiry, and security alerts.
 - Monthly: patch staging, promote through release rings, restore a small backup sample, and review privileged users.

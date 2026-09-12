@@ -85,12 +85,20 @@ revocation across PostgreSQL and object storage.
   membership, tenant-binds the key fingerprint, and commits the publication,
   audit, and replay response together. Same-command retries cannot reactivate a
   withdrawn assignment; a new key is required for intentional republication.
+  Each successful authorized publication also compacts at most 100 expired response bodies
+  using the PostgreSQL clock. Permanent key tombstones remain, so compaction
+  cannot make an old command reusable. This is opportunistic bounded
+  maintenance, not a general-purpose scheduler.
 - Emergency publishing is supplemental—not a life-safety or mass-notification
   system—and production startup rejects `EMERGENCY_FEATURE_ENABLED=true` while
   the required authorization, two-person approval, MFA, acknowledgement,
   partial-delivery, recovery, and tabletop gates remain incomplete. The flag is
   available only outside production for isolated automated fixtures.
 - Database queries include organization scope. Public screen responses exclude bearer verifier hashes and private device-authentication state. Pairing codes use a deployment-specific HMAC pepper at rest. Proof challenges are short-lived, stored only as hashes, durably bounded, and consumed once after valid signature verification. OWNER/ADMIN revocation transactionally disables a credential, invalidates outstanding challenges, marks the screen, and appends one audit record.
+- Successful device-challenge issuance deletes at most 100 challenges whose
+  expiry is at least 24 hours old. It uses the PostgreSQL clock
+  and skips rows locked by concurrent requests; every live challenge is
+  retained. There is no separately scheduled database-maintenance service.
 - Local audit rows have bounded scalar and structured metadata fields.
   PostgreSQL authoritatively limits the UTF-8 bytes of `metadata::text` to 16
   KiB and retains a 32 KiB physical-size check as a secondary defense. The

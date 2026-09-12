@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mediaStorageKey } from "../src/media/delivery.js";
 import { PrismaStore } from "../src/store/prisma.js";
-import { LOGIN_FAILURE_MAX_RECORDS } from "../src/domain/types.js";
+import {
+  DATABASE_MAINTENANCE_BATCH_SIZE,
+  DEVICE_AUTH_CHALLENGE_RETENTION_MS,
+  LOGIN_FAILURE_MAX_RECORDS,
+} from "../src/domain/types.js";
 import { opaqueSecurityEventKey } from "../src/utils/rate-limit.js";
 import {
   schedulePublicationKeyHash,
   schedulePublicationRequestDigest,
 } from "../src/releases/canonical.js";
+import { randomToken } from "../src/utils/crypto.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -1970,6 +1976,162 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(
       prisma.screen.findUniqueOrThrow({ where: { id: paired.screen.id } }),
     ).resolves.toMatchObject({ credentialRevokedAt: expect.any(Date) });
+  });
+
+  it("prunes one bounded batch of old device challenges without removing live challenges", async () => {
+    const [retentionIndex] = await prisma.$queryRaw<
+      Array<{ indexdef: string }>
+    >`SELECT indexdef FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND indexname = 'DeviceAuthChallenge_expiresAt_id_idx'`;
+    expect(retentionIndex?.indexdef).toContain(
+      'ON public."DeviceAuthChallenge" USING btree ("expiresAt", id)',
+    );
+    const paired = await pairProofDevice("challenge-retention", 31);
+    const createdAt = new Date(
+      Date.now() - DEVICE_AUTH_CHALLENGE_RETENTION_MS - 60_000,
+    );
+    const expiresAt = new Date(createdAt.getTime() + 30_000);
+    const consumedAt = new Date(createdAt.getTime() + 10_000);
+    const lockedChallengeId = randomToken();
+    await prisma.deviceAuthChallenge.createMany({
+      data: Array.from(
+        { length: DATABASE_MAINTENANCE_BATCH_SIZE + 1 },
+        (_, index) => ({
+          id: index === 0 ? lockedChallengeId : randomToken(),
+          organizationId: paired.organization.id,
+          credentialId: paired.credential.id,
+          challengeHashSha256: proofHash(),
+          operation: "MANIFEST" as const,
+          requestDigestSha256: proofHash(),
+          createdAt,
+          expiresAt,
+          consumedAt,
+        }),
+      ),
+    });
+    const acquired = deferred();
+    const release = deferred();
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT challenge."id"
+        FROM "DeviceAuthChallenge" challenge
+        WHERE challenge."id" = ${lockedChallengeId}
+        FOR UPDATE OF challenge`;
+      acquired.resolve();
+      await release.promise;
+    });
+    const holderSettled = holder.then(
+      () => ({ succeeded: true as const }),
+      (error: unknown) => {
+        acquired.reject(error);
+        return { succeeded: false as const, error };
+      },
+    );
+    try {
+      await acquired.promise;
+    } catch (error) {
+      release.resolve();
+      await holderSettled;
+      throw error;
+    }
+    const issuanceSettled = store
+      .issueDeviceAuthChallenge({
+        screenId: paired.screen.id,
+        keyId: paired.credential.keyId,
+        challengeHashSha256: proofHash(),
+        operation: "manifest",
+        requestDigestSha256: proofHash(),
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      })
+      .then(
+        (result) => ({ succeeded: true as const, result }),
+        (error: unknown) => ({ succeeded: false as const, error }),
+      );
+    let timeout: NodeJS.Timeout | undefined;
+    const raceResult = await Promise.race([
+      issuanceSettled.then(() => ({ timedOut: false as const })),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timeout = setTimeout(() => resolve({ timedOut: true }), 2_000);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    release.resolve();
+    const [holderResult, issuanceResult] = await Promise.all([
+      holderSettled,
+      issuanceSettled,
+    ]);
+    if (!holderResult.succeeded) throw holderResult.error;
+    if (raceResult.timedOut) {
+      throw new Error("challenge issuance waited on a locked retention row");
+    }
+    if (!issuanceResult.succeeded) throw issuanceResult.error;
+    const live = issuanceResult.result;
+    if (!live) throw new Error("live challenge was not issued");
+
+    expect(
+      await prisma.deviceAuthChallenge.count({
+        where: { expiresAt: { lte: expiresAt } },
+      }),
+    ).toBe(1);
+    await expect(
+      prisma.deviceAuthChallenge.findUnique({
+        where: { id: lockedChallengeId },
+      }),
+    ).resolves.not.toBeNull();
+    await expect(
+      prisma.deviceAuthChallenge.findUnique({ where: { id: live.id } }),
+    ).resolves.not.toBeNull();
+  });
+
+  it("does not prune old challenges when issuance is rejected at the live cap", async () => {
+    const paired = await pairProofDevice("challenge-retention-cap", 32);
+    const oldChallengeId = randomToken();
+    const createdAt = new Date(
+      Date.now() - DEVICE_AUTH_CHALLENGE_RETENTION_MS - 60_000,
+    );
+    await prisma.deviceAuthChallenge.create({
+      data: {
+        id: oldChallengeId,
+        organizationId: paired.organization.id,
+        credentialId: paired.credential.id,
+        challengeHashSha256: proofHash(),
+        operation: "HEARTBEAT",
+        requestDigestSha256: proofHash(),
+        createdAt,
+        expiresAt: new Date(createdAt.getTime() + 30_000),
+        consumedAt: new Date(createdAt.getTime() + 10_000),
+      },
+    });
+    const liveExpiresAt = new Date(Date.now() + 30_000);
+    await prisma.deviceAuthChallenge.createMany({
+      data: Array.from({ length: 4 }, () => ({
+        id: randomToken(),
+        organizationId: paired.organization.id,
+        credentialId: paired.credential.id,
+        challengeHashSha256: proofHash(),
+        operation: "MANIFEST" as const,
+        requestDigestSha256: proofHash(),
+        expiresAt: liveExpiresAt,
+      })),
+    });
+
+    await expect(
+      store.issueDeviceAuthChallenge({
+        screenId: paired.screen.id,
+        keyId: paired.credential.keyId,
+        challengeHashSha256: proofHash(),
+        operation: "manifest",
+        requestDigestSha256: proofHash(),
+        expiresAt: liveExpiresAt.toISOString(),
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.deviceAuthChallenge.findUnique({
+        where: { id: oldChallengeId },
+      }),
+    ).resolves.not.toBeNull();
+    expect(await prisma.deviceAuthChallenge.count()).toBe(5);
   });
 
   it("persists proof heartbeats as authoritative playback snapshots", async () => {
@@ -4635,7 +4797,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           },
         },
       }),
-    ).resolves.toMatchObject({ responseBody: null });
+    ).resolves.not.toMatchObject({ responseBody: null });
     await expect(
       prisma.idempotencyRecord.findUniqueOrThrow({
         where: {
@@ -4647,10 +4809,221 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
       }),
     ).resolves.not.toMatchObject({ responseBody: null });
+    await expect(
+      store.publishScheduleAndAudit(
+        alpha.id,
+        alphaInput,
+        { actorUserId: alphaActor.id },
+        policy,
+        publicationIdempotency(),
+      ),
+    ).resolves.toMatchObject({ published: true });
+    expect(
+      await prisma.idempotencyRecord.count({
+        where: {
+          organizationId: alpha.id,
+          expiresAt: { lte: new Date() },
+          responseBody: { equals: Prisma.DbNull },
+        },
+      }),
+    ).toBe(2);
     expect(await prisma.schedule.count()).toBe(2);
     expect(
       await prisma.auditEvent.count({ where: { action: "release.published" } }),
     ).toBe(2);
+  });
+
+  it("compacts one bounded batch of unrelated expired publication responses while retaining tombstones", async () => {
+    const [compactionIndex] = await prisma.$queryRaw<
+      Array<{ indexdef: string }>
+    >`SELECT indexdef FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND indexname = 'IdempotencyRecord_compactable_response_idx'`;
+    expect(compactionIndex?.indexdef).toContain(
+      'ON public."IdempotencyRecord" USING btree ("expiresAt", id)',
+    );
+    expect(compactionIndex?.indexdef).toContain(
+      'WHERE ("responseBody" IS NOT NULL)',
+    );
+    const organization = await createOrganization("idempotency-retention");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "idempotency-retention-owner",
+    );
+    const screen = await store.createScreen(organization.id, {
+      name: "Retention screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia(organization.id, {
+      name: "Retention media",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/idempotency-retention.png",
+      checksumSha256: "c".repeat(64),
+      sizeBytes: 100,
+    });
+    const playlist = await store.createPlaylist(organization.id, {
+      name: "Retention playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+    const createdAt = new Date(Date.now() - 32 * 24 * 60 * 60_000);
+    const expiresAt = new Date(Date.now() - 2 * 24 * 60 * 60_000);
+    await prisma.idempotencyRecord.createMany({
+      data: Array.from({ length: DATABASE_MAINTENANCE_BATCH_SIZE + 5 }, () => ({
+        organizationId: organization.id,
+        operation: "SCHEDULE_PUBLISH" as const,
+        keyHash: proofHash(),
+        actorUserId: actor.id,
+        requestDigestSha256: proofHash(),
+        statusCode: 201,
+        responseBody: { retained: "until-compaction" },
+        createdAt,
+        expiresAt,
+      })),
+    });
+
+    await expect(
+      store.publishScheduleAndAudit(
+        organization.id,
+        {
+          playlistId: "missing-retention-playlist",
+          name: "Rejected retention schedule",
+          priority: "normal",
+          startsAt: new Date(Date.now() - 60_000).toISOString(),
+          timezone: "UTC",
+          daysOfWeek: [],
+          enabled: true,
+          screenIds: [screen.id],
+        },
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+        publicationIdempotency(),
+      ),
+    ).resolves.toEqual({ published: false, reason: "PLAYLIST_NOT_FOUND" });
+    expect(
+      await prisma.idempotencyRecord.count({
+        where: { responseBody: { equals: Prisma.DbNull } },
+      }),
+    ).toBe(0);
+
+    await expect(
+      store.publishScheduleAndAudit(
+        organization.id,
+        {
+          playlistId: playlist.id,
+          name: "Retention schedule",
+          priority: "normal",
+          startsAt: new Date(Date.now() - 60_000).toISOString(),
+          timezone: "UTC",
+          daysOfWeek: [],
+          enabled: true,
+          screenIds: [screen.id],
+        },
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+        publicationIdempotency(),
+      ),
+    ).resolves.toMatchObject({ published: true });
+
+    expect(await prisma.idempotencyRecord.count()).toBe(
+      DATABASE_MAINTENANCE_BATCH_SIZE + 6,
+    );
+    expect(
+      await prisma.idempotencyRecord.count({
+        where: {
+          expiresAt: { lte: expiresAt },
+          responseBody: { equals: Prisma.DbNull },
+        },
+      }),
+    ).toBe(DATABASE_MAINTENANCE_BATCH_SIZE);
+    expect(
+      await prisma.idempotencyRecord.count({
+        where: {
+          expiresAt: { lte: expiresAt },
+          responseBody: { not: Prisma.DbNull },
+        },
+      }),
+    ).toBe(5);
+  });
+
+  it("rolls back response compaction when replay integrity validation fails", async () => {
+    const organization = await createOrganization("idempotency-replay-failure");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "idempotency-replay-failure-owner",
+    );
+    const replayKeyHash = proofHash();
+    const replayRequestDigest = proofHash();
+    const sentinel = await prisma.idempotencyRecord.create({
+      data: {
+        organizationId: organization.id,
+        operation: "SCHEDULE_PUBLISH",
+        keyHash: proofHash(),
+        actorUserId: actor.id,
+        requestDigestSha256: proofHash(),
+        statusCode: 201,
+        responseBody: { mustSurviveReplayFailure: true },
+        createdAt: new Date(Date.now() - 32 * 24 * 60 * 60_000),
+        expiresAt: new Date(Date.now() - 2 * 24 * 60 * 60_000),
+      },
+    });
+    await prisma.idempotencyRecord.create({
+      data: {
+        organizationId: organization.id,
+        operation: "SCHEDULE_PUBLISH",
+        keyHash: replayKeyHash,
+        actorUserId: actor.id,
+        requestDigestSha256: replayRequestDigest,
+        statusCode: 201,
+        responseBody: {
+          releaseId: "missing-replay-release",
+          assignmentId: "missing-replay-assignment",
+        },
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    await expect(
+      store.publishScheduleAndAudit(
+        organization.id,
+        {
+          playlistId: "unused-replay-playlist",
+          name: "Broken replay",
+          priority: "normal",
+          startsAt: new Date(Date.now() - 60_000).toISOString(),
+          timezone: "UTC",
+          daysOfWeek: [],
+          enabled: true,
+          screenIds: ["unused-replay-screen"],
+        },
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+        {
+          keyHash: replayKeyHash,
+          requestDigestSha256: replayRequestDigest,
+        },
+      ),
+    ).rejects.toThrow("Idempotent publication references are missing");
+    await expect(
+      prisma.idempotencyRecord.findUniqueOrThrow({
+        where: { id: sentinel.id },
+      }),
+    ).resolves.toMatchObject({
+      responseBody: { mustSurviveReplayFailure: true },
+    });
   });
 
   it("rejects cross-tenant release sources, targets, frozen assets, and actors", async () => {
@@ -4906,6 +5279,19 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
       ],
     });
+    const expiredLedger = await prisma.idempotencyRecord.create({
+      data: {
+        organizationId: organization.id,
+        operation: "SCHEDULE_PUBLISH",
+        keyHash: "7".repeat(64),
+        actorUserId: actor.id,
+        requestDigestSha256: "6".repeat(64),
+        statusCode: 201,
+        responseBody: { mustSurviveRollback: true },
+        createdAt: new Date(Date.now() - 32 * 24 * 60 * 60_000),
+        expiresAt: new Date(Date.now() - 2 * 24 * 60 * 60_000),
+      },
+    });
 
     await prisma.$executeRawUnsafe(
       'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_release_publish" CHECK ("action" <> \'release.published\')',
@@ -4939,7 +5325,14 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect(await prisma.schedule.count()).toBe(0);
     expect(await prisma.releaseAssignment.count()).toBe(0);
     expect(await prisma.releaseAssignmentTarget.count()).toBe(0);
-    expect(await prisma.idempotencyRecord.count()).toBe(0);
+    expect(await prisma.idempotencyRecord.count()).toBe(1);
+    await expect(
+      prisma.idempotencyRecord.findUniqueOrThrow({
+        where: { id: expiredLedger.id },
+      }),
+    ).resolves.toMatchObject({
+      responseBody: { mustSurviveRollback: true },
+    });
 
     await prisma.$executeRawUnsafe(
       'ALTER TABLE "IdempotencyRecord" ADD CONSTRAINT "integration_reject_publication_ledger" CHECK ("keyHash" <> repeat(\'9\', 64))',
@@ -4977,7 +5370,14 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect(await prisma.releaseAssignment.count()).toBe(0);
     expect(await prisma.releaseAssignmentTarget.count()).toBe(0);
     expect(await prisma.auditEvent.count()).toBe(0);
-    expect(await prisma.idempotencyRecord.count()).toBe(0);
+    expect(await prisma.idempotencyRecord.count()).toBe(1);
+    await expect(
+      prisma.idempotencyRecord.findUniqueOrThrow({
+        where: { id: expiredLedger.id },
+      }),
+    ).resolves.toMatchObject({
+      responseBody: { mustSurviveRollback: true },
+    });
 
     const publication = await store.publishScheduleAndAudit(
       organization.id,

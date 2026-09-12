@@ -1363,12 +1363,34 @@ describe("immutable ordinary release publication", () => {
     expect((await request()).statusCode).toBe(401);
     store.users[0]!.role = "OWNER";
     store.idempotencyRecords[0]!.expiresAt = "2020-01-01T00:00:00.000Z";
+    store.idempotencyRecords.push({
+      ...structuredClone(store.idempotencyRecords[0]!),
+      keyHash: "1".repeat(64),
+      response: structuredClone(store.idempotencyRecords[0]!.response),
+    });
     const expired = await request();
     expect(expired.statusCode).toBe(409);
     expect(expired.json().error.code).toBe("IDEMPOTENCY_KEY_EXPIRED");
-    expect(store.idempotencyRecords).toHaveLength(1);
-    expect(store.idempotencyRecords[0]!.response).toBeUndefined();
+    expect(store.idempotencyRecords).toHaveLength(2);
+    expect(store.idempotencyRecords.every((record) => record.response)).toBe(
+      true,
+    );
     expect((await request()).json().error.code).toBe("IDEMPOTENCY_KEY_EXPIRED");
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/v1/schedules",
+          headers: scheduleHeaders(token),
+          payload: schedulePayload(playlist.id, screen.id),
+        })
+      ).statusCode,
+    ).toBe(201);
+    expect(store.idempotencyRecords).toHaveLength(3);
+    expect(
+      store.idempotencyRecords.slice(0, 2).every((record) => !record.response),
+    ).toBe(true);
+    expect(store.idempotencyRecords[2]!.response).toBeDefined();
     expect(store.schedules).toHaveLength(1);
     expect(store.audits).toHaveLength(1);
   });
