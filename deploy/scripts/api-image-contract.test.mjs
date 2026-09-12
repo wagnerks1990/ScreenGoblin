@@ -7,20 +7,27 @@ const dockerfile = readFileSync(
   "utf8",
 );
 
-test("the API image retains and verifies workspace runtime dependencies", () => {
-  assert.match(dockerfile, /npm prune --omit=dev/);
+test("the API image installs and verifies production runtime dependencies", () => {
+  assert.match(dockerfile, /AS production-deps/);
+  assert.match(dockerfile, /npm ci --omit=dev --ignore-scripts/);
+  assert.doesNotMatch(dockerfile, /npm prune/);
   assert.match(
     dockerfile,
-    /npm prune --omit=dev --workspaces --include-workspace-root/,
+    /test -f node_modules\/@prisma\/client\/package\.json/,
   );
+  assert.match(dockerfile, /test -f node_modules\/fastify\/package\.json/);
+  assert.match(
+    dockerfile,
+    /COPY --from=build[^\n]+\/node_modules\/\.prisma[^\n]+\.\/node_modules\/\.prisma/,
+  );
+  assert.match(dockerfile, /openssl=3\.0\.20-1~deb12u2/);
 
-  const runtimeAssertions = dockerfile.match(
-    /await Promise\.all\(\[import\('@prisma\/client'\), import\('fastify'\), import\('@screengoblin\/contracts'\)\]\)/g,
+  assert.match(
+    dockerfile,
+    /await Promise\.all\(\[import\('@prisma\/client'\), import\('fastify'\), import\('@screengoblin\/contracts'\)\]\)/,
   );
-  assert.equal(runtimeAssertions?.length, 2);
-  assert.equal(
-    dockerfile.match(/test -f node_modules\/\.prisma\/client\/schema\.prisma/g)
-      ?.length,
-    2,
+  assert.match(
+    dockerfile,
+    /test -f node_modules\/\.prisma\/client\/schema\.prisma/,
   );
 });
