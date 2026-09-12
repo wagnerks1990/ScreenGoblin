@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  appendFile,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const workflows = [
@@ -73,4 +85,152 @@ test("security workflows use the reviewed full-SHA action set", async () => {
     }
   }
   assert.deepEqual(observed, new Set(expected.keys()));
+});
+
+test("the SigV4 CodeQL exception matches only the reviewed aggregated flow", async () => {
+  const workflow = await readFile(
+    new URL("../../.github/workflows/codeql.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    workflow,
+    /run: bash deploy\/scripts\/block-codeql-findings\.sh codeql-results/,
+  );
+  assert.doesNotMatch(workflow, /approved_sigv4|blocking_result/);
+
+  const finding = {
+    ruleId: "js/insufficient-password-hash",
+    message: {
+      text: [1, 2, 3]
+        .map(
+          (flow) =>
+            `Password from [a call to S3MediaObjectStore](${flow}) is hashed insecurely.`,
+        )
+        .join("\n"),
+    },
+    locations: [
+      {
+        physicalLocation: {
+          artifactLocation: { uri: "apps/api/src/media/delivery.ts" },
+          region: { startLine: 235, startColumn: 35, endColumn: 51 },
+        },
+      },
+    ],
+    codeFlows: [138, 166, 192].map((startLine) => ({
+      threadFlows: [
+        {
+          locations: [
+            {
+              location: {
+                physicalLocation: {
+                  artifactLocation: {
+                    uri: "apps/api/test/media-delivery.test.ts",
+                  },
+                  region: { startLine },
+                },
+              },
+            },
+            {
+              location: {
+                physicalLocation: {
+                  artifactLocation: {
+                    uri: "apps/api/src/media/delivery.ts",
+                  },
+                  region: { startLine: 235 },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    })),
+  };
+
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const sandbox = await mkdtemp(join(tmpdir(), "screengoblin-codeql-"));
+  const script = join(
+    repositoryRoot,
+    "deploy/scripts/block-codeql-findings.sh",
+  );
+  const sourcePaths = [
+    "apps/api/src/server.ts",
+    "apps/api/test/media-delivery.test.ts",
+    "apps/api/src/media/delivery.ts",
+  ];
+  try {
+    for (const path of sourcePaths) {
+      await mkdir(dirname(join(sandbox, path)), { recursive: true });
+      await copyFile(join(repositoryRoot, path), join(sandbox, path));
+    }
+    await mkdir(join(sandbox, "results"));
+    execFileSync("git", ["init", "--quiet"], { cwd: sandbox });
+    execFileSync("git", ["add", "."], { cwd: sandbox });
+
+    const run = async (results = [finding]) => {
+      await writeFile(
+        join(sandbox, "results/result.sarif"),
+        JSON.stringify({ runs: [{ results }] }),
+      );
+      return spawnSync("bash", [script, "results"], {
+        cwd: sandbox,
+        encoding: "utf8",
+      });
+    };
+    const mutated = (change) => {
+      const clone = structuredClone(finding);
+      change(clone);
+      return clone;
+    };
+    const rejects = async (change) => {
+      const result = await run([mutated(change)]);
+      assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    };
+
+    assert.equal((await run()).status, 0);
+    await rejects((value) => (value.ruleId = "js/other"));
+    await rejects((value) => (value.message.text += " changed"));
+    assert.notEqual((await run([finding, finding])).status, 0);
+    await rejects(
+      (value) =>
+        (value.locations[0].physicalLocation.artifactLocation.uri =
+          "apps/api/src/media/other.ts"),
+    );
+    for (const coordinate of ["startLine", "startColumn", "endColumn"]) {
+      await rejects(
+        (value) => value.locations[0].physicalLocation.region[coordinate]++,
+      );
+    }
+    await rejects(
+      (value) => (value.locations[0].physicalLocation.region.endLine = 235),
+    );
+    await rejects((value) => value.codeFlows.pop());
+    await rejects(
+      (value) =>
+        (value.codeFlows[0].threadFlows[0].locations[0].location.physicalLocation.artifactLocation.uri =
+          "apps/api/src/media/delivery.ts"),
+    );
+    for (const index of [0, 1, 2]) {
+      await rejects(
+        (value) =>
+          value.codeFlows[index].threadFlows[0].locations[0].location
+            .physicalLocation.region.startLine++,
+      );
+    }
+
+    const extraSource = join(sandbox, "apps/api/src/extra.ts");
+    await writeFile(extraSource, "new S3MediaObjectStore();\n");
+    execFileSync("git", ["add", "."], { cwd: sandbox });
+    assert.notEqual((await run()).status, 0);
+    await rm(extraSource);
+    execFileSync("git", ["add", "-u"], { cwd: sandbox });
+
+    for (const path of sourcePaths) {
+      const target = join(sandbox, path);
+      await appendFile(target, "\n// drift\n");
+      assert.notEqual((await run()).status, 0);
+      await copyFile(join(repositoryRoot, path), target);
+    }
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
 });

@@ -110,7 +110,10 @@ A manifest contains:
   asset expiry; capabilities bind the screen, organization, active immutable
   assignment ID/digest, asset, server-owned storage key, digest, size, and GET
   method, and online delivery rechecks that the assignment is still latest and
-  active before reading storage;
+  active before reading storage; the API requires identity-encoded object
+  responses and enforces the signed size against the actual response stream;
+  it withholds the final byte until clean upstream EOF so late errors or bytes
+  cannot complete the response;
 - a signed `withdrawn` flag; a withdrawal is an empty, normal-priority release that intentionally clears playback;
 - an optional signed `playbackEndsAt` boundary for the selected schedule, distinct from the routinely refreshed envelope lease;
 - immutable asset URL, media type, size, SHA-256, and duration;

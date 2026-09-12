@@ -67,6 +67,13 @@ A stream that completed its authorization recheck before the commit may finish;
 stopping such an in-flight object response would require coordinated stream
 revocation across PostgreSQL and object storage.
 
+The private object fetch requests identity encoding, rejects encoded responses,
+and requires a canonical `Content-Length`. Delivery independently counts the
+bytes actually streamed against the signed asset size. Extra bytes are never
+forwarded, and the final byte is withheld until clean upstream EOF so late extra
+bytes, truncation, or upstream failure cannot complete the declared response. A
+downstream disconnect destroys the upstream object stream.
+
 ## Security and scope
 
 - Locations are stable, tenant-bound administrative classifications. Existing

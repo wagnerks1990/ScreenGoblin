@@ -78,10 +78,14 @@ entries are origin-only HTTPS URLs using non-local DNS hostnames; URL credential
 are rejected. The metadata-only pilot boundary accepts exact MIME/kind pairs for
 JPEG, PNG, MP4, and JSON templates, requires a positive size no greater than
 128 MiB, canonicalizes SHA-256 to lowercase, and accepts only future expiries.
-Web assets are disabled. The API stores metadata and does not fetch, sniff, scan,
-decode, transcode, or upload the object. Players reject redirects while
-downloading binary assets; a hostname can still resolve to a private address,
-so controlled DNS and player-network egress remain required.
+Web assets are disabled. The API does not fetch a submitted legacy URL, sniff,
+scan, decode, transcode, or upload the object. Private delivery fetches only the
+server-derived key from the configured S3 endpoint, requests identity encoding,
+rejects encoded or malformed-length responses, and enforces the signed size on
+the actual stream, withholding its final byte until clean upstream EOF. Players
+reject redirects while downloading binary assets; a hostname can still resolve
+to a private address, so controlled DNS and
+player-network egress remain required.
 
 ## Caching and consistency
 

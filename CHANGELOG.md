@@ -14,6 +14,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   recovery for interrupted historical nontransactional migrations; no
   scheduled maintenance or automatic migration repair is claimed.
 
+- Require identity-encoded private object responses and enforce the signed byte
+  length against the bytes actually streamed through the API. Encoded,
+  overlong, truncated, missing-length, and malformed-length responses fail
+  closed; the final byte is released only after a clean upstream EOF so a late
+  extra chunk or error cannot complete the declared HTTP response. Downstream
+  disconnects abort the upstream object stream.
+
 - Validate schedule absolute windows by parsed instants and canonicalize
   accepted timestamps to millisecond UTC before persistence, immutable
   assignment hashing, idempotency replay, and management responses. Startup
