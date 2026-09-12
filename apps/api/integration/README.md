@@ -28,3 +28,21 @@ Known contract gaps are intentionally not hidden by the harness:
   explicit organization-selection flow remains preferable.
 - DTO counters are JavaScript `number` values. The store rejects database
   values above `Number.MAX_SAFE_INTEGER` instead of returning imprecise data.
+
+The immutable-release migration deliberately aborts if legacy `Schedule` rows
+exist. SQL cannot safely reconstruct the application-defined canonical release
+digest and frozen target/content snapshots. Before applying that migration to
+an existing environment, operators must explicitly convert or remove legacy
+schedules in a backed-up maintenance window, verify the resulting immutable
+release records on a staging restore, and only then deploy the new manifest
+reader. The migration never silently blanks previously scheduled screens.
+
+Published releases retain composite tenant-bound references to their source
+playlist, playlist items, and media with `ON DELETE RESTRICT`. Draft metadata
+may change without changing a frozen release, but referenced source deletion is
+intentionally refused until an explicit archival/retention workflow exists.
+
+Assignment targets retain the published `screenId` as immutable history while
+their nullable live-screen pointer uses `ON DELETE SET NULL`. Deleting a screen
+therefore removes live targeting without erasing the release assignment's
+original target snapshot.
