@@ -47,20 +47,27 @@ enum PairingStatus {
   REVOKED
 }
 
+enum ReleaseAssignmentState {
+  ASSIGNED
+  WITHDRAWN
+}
+
 model Organization {
-  id          String              @id @default(cuid())
-  name        String
-  slug        String              @unique
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-  memberships Membership[]
-  screens     Screen[]
-  media       MediaAsset[]
-  playlists   Playlist[]
-  schedules   Schedule[]
-  pairings    PairingCode[]
-  emergencies EmergencyOverride[]
-  audits      AuditEvent[]
+  id                 String              @id @default(cuid())
+  name               String
+  slug               String              @unique
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  memberships        Membership[]
+  screens            Screen[]
+  media              MediaAsset[]
+  playlists          Playlist[]
+  schedules          Schedule[]
+  pairings           PairingCode[]
+  emergencies        EmergencyOverride[]
+  audits             AuditEvent[]
+  publishedReleases  PublishedRelease[]
+  releaseAssignments ReleaseAssignment[]
 }
 
 model User {
@@ -78,43 +85,46 @@ model User {
 }
 
 model Membership {
-  id             String       @id @default(cuid())
-  organizationId String
-  userId         String
-  role           OrgRole
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String              @id @default(cuid())
+  organizationId     String
+  userId             String
+  role               OrgRole
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publishedReleases  PublishedRelease[]  @relation("PublishedReleaseCreatorMembership")
+  releaseAssignments ReleaseAssignment[] @relation("ReleaseAssignmentCreatorMembership")
 
   @@unique([organizationId, userId])
   @@index([userId])
 }
 
 model Screen {
-  id                  String           @id @default(cuid())
-  organizationId      String
-  name                String
-  location            String           @default("")
-  status              ScreenStatus     @default(OFFLINE)
-  orientation         Orientation      @default(LANDSCAPE)
-  resolution          String           @default("1920x1080")
-  tags                String[]         @default([])
-  installationId      String?          @unique
-  deviceTokenHash     String?
-  model               String?
-  osVersion           String?
-  playerVersion       String?
-  manifestVersion     String?
-  nowPlayingAssetId   String?
-  uptimeSeconds       BigInt?
-  freeStorageBytes    BigInt?
-  networkType         String?
-  lastSeenAt          DateTime?
-  credentialRevokedAt DateTime?
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
-  organization        Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  schedules           ScheduleTarget[]
-  pairingCodes        PairingCode[]
+  id                       String                    @id @default(cuid())
+  organizationId           String
+  name                     String
+  location                 String                    @default("")
+  status                   ScreenStatus              @default(OFFLINE)
+  orientation              Orientation               @default(LANDSCAPE)
+  resolution               String                    @default("1920x1080")
+  tags                     String[]                  @default([])
+  installationId           String?                   @unique
+  deviceTokenHash          String?
+  model                    String?
+  osVersion                String?
+  playerVersion            String?
+  manifestVersion          String?
+  nowPlayingAssetId        String?
+  uptimeSeconds            BigInt?
+  freeStorageBytes         BigInt?
+  networkType              String?
+  lastSeenAt               DateTime?
+  credentialRevokedAt      DateTime?
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  organization             Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  schedules                ScheduleTarget[]
+  pairingCodes             PairingCode[]
+  releaseAssignmentTargets ReleaseAssignmentTarget[]
 
   @@unique([id, organizationId])
   @@index([organizationId, status])
@@ -138,71 +148,76 @@ model PairingCode {
 }
 
 model MediaAsset {
-  id              String         @id @default(cuid())
-  organizationId  String
-  name            String
-  kind            MediaKind
-  mimeType        String
-  url             String
-  checksumSha256  String
-  sizeBytes       BigInt
-  durationSeconds Int?
-  expiresAt       DateTime?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  playlistItems   PlaylistItem[]
+  id                 String              @id @default(cuid())
+  organizationId     String
+  name               String
+  kind               MediaKind
+  mimeType           String
+  url                String
+  checksumSha256     String
+  sizeBytes          BigInt
+  durationSeconds    Int?
+  expiresAt          DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  playlistItems      PlaylistItem[]
+  frozenReleaseItems FrozenReleaseItem[]
 
   @@unique([id, organizationId])
   @@index([organizationId, createdAt])
 }
 
 model Playlist {
-  id             String         @id @default(cuid())
-  organizationId String
-  name           String
-  description    String         @default("")
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  items          PlaylistItem[]
-  schedules      Schedule[]
+  id                String             @id @default(cuid())
+  organizationId    String
+  name              String
+  description       String             @default("")
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  items             PlaylistItem[]
+  schedules         Schedule[]
+  publishedReleases PublishedRelease[]
 
   @@unique([id, organizationId])
   @@unique([organizationId, name])
 }
 
 model PlaylistItem {
-  id              String     @id @default(cuid())
-  organizationId  String
-  playlistId      String
-  assetId         String
-  position        Int
-  durationSeconds Int
-  playlist        Playlist   @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
-  asset           MediaAsset @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  id                 String              @id @default(cuid())
+  organizationId     String
+  playlistId         String
+  assetId            String
+  position           Int
+  durationSeconds    Int
+  playlist           Playlist            @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  asset              MediaAsset          @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  frozenReleaseItems FrozenReleaseItem[]
 
+  @@unique([id, organizationId])
   @@unique([playlistId, position])
 }
 
 model Schedule {
-  id                String           @id @default(cuid())
-  organizationId    String
-  playlistId        String
-  name              String
-  priority          SchedulePriority @default(NORMAL)
-  startsAt          DateTime
-  endsAt            DateTime?
-  timezone          String           @default("UTC")
-  daysOfWeek        Int[]            @default([])
-  dailyStartMinutes Int?
-  dailyEndMinutes   Int?
-  enabled           Boolean          @default(true)
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
-  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  playlist          Playlist         @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
-  targets           ScheduleTarget[]
+  id                 String              @id @default(cuid())
+  organizationId     String
+  playlistId         String
+  name               String
+  priority           SchedulePriority    @default(NORMAL)
+  startsAt           DateTime
+  endsAt             DateTime?
+  timezone           String              @default("UTC")
+  daysOfWeek         Int[]               @default([])
+  dailyStartMinutes  Int?
+  dailyEndMinutes    Int?
+  enabled            Boolean             @default(true)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  playlist           Playlist            @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  targets            ScheduleTarget[]
+  releaseAssignments ReleaseAssignment[]
 
   @@unique([id, organizationId])
   @@index([organizationId, startsAt, endsAt])
@@ -216,6 +231,97 @@ model ScheduleTarget {
   screen         Screen   @relation(fields: [screenId, organizationId], references: [id, organizationId], onDelete: Cascade)
 
   @@id([scheduleId, screenId])
+}
+
+model PublishedRelease {
+  id                        String              @id @default(cuid())
+  organizationId            String
+  sourcePlaylistId          String
+  sourcePlaylistName        String
+  sourcePlaylistDescription String
+  sourcePlaylistUpdatedAt   DateTime
+  digestSha256              String
+  createdById               String
+  createdAt                 DateTime            @default(now())
+  organization              Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sourcePlaylist            Playlist            @relation(fields: [sourcePlaylistId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  createdBy                 Membership          @relation("PublishedReleaseCreatorMembership", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: Restrict)
+  items                     FrozenReleaseItem[]
+  assignments               ReleaseAssignment[]
+
+  @@unique([id, organizationId])
+  @@unique([organizationId, digestSha256])
+  @@index([organizationId, createdAt])
+}
+
+model FrozenReleaseItem {
+  id                   String           @id @default(cuid())
+  organizationId       String
+  releaseId            String
+  sourcePlaylistItemId String
+  sourceAssetId        String
+  assetName            String
+  assetKind            MediaKind
+  assetMimeType        String
+  assetUrl             String
+  assetChecksumSha256  String
+  assetSizeBytes       BigInt
+  assetCreatedAt       DateTime
+  assetExpiresAt       DateTime?
+  position             Int
+  durationSeconds      Int
+  createdAt            DateTime         @default(now())
+  release              PublishedRelease @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  sourcePlaylistItem   PlaylistItem     @relation(fields: [sourcePlaylistItemId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  sourceAsset          MediaAsset       @relation(fields: [sourceAssetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([releaseId, position])
+  @@index([organizationId, sourceAssetId])
+}
+
+model ReleaseAssignment {
+  id                   String                    @id @default(cuid())
+  organizationId       String
+  releaseId            String
+  scheduleId           String
+  state                ReleaseAssignmentState
+  digestSha256         String
+  previousAssignmentId String?                   @unique
+  createdById          String
+  scheduleName         String
+  priority             SchedulePriority
+  startsAt             DateTime
+  endsAt               DateTime?
+  timezone             String
+  daysOfWeek           Int[]
+  dailyStartMinutes    Int?
+  dailyEndMinutes      Int?
+  enabled              Boolean
+  createdAt            DateTime                  @default(now())
+  organization         Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  release              PublishedRelease          @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  schedule             Schedule                  @relation(fields: [scheduleId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  createdBy            Membership                @relation("ReleaseAssignmentCreatorMembership", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: Restrict)
+  previousAssignment   ReleaseAssignment?        @relation("ReleaseAssignmentHistory", fields: [previousAssignmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  nextAssignments      ReleaseAssignment[]       @relation("ReleaseAssignmentHistory")
+  targets              ReleaseAssignmentTarget[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, scheduleId, createdAt])
+  @@index([organizationId, releaseId])
+}
+
+model ReleaseAssignmentTarget {
+  organizationId           String
+  assignmentId             String
+  screenId                 String
+  liveScreenId             String?
+  liveScreenOrganizationId String?
+  assignment               ReleaseAssignment @relation(fields: [assignmentId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  liveScreen               Screen?           @relation(fields: [liveScreenId, liveScreenOrganizationId], references: [id, organizationId], onDelete: SetNull)
+
+  @@id([assignmentId, screenId])
+  @@index([organizationId, screenId])
 }
 
 model EmergencyOverride {

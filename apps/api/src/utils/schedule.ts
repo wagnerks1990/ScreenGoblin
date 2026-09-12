@@ -1,4 +1,10 @@
-import type { ScheduleRecord } from "../domain/types.js";
+import type { Priority, ScheduleRecord } from "../domain/types.js";
+
+type ScheduleWindow = Pick<
+  ScheduleRecord,
+  "endsAt" | "timezone" | "daysOfWeek" | "dailyStartMinutes" | "dailyEndMinutes"
+>;
+type SchedulePrecedence = { id: string; priority: Priority; startsAt: string };
 
 const weekdayIndex: Record<string, number> = {
   Sun: 0,
@@ -149,7 +155,7 @@ export function resolveZonedWallMinute(
 }
 
 export function schedulePlaybackEndsAt(
-  schedule: ScheduleRecord,
+  schedule: ScheduleWindow,
   instant: Date,
 ): string | undefined {
   const candidates: number[] = [];
@@ -170,8 +176,8 @@ export function schedulePlaybackEndsAt(
 }
 
 export function compareSchedulePrecedence(
-  left: ScheduleRecord,
-  right: ScheduleRecord,
+  left: SchedulePrecedence,
+  right: SchedulePrecedence,
 ): number {
   return (
     priorityWeight[right.priority] - priorityWeight[left.priority] ||
@@ -190,7 +196,7 @@ export function validTimeZone(value: string): boolean {
 }
 
 export function matchesScheduleWindow(
-  schedule: ScheduleRecord,
+  schedule: ScheduleWindow,
   instant: Date,
 ): boolean {
   const local = zonedParts(instant, schedule.timezone);

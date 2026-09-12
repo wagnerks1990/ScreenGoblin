@@ -37,6 +37,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Require an explicit canonical HTTPS media-origin allowlist in production,
   revalidate legacy media before manifest publication, and reject binary asset
   redirects in the Player.
+- Publish ordinary schedules, frozen playlist/asset facts, target and time-window
+  assignments, and required audit events atomically; validate frozen URLs
+  against the exact-origin policy inside the publication transaction.
 
 ### Fixed
 
@@ -49,6 +52,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   withdrawals for absent or unplayable schedules, and enforce signed daily or
   absolute playback boundaries without sacrificing ordinary offline
   last-known-good playback.
+- Build ordinary manifests only from immutable release and assignment snapshots;
+  schedule withdrawal now appends an audited state event while retaining release
+  history, and later source edits cannot rewrite active playback.
 - Serialize Player synchronization and make IndexedDB rollback version-conditional
   so stale polls, expiry callbacks, and playback failures cannot overwrite a
   newer release or withdrawal.

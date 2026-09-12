@@ -72,8 +72,17 @@ export const playlistRoutes: FastifyPluginAsync = async (app) => {
   app.delete("/playlists/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
     const { id } = params.parse(request.params);
-    if (!(await app.store.deletePlaylist(request.user.organizationId, id)))
-      return sendNotFound(reply);
+    const result = await app.store.deletePlaylist(
+      request.user.organizationId,
+      id,
+    );
+    if (result === "NOT_FOUND") return sendNotFound(reply);
+    if (result === "IN_USE")
+      throw new ApiError(
+        409,
+        "RESOURCE_IN_USE",
+        "A published release or schedule still references this playlist",
+      );
     await app.store.audit({
       organizationId: request.user.organizationId,
       actorUserId: request.user.sub,

@@ -24,13 +24,17 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - Non-web assets are bounded, size/hash verified, and cache-pruned around atomic activation. Emergency overlays never enter the normal rollback chain, and stale callbacks may not roll back a newer active version.
 - Live operational data must fail visibly. Never replace a failed authenticated request with demo values.
 - Published content, schedules, commands, permissions, emergencies, and device lifecycle operations require durable audit coverage.
+- Ordinary schedule publication freezes playlist and asset playback facts plus
+  targets and schedule windows in an immutable release assignment. Manifest
+  selection must use only those snapshots; withdrawal is append-only and must
+  retain release history.
 - Tenant-owned database relationships must carry and enforce the same organization ID at the foreign-key boundary; migrations must abort for investigation rather than silently relabel cross-tenant legacy rows.
 - Production media must match an explicit canonical HTTPS origin. Direct player delivery still requires controlled DNS and egress because hostname allowlisting alone cannot prevent rebinding to private addresses.
 - Remote shell is not a default capability. Any future implementation needs explicit authorization, consent, scope, expiry, strong audit, and product-level review.
 
 ## Deliberately disabled or incomplete
 
-Emergency activation, remote commands, screenshots, proof of play, uploads/scanning, immutable approval releases, scoped location authorization, MFA/SSO, update rings, and server-bound Keystore proof of possession are not complete release capabilities. Do not create UI or documentation that implies otherwise.
+Emergency activation, remote commands, screenshots, proof of play, uploads/scanning, release approvals, scoped location authorization, MFA/SSO, update rings, and server-bound Keystore proof of possession are not complete release capabilities. Immutable ordinary release snapshots exist, but multi-party approval and promotion workflows remain incomplete. Do not create UI or documentation that implies otherwise.
 
 ## AI boundaries
 

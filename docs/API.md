@@ -36,6 +36,12 @@ Media metadata creation and manifest publication are fail-closed: each URL origi
 
 Mutable management responses use `Cache-Control: no-store`. Published media may be immutable and long-lived when addressed by checksum. Manifests include a stable semantic version, envelope validity window, signed `withdrawn` state, optional signed `playbackEndsAt` schedule boundary, checksums, `signatureAlgorithm: Ed25519`, and a signature. Pairing pins `manifestVerificationKey`; a player verifies the signed envelope and screen binding, then activates only after every required asset has been verified. A normal-priority withdrawal with no items intentionally clears playback when no schedule or playable asset applies. Players may retain normal last-known-good playback past the routinely refreshed `validUntil` lease during an outage, but must stop it at `playbackEndsAt`.
 
+## Ordinary release publication
+
+`POST /schedules` atomically freezes playlist metadata, ordered item and asset playback facts, target screen IDs, and the scheduling window into an immutable release assignment. It also writes the required audit event in the same transaction. The existing schedule response remains compatible and adds `releaseId` and `assignmentId`. Repeating an identical active assignment returns the existing records. Publication fails without partial records when a source or target is missing, the playlist is empty, or any snapshotted asset URL violates the exact-origin policy.
+
+`DELETE /schedules/:id` appends an immutable withdrawal assignment and its audit event instead of deleting release history. It is idempotent after the first withdrawal. Ordinary device manifests are selected exclusively from frozen release and assignment snapshots; later source edits or deletion attempts cannot rewrite an already published release.
+
 ## Health endpoints
 
 - `GET /health/live` — process is running; must not depend on remote services.

@@ -310,70 +310,55 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           },
         ];
       } else {
-        const schedules = (
-          await app.store.activeSchedules(
+        const releases = (
+          await app.store.activeOrdinaryReleases(
             screen.organizationId,
             screen.id,
             generatedAt,
           )
-        ).sort(compareSchedulePrecedence);
-        const selected = schedules[0];
+        ).sort((left, right) =>
+          compareSchedulePrecedence(
+            { id: left.assignment.id, ...left.assignment.schedule },
+            { id: right.assignment.id, ...right.assignment.schedule },
+          ),
+        );
+        const selected = releases[0];
         if (selected) {
-          const playlist = await app.store.getPlaylist(
-            screen.organizationId,
-            selected.playlistId,
-          );
-          if (playlist) {
-            const resolved = await Promise.all(
-              playlist.items
-                .sort((a, b) => a.position - b.position)
-                .map(async (item) => ({
-                  item,
-                  asset: await app.store.getMedia(
-                    screen.organizationId,
-                    item.assetId,
-                  ),
-                })),
-            );
-            items = resolved
-              .filter(
-                (
-                  x,
-                ): x is {
-                  item: (typeof playlist.items)[number];
-                  asset: NonNullable<typeof x.asset>;
-                } =>
-                  Boolean(x.asset) &&
-                  mediaUrlMatchesAllowedOrigin(
-                    x.asset!.url,
-                    app.config.mediaAllowedOrigins,
-                  ) &&
-                  (!x.asset?.expiresAt || x.asset.expiresAt > generatedAt),
-              )
-              .map(({ item, asset }) => ({
-                id: item.id,
-                asset: {
-                  id: asset.id,
-                  name: asset.name,
-                  kind: asset.kind,
-                  mimeType: asset.mimeType,
-                  url: asset.url,
-                  checksumSha256: asset.checksumSha256,
-                  sizeBytes: asset.sizeBytes,
-                  createdAt: asset.createdAt,
-                },
-                position: item.position,
-                durationSeconds: item.durationSeconds,
-              }));
-          }
+          items = selected.release.items
+            .filter(
+              (item) =>
+                mediaUrlMatchesAllowedOrigin(
+                  item.asset.url,
+                  app.config.mediaAllowedOrigins,
+                ) &&
+                (!item.asset.expiresAt || item.asset.expiresAt > generatedAt),
+            )
+            .map((item) => ({
+              id: item.id,
+              asset: {
+                id: item.asset.id,
+                name: item.asset.name,
+                kind: item.asset.kind,
+                mimeType: item.asset.mimeType,
+                url: item.asset.url,
+                checksumSha256: item.asset.checksumSha256,
+                sizeBytes: item.asset.sizeBytes,
+                createdAt: item.asset.createdAt,
+              },
+              position: item.position,
+              durationSeconds: item.durationSeconds,
+            }));
           // An applicable schedule without a playable item must clear playback.
           // Publishing an empty non-withdrawn release would be rejected by the
           // player and could leave stale content on screen indefinitely.
           if (items.length > 0) {
-            priority = selected.priority;
+            priority = selected.assignment.schedule.priority;
             withdrawn = false;
-            releaseIdentity = `schedule:${selected.id}:${selected.updatedAt}`;
-            playbackEndsAt = schedulePlaybackEndsAt(selected, generatedDate);
+            releaseIdentity = `assignment:${selected.assignment.digestSha256}`;
+            playbackEndsAt = schedulePlaybackEndsAt(
+              selected.assignment.schedule,
+              generatedDate,
+            );
           }
         }
       }
