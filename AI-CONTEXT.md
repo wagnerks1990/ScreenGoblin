@@ -14,6 +14,9 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 ## Architecture invariants
 
 - Players connect outbound over TLS. In `proof-v1`, Android creates a non-exportable Keystore P-256 identity, the server enrolls its canonical public key, and every manifest or heartbeat requires a fresh operation- and body-bound one-use proof. Production rejects the localhost-only `development-bearer` mode.
+- Production must reject documented placeholders and checked-in JWT/pairing
+  test secrets, as well as the public all-zero Ed25519 test seed. Test fixtures
+  may remain usable only when `NODE_ENV` is explicitly non-production.
 - Enrollment is a two-stage, transcript-bound challenge exchange. Android installation ID equals the server-derived SHA-256 SPKI key ID; an identical successful final claim is idempotently recoverable. A reported Keystore security level is not attestation, and a stolen pairing code remains first-winner authority.
 - Device revocation is an OWNER/ADMIN capability revalidated transactionally with the credential/screen change, outstanding-challenge invalidation, and one audit record. Revocation blocks online proof use but cannot recall or erase content from an offline player.
 - Targeted re-enrollment is a manual, zero-overlap recovery protocol for an

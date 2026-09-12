@@ -17,6 +17,23 @@ const obviouslyPrivateDnsName = (hostname: string) => {
   );
 };
 
+const unsafeProductionSecrets = new Set([
+  "jwt-secret-that-is-at-least-thirty-two-characters",
+  "pairing-pepper-that-is-at-least-thirty-two-characters",
+  "ci-only-jwt-secret-at-least-32-characters",
+  "ci-only-pairing-pepper-at-least-32-characters",
+  "e2e-only-jwt-secret-at-least-32-characters",
+  "e2e-only-pairing-pepper-at-least-32-characters",
+  "rate-limit-test-secret-that-is-long-enough",
+  "test-secret-that-is-longer-than-thirty-two-characters",
+]);
+
+const isUnsafeProductionSecret = (value: string) =>
+  /replace-with|change-?me/i.test(value) || unsafeProductionSecrets.has(value);
+
+const isAllZeroSeed = (value: string) =>
+  Buffer.from(value, "base64url").every((byte) => byte === 0);
+
 export function parseMediaAllowedOrigins(
   raw: string,
   environment: "development" | "test" | "production",
@@ -130,17 +147,29 @@ const schema = z
         path: ["PUBLIC_API_URL"],
         message: "must use HTTPS in production",
       });
-    if (/replace-with|change-?me/i.test(value.JWT_SECRET))
+    if (isUnsafeProductionSecret(value.JWT_SECRET))
       context.addIssue({
         code: "custom",
         path: ["JWT_SECRET"],
-        message: "must not be a documented placeholder",
+        message: "must not be a documented placeholder or test secret",
+      });
+    if (isUnsafeProductionSecret(value.PAIRING_CODE_PEPPER))
+      context.addIssue({
+        code: "custom",
+        path: ["PAIRING_CODE_PEPPER"],
+        message: "must not be a documented placeholder or test secret",
       });
     if (value.JWT_SECRET === value.PAIRING_CODE_PEPPER)
       context.addIssue({
         code: "custom",
         path: ["PAIRING_CODE_PEPPER"],
         message: "must be distinct from JWT_SECRET",
+      });
+    if (isAllZeroSeed(value.MANIFEST_SIGNING_PRIVATE_KEY))
+      context.addIssue({
+        code: "custom",
+        path: ["MANIFEST_SIGNING_PRIVATE_KEY"],
+        message: "must not use the all-zero test seed",
       });
   });
 export type Config = z.infer<typeof schema>;

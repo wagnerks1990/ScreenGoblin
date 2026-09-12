@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { randomBytes } from "node:crypto";
 import { loadConfig } from "../src/config.js";
 
 const base = {
   NODE_ENV: "production",
   DATABASE_URL: "postgresql://example.invalid/screengoblin",
   REDIS_URL: "redis://redis.example.test:6379/0",
-  JWT_SECRET: "jwt-secret-that-is-at-least-thirty-two-characters",
-  PAIRING_CODE_PEPPER: "pairing-pepper-that-is-at-least-thirty-two-characters",
+  JWT_SECRET: randomBytes(48).toString("base64url"),
+  PAIRING_CODE_PEPPER: randomBytes(48).toString("base64url"),
   DEVICE_AUTH_MODE: "proof-v1",
-  MANIFEST_SIGNING_PRIVATE_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  MANIFEST_SIGNING_PRIVATE_KEY: randomBytes(32).toString("base64url"),
   PUBLIC_API_URL: "https://signage.example.test",
   MEDIA_ALLOWED_ORIGINS: "https://media.example.test",
 };
@@ -33,6 +34,50 @@ describe("production configuration", () => {
     expect(loadConfig(base).PUBLIC_API_URL).toBe(
       "https://signage.example.test",
     );
+  });
+
+  it.each([
+    ["JWT_SECRET", "replace-with-at-least-32-random-characters"],
+    ["JWT_SECRET", "ci-only-jwt-secret-at-least-32-characters"],
+    ["JWT_SECRET", "e2e-only-jwt-secret-at-least-32-characters"],
+    ["JWT_SECRET", "jwt-secret-that-is-at-least-thirty-two-characters"],
+    ["JWT_SECRET", "test-secret-that-is-longer-than-thirty-two-characters"],
+    [
+      "PAIRING_CODE_PEPPER",
+      "replace-with-a-separate-at-least-32-character-secret",
+    ],
+    ["PAIRING_CODE_PEPPER", "ci-only-pairing-pepper-at-least-32-characters"],
+    ["PAIRING_CODE_PEPPER", "e2e-only-pairing-pepper-at-least-32-characters"],
+    [
+      "PAIRING_CODE_PEPPER",
+      "pairing-pepper-that-is-at-least-thirty-two-characters",
+    ],
+    ["PAIRING_CODE_PEPPER", "rate-limit-test-secret-that-is-long-enough"],
+  ] as const)("rejects checked-in production %s value", (name, secret) => {
+    expect(() => loadConfig({ ...base, [name]: secret })).toThrow(name);
+  });
+
+  it("rejects the decoded all-zero manifest signing test seed", () => {
+    expect(() =>
+      loadConfig({
+        ...base,
+        MANIFEST_SIGNING_PRIVATE_KEY:
+          "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      }),
+    ).toThrow(/MANIFEST_SIGNING_PRIVATE_KEY/);
+  });
+
+  it("retains explicit test fixtures outside production", () => {
+    expect(
+      loadConfig({
+        ...base,
+        NODE_ENV: "test",
+        JWT_SECRET: "ci-only-jwt-secret-at-least-32-characters",
+        PAIRING_CODE_PEPPER: "ci-only-pairing-pepper-at-least-32-characters",
+        MANIFEST_SIGNING_PRIVATE_KEY:
+          "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      }),
+    ).toMatchObject({ NODE_ENV: "test" });
   });
 
   it("refuses to enable the incomplete emergency workflow in production", () => {
