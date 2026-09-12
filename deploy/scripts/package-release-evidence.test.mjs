@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import {
-  mkdtemp,
-  mkdir,
-  readFile,
-  rm,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
+import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,39 +13,43 @@ const script = join(
   "package-release-evidence.sh",
 );
 
-test("release evidence packaging is deterministic and checksum-bound", async () => {
-  const root = await mkdtemp(join(tmpdir(), "screengoblin-evidence-"));
+async function writeFixture(directory) {
+  await fs.mkdir(join(directory, "nested"), { recursive: true });
+  const readme = join(directory, "README.txt");
+  const result = join(directory, "nested", "result.json");
+  await fs.writeFile(readme, "evidence\n", { mode: 0o600 });
+  await fs.writeFile(result, '{"ok":true}\n', { mode: 0o600 });
+}
+
+test("release evidence archive is deterministic", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "screengoblin-evidence-"));
   try {
     const first = join(root, "first");
     const second = join(root, "second");
-    for (const directory of [first, second]) {
-      await mkdir(join(directory, "nested"), { recursive: true });
-      await writeFile(join(directory, "README.txt"), "evidence\n", {
-        mode: 0o600,
-      });
-      await writeFile(join(directory, "nested", "result.json"), '{"ok":true}\n', {
-        mode: 0o600,
-      });
-    }
-    await utimes(join(first, "README.txt"), new Date(1_000), new Date(2_000));
-    await utimes(join(second, "README.txt"), new Date(9_000), new Date(10_000));
+    await writeFixture(first);
+    await writeFixture(second);
+
+    const early = new Date(1_000);
+    const late = new Date(10_000);
+    await fs.utimes(join(first, "README.txt"), early, early);
+    await fs.utimes(join(second, "README.txt"), late, late);
 
     const firstArchive = join(root, "first.tar.gz");
     const secondArchive = join(root, "second.tar.gz");
     await execFileAsync(script, [first, firstArchive]);
     await execFileAsync(script, [second, secondArchive]);
 
-    assert.deepEqual(await readFile(firstArchive), await readFile(secondArchive));
-    await execFileAsync("sha256sum", [
-      "--check",
-      "--strict",
-      `${firstArchive}.sha256`,
-    ]);
+    const firstBytes = await fs.readFile(firstArchive);
+    const secondBytes = await fs.readFile(secondArchive);
+    assert.deepEqual(firstBytes, secondBytes);
+
+    const checksum = `${firstArchive}.sha256`;
+    await execFileAsync("sha256sum", ["--check", "--strict", checksum]);
     await assert.rejects(
       execFileAsync(script, [first, firstArchive]),
       /Refusing to overwrite/,
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true });
   }
 });
