@@ -10,9 +10,21 @@ const device = {
   playerVersion: "0.1.0",
 };
 
+const authorizePairing = <T extends MemoryStore>(store: T) => {
+  store.users.push({
+    id: "user-a",
+    email: "owner@example.test",
+    name: "Owner",
+    passwordHash: "unused",
+    organizationId: "org-a",
+    role: "OWNER",
+  });
+  return store;
+};
+
 describe("pairing store invariants", () => {
   it("creates a pairing and its audit atomically", async () => {
-    const store = new MemoryStore();
+    const store = authorizePairing(new MemoryStore());
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
 
     const result = await store.tryCreatePairingAndAudit(
@@ -50,7 +62,7 @@ describe("pairing store invariants", () => {
         throw new Error("audit unavailable");
       }
     }
-    const store = new RejectingAuditStore();
+    const store = authorizePairing(new RejectingAuditStore());
 
     await expect(
       store.tryCreatePairingAndAudit(
@@ -62,6 +74,42 @@ describe("pairing store invariants", () => {
     ).rejects.toThrow("audit unavailable");
     expect(store.pairings).toEqual([]);
     expect(store.audits).toEqual([]);
+  });
+
+  it("revalidates current pairing-code authority before any state change", async () => {
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    for (const actor of [
+      { organizationId: "org-a", role: "VIEWER" as const },
+      {
+        organizationId: "org-a",
+        role: "ADMIN" as const,
+        disabledAt: expiresAt,
+      },
+      { organizationId: "org-b", role: "ADMIN" as const },
+    ]) {
+      const store = new MemoryStore();
+      store.users.push({
+        id: "user-a",
+        email: "operator@example.test",
+        name: "Operator",
+        passwordHash: "unused",
+        ...actor,
+      });
+      const expired = await store.createPairing(
+        "org-a",
+        "expired-hash",
+        new Date(0).toISOString(),
+      );
+
+      await expect(
+        store.tryCreatePairingAndAudit("org-a", "expired-hash", expiresAt, {
+          actorUserId: "user-a",
+        }),
+      ).resolves.toEqual({ created: false, reason: "FORBIDDEN" });
+      expect(expired.status).toBe("PENDING");
+      expect(store.pairings).toEqual([expired]);
+      expect(store.audits).toEqual([]);
+    }
   });
 
   it("distinguishes a live-code collision and permits reuse after expiry", async () => {

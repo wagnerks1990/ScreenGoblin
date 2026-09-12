@@ -6,6 +6,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Revalidate current `OWNER`/`ADMIN` membership inside pairing-code issuance
+  transactions so concurrent demotion, disablement, or tenant removal cannot
+  mint enrollment authority; authorization failure leaves pairing and audit
+  state unchanged and returns `403` without retrying as a code collision.
 - Stream Android binary assets directly into app-private staging files, verify
   exact signed size and SHA-256 incrementally, and atomically publish only
   complete matches. Expose native available-storage telemetry, prune

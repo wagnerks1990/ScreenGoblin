@@ -171,6 +171,12 @@ export const pairingAdminRoutes: FastifyPluginAsync = async (app) => {
             requestId: request.id,
           },
         );
+        if (!result.created && result.reason === "FORBIDDEN")
+          throw new ApiError(
+            403,
+            "FORBIDDEN",
+            "You do not have permission to perform this action",
+          );
         if (result.created) {
           code = candidate;
           pairingId = result.pairing.id;
