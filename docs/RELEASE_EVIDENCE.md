@@ -86,17 +86,37 @@ evidence bundle.
 
 ## Tag and manual evidence
 
-`.github/workflows/release-evidence.yml` runs for `v*` tags and manual dispatches. It can retain compressed Docker archives for the three locally built images for 30 days. Every file in the bundle is bound by `SHA256SUMS`, and CI immediately verifies the checksum file.
+`.github/workflows/release-evidence.yml` runs for `v*` tags and manual
+dispatches. The build job gives neither trigger OIDC or attestation authority. It
+packages the checksum-bound evidence directory into a gzip archive with stable
+entry ordering, timestamps, ownership, modes, and gzip headers, then verifies
+the archive's adjacent SHA-256 checksum. This normalizes packaging metadata; it
+does not claim that independent container builds are byte-for-byte reproducible.
 
-The artifact is deliberately named **unsigned release evidence**. The current repository does not provide:
+For a `v*` tag event, a separate tag-only job receives
+`id-token: write` and `attestations: write`. The build job passes it only the
+archive and checksum through a one-day handoff artifact. The tag job rechecks
+the checksum, creates GitHub OIDC build provenance for the archive digest,
+immediately verifies that attestation against this repository, and only then
+retains the final **attested release evidence** artifact for 30 days. The
+archive's internal `SHA256SUMS` transitively binds its Docker archives, SBOMs,
+scan results, image inspection records, and source metadata to the attested
+subject.
+
+A manual dispatch never runs the privileged provenance job. It retains the same
+archive and checksum for 30 days under the explicit **unsigned release
+evidence** name, even when Docker archives were requested.
+
+This tranche does not provide:
 
 - a trusted production registry or digest-pinned promotion contract;
-- keyless or hardware-backed signing;
-- SLSA provenance or an equivalent attestation;
+- independent or hardware-backed production artifact signing and key custody;
+- direct OCI-image or Android APK signatures/provenance;
 - protected production-environment approval; or
 - Android production signing and controlled rollout evidence.
 
-Until those controls and the remaining pre-production gates are implemented and evidenced, the archives must not be described or used as production releases.
+Until those controls and the remaining pre-production gates are implemented and
+evidenced, neither artifact may be described or used as a production release.
 
 ## Local reproduction
 
@@ -109,7 +129,13 @@ RELEASE_EVIDENCE_ARCHIVES=false \
 deploy/scripts/build-release-evidence.sh
 ```
 
-The script refuses to overwrite an existing evidence directory. Set `RELEASE_EVIDENCE_ARCHIVES=true` only when local Docker archives are required and protected storage capacity is available.
+The builder refuses to overwrite an existing evidence directory. To reproduce
+the workflow's canonical packaging, run
+`deploy/scripts/package-release-evidence.sh release-evidence release-evidence.tar.gz`;
+the packager also refuses archive/checksum collisions. Set
+`RELEASE_EVIDENCE_ARCHIVES=true` only when local Docker archives are required
+and protected storage capacity is available. Local packaging remains unsigned
+unless a trusted external system attests the resulting archive digest.
 
 ## Promotion requirements
 

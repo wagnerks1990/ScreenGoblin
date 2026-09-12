@@ -68,9 +68,12 @@ cat > "$OUTPUT_DIR/README.txt" <<EOF
 ScreenGoblin build and security evidence
 Source revision: $RELEASE_ID
 
-This bundle is unsigned CI evidence. It is not a production release, does not
-establish provenance, and must not be promoted without the approvals, signing,
-registry, deployment, and recovery gates in docs/PREPRODUCTION.md.
+This directory is checksum-bound CI evidence. It is not a production release
+and does not independently establish provenance. A tag workflow may package it
+and bind the archive digest to GitHub OIDC provenance; verify that external
+attestation before relying on it. Promotion still requires the approvals,
+production signing, registry, deployment, and recovery gates in
+docs/PREPRODUCTION.md.
 EOF
 
 (

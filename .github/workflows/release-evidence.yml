@@ -30,22 +30,72 @@ jobs:
             https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
           echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
           tar --extract --gzip --file "$RUNNER_TEMP/trivy.tar.gz" --directory "$RUNNER_TEMP" trivy
-      - name: Build unsigned evidence bundle
+      - name: Build checksum-bound evidence bundle
         env:
           RELEASE_EVIDENCE_DIR: release-evidence
           RELEASE_EVIDENCE_ID: ${{ github.sha }}
           RELEASE_EVIDENCE_ARCHIVES: ${{ github.event_name == 'push' || inputs.include_archives }}
           TRIVY_BIN: ${{ runner.temp }}/trivy
         run: deploy/scripts/build-release-evidence.sh
+      - name: Package deterministic evidence archive
+        env:
+          RELEASE_EVIDENCE_ARCHIVE: release-evidence-${{ github.sha }}.tar.gz
+        run: deploy/scripts/package-release-evidence.sh release-evidence "$RELEASE_EVIDENCE_ARCHIVE"
       - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         if: always() && hashFiles('release-evidence/sarif/*.sarif') != ''
         with:
           sarif_file: release-evidence/sarif
           category: trivy-release-evidence
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always() && hashFiles('release-evidence/**') != ''
+        if: github.event_name == 'workflow_dispatch'
         with:
           name: unsigned-release-evidence-${{ github.sha }}
-          path: release-evidence
+          path: |
+            release-evidence-${{ github.sha }}.tar.gz
+            release-evidence-${{ github.sha }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        with:
+          name: release-evidence-provenance-input-${{ github.sha }}
+          path: |
+            release-evidence-${{ github.sha }}.tar.gz
+            release-evidence-${{ github.sha }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  provenance:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-evidence-provenance-input-${{ github.sha }}
+          path: provenance-input
+      - name: Verify handoff checksum
+        working-directory: provenance-input
+        run: sha256sum --check --strict "release-evidence-${GITHUB_SHA}.tar.gz.sha256"
+      - name: Attest evidence archive provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: provenance-input/release-evidence-${{ github.sha }}.tar.gz
+      - name: Verify GitHub artifact attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh attestation verify "provenance-input/release-evidence-${GITHUB_SHA}.tar.gz" --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: attested-release-evidence-${{ github.sha }}
+          path: |
+            provenance-input/release-evidence-${{ github.sha }}.tar.gz
+            provenance-input/release-evidence-${{ github.sha }}.tar.gz.sha256
           if-no-files-found: error
           retention-days: 30

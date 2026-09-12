@@ -18,6 +18,14 @@ const expected = new Map([
     "actions/upload-artifact",
     "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
   ],
+  [
+    "actions/download-artifact",
+    "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1",
+  ],
+  [
+    "actions/attest-build-provenance",
+    "4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2",
+  ],
   ["actions/setup-java", "de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1"],
   [
     "gradle/actions/setup-gradle",
