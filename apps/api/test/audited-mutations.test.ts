@@ -52,6 +52,103 @@ function authorized<T extends MemoryStore>(store: T): T {
 }
 
 describe("atomic audited administrative mutations", () => {
+  it("does not compact Memory publication responses on audit or replay-integrity failure", async () => {
+    const store = authorized(new ToggleRejectingAuditStore());
+    const screen = await store.createScreen("org-a", screenInput);
+    const media = await store.createMedia("org-a", mediaInput);
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Retention playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+    const input = {
+      playlistId: playlist.id,
+      name: "Retention schedule",
+      priority: "normal" as const,
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+      screenIds: [screen.id],
+    };
+    const expiredResponse = {
+      organizationId: "org-a",
+      operation: "schedule.publish" as const,
+      keyHash: "1".repeat(64),
+      actorUserId: actor.id,
+      requestDigestSha256: "2".repeat(64),
+      response: {
+        id: "historical-schedule",
+        organizationId: "org-a",
+        playlistId: playlist.id,
+        name: "Historical schedule",
+        priority: "normal" as const,
+        startsAt: input.startsAt,
+        timezone: "UTC",
+        daysOfWeek: [],
+        enabled: true,
+        screenIds: [screen.id],
+        releaseId: "historical-release",
+        assignmentId: "historical-assignment",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        updatedAt: "2020-01-01T00:00:00.000Z",
+      },
+      createdAt: "2020-01-01T00:00:00.000Z",
+      expiresAt: "2020-01-02T00:00:00.000Z",
+    };
+    store.idempotencyRecords.push(expiredResponse);
+    store.rejectAudit = true;
+    await expect(
+      store.publishScheduleAndAudit(
+        "org-a",
+        input,
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+        { keyHash: "3".repeat(64), requestDigestSha256: "4".repeat(64) },
+      ),
+    ).rejects.toThrow("audit unavailable");
+    expect(expiredResponse.response).toBeDefined();
+    expect(store.schedules).toEqual([]);
+
+    store.rejectAudit = false;
+    const idempotency = {
+      keyHash: "5".repeat(64),
+      requestDigestSha256: "6".repeat(64),
+    };
+    const published = await store.publishScheduleAndAudit(
+      "org-a",
+      input,
+      { actorUserId: actor.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+      idempotency,
+    );
+    if (!published.published) throw new Error("publication fixture failed");
+    const replayFailureSentinel = {
+      ...structuredClone(expiredResponse),
+      keyHash: "7".repeat(64),
+      response: structuredClone(published.schedule),
+    };
+    store.idempotencyRecords.push(replayFailureSentinel);
+    store.releases = [];
+    await expect(
+      store.publishScheduleAndAudit(
+        "org-a",
+        input,
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+        idempotency,
+      ),
+    ).rejects.toThrow("Idempotent publication references are missing");
+    expect(replayFailureSentinel.response).toBeDefined();
+  });
+
   it("keeps Memory device replacement and revocation mutations audit-atomic", async () => {
     const timestamp = new Date().toISOString();
     const seed = async () => {

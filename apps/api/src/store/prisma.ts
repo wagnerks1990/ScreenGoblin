@@ -50,6 +50,8 @@ import type {
 import {
   SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION,
   SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS,
+  DATABASE_MAINTENANCE_BATCH_SIZE,
+  DEVICE_AUTH_CHALLENGE_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
   LOGIN_FAILURE_RETENTION_MS,
 } from "../domain/types.js";
@@ -464,6 +466,45 @@ export class PrismaStore implements DataStore {
         AND actor."disabledAt" IS NULL
       FOR UPDATE OF membership, actor`;
     return actor?.role;
+  }
+  private async pruneOldDeviceAuthChallenges(
+    tx: Prisma.TransactionClient,
+    databaseNow: Date,
+  ) {
+    const cutoff = new Date(
+      databaseNow.getTime() - DEVICE_AUTH_CHALLENGE_RETENTION_MS,
+    );
+    await tx.$executeRaw`
+      WITH removable AS (
+        SELECT challenge."id"
+        FROM "DeviceAuthChallenge" challenge
+        WHERE challenge."expiresAt" <= ${cutoff}
+        ORDER BY challenge."expiresAt" ASC, challenge."id" ASC
+        LIMIT ${DATABASE_MAINTENANCE_BATCH_SIZE}
+        FOR UPDATE OF challenge SKIP LOCKED
+      )
+      DELETE FROM "DeviceAuthChallenge" challenge
+      USING removable
+      WHERE challenge."id" = removable."id"`;
+  }
+  private async compactExpiredIdempotencyResponses(
+    tx: Prisma.TransactionClient,
+    databaseNow: Date,
+  ) {
+    await tx.$executeRaw`
+      WITH compactable AS (
+        SELECT record."id"
+        FROM "IdempotencyRecord" record
+        WHERE record."responseBody" IS NOT NULL
+          AND record."expiresAt" <= ${databaseNow}
+        ORDER BY record."expiresAt" ASC, record."id" ASC
+        LIMIT ${DATABASE_MAINTENANCE_BATCH_SIZE}
+        FOR UPDATE OF record SKIP LOCKED
+      )
+      UPDATE "IdempotencyRecord" record
+      SET "responseBody" = NULL
+      FROM compactable
+      WHERE record."id" = compactable."id"`;
   }
   private async lockLocationForClassification(
     tx: Prisma.TransactionClient,
@@ -2607,6 +2648,7 @@ export class PrismaStore implements DataStore {
           })) >= 4
         )
           return null;
+        await this.pruneOldDeviceAuthChallenges(tx, locked.databaseNow);
         const challenge = await tx.deviceAuthChallenge.create({
           data: {
             id: randomToken(),
@@ -3359,11 +3401,6 @@ export class PrismaStore implements DataStore {
                 existingIdempotency.expiresAt <= clock.databaseNow ||
                 existingIdempotency.responseBody === null
               ) {
-                if (existingIdempotency.responseBody !== null)
-                  await tx.idempotencyRecord.update({
-                    where: { id: existingIdempotency.id },
-                    data: { responseBody: Prisma.DbNull },
-                  });
                 return {
                   published: false,
                   reason: "IDEMPOTENCY_KEY_EXPIRED",
@@ -3388,6 +3425,10 @@ export class PrismaStore implements DataStore {
                 throw new Error(
                   "Idempotent publication references are missing",
                 );
+              await this.compactExpiredIdempotencyResponses(
+                tx,
+                clock.databaseNow,
+              );
               return {
                 published: true,
                 schedule,
@@ -3399,6 +3440,10 @@ export class PrismaStore implements DataStore {
             const rememberPublication = async (
               result: Extract<SchedulePublicationResult, { published: true }>,
             ) => {
+              await this.compactExpiredIdempotencyResponses(
+                tx,
+                clock.databaseNow,
+              );
               await tx.idempotencyRecord.create({
                 data: {
                   organizationId: org,

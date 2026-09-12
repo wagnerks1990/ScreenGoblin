@@ -2,6 +2,10 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "../src/store/memory.js";
 import { PrismaStore } from "../src/store/prisma.js";
+import {
+  DATABASE_MAINTENANCE_BATCH_SIZE,
+  DEVICE_AUTH_CHALLENGE_RETENTION_MS,
+} from "../src/domain/types.js";
 
 const device = {
   installationId: "installation-store-test",
@@ -9,6 +13,15 @@ const device = {
   osVersion: "14",
   playerVersion: "0.1.0",
 };
+
+class ToggleRejectingChallengeIdStore extends MemoryStore {
+  rejectChallengeId = false;
+  protected override createDeviceAuthChallengeId() {
+    if (this.rejectChallengeId)
+      throw new Error("challenge entropy unavailable");
+    return super.createDeviceAuthChallengeId();
+  }
+}
 
 const authorizePairing = <T extends MemoryStore>(store: T) => {
   store.users.push({
@@ -240,6 +253,117 @@ describe("pairing store invariants", () => {
 });
 
 describe("store serialization invariants", () => {
+  it("bounds in-memory device challenge retention without pruning live rows", async () => {
+    const store = new ToggleRejectingChallengeIdStore();
+    const screen = await store.createScreen("org-a", {
+      name: "Retention screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const keyId = Buffer.alloc(32, 9).toString("base64url");
+    store.deviceCredentials.push({
+      id: "credential-a",
+      organizationId: "org-a",
+      screenId: screen.id,
+      detached: false,
+      keyId,
+      publicKeySpki: Buffer.alloc(91, 9).toString("base64url"),
+      algorithm: "ES256",
+      securityLevel: "trusted-environment",
+      createdAt: new Date().toISOString(),
+    });
+    const expiredAt = new Date(
+      Date.now() - DEVICE_AUTH_CHALLENGE_RETENTION_MS - 60_000,
+    ).toISOString();
+    store.deviceAuthChallenges.push(
+      ...Array.from(
+        { length: DATABASE_MAINTENANCE_BATCH_SIZE + 5 },
+        (_, index) => ({
+          id: `expired-${index.toString().padStart(3, "0")}`,
+          organizationId: "org-a",
+          credentialId: "credential-a",
+          challengeHashSha256: index.toString(16).padStart(64, "0"),
+          operation: "manifest" as const,
+          requestDigestSha256: "a".repeat(64),
+          expiresAt: expiredAt,
+          consumedAt: expiredAt,
+          createdAt: expiredAt,
+        }),
+      ),
+    );
+
+    const live = await store.issueDeviceAuthChallenge({
+      screenId: screen.id,
+      keyId,
+      challengeHashSha256: "f".repeat(64),
+      operation: "manifest",
+      requestDigestSha256: "b".repeat(64),
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+
+    expect(live).not.toBeNull();
+    expect(store.deviceAuthChallenges).toHaveLength(6);
+    expect(store.deviceAuthChallenges).toContainEqual(live);
+
+    for (let index = 0; index < 3; index += 1) {
+      await expect(
+        store.issueDeviceAuthChallenge({
+          screenId: screen.id,
+          keyId,
+          challengeHashSha256: (index + 10).toString(16).padStart(64, "0"),
+          operation: "manifest",
+          requestDigestSha256: "c".repeat(64),
+          expiresAt: new Date(Date.now() + 30_000).toISOString(),
+        }),
+      ).resolves.not.toBeNull();
+    }
+    const retainedAtCap = {
+      id: "retained-at-cap",
+      organizationId: "org-a",
+      credentialId: "credential-a",
+      challengeHashSha256: "d".repeat(64),
+      operation: "heartbeat" as const,
+      requestDigestSha256: "e".repeat(64),
+      expiresAt: expiredAt,
+      consumedAt: expiredAt,
+      createdAt: expiredAt,
+    };
+    store.deviceAuthChallenges.push(retainedAtCap);
+    await expect(
+      store.issueDeviceAuthChallenge({
+        screenId: screen.id,
+        keyId,
+        challengeHashSha256: "9".repeat(64),
+        operation: "manifest",
+        requestDigestSha256: "8".repeat(64),
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      }),
+    ).resolves.toBeNull();
+    expect(store.deviceAuthChallenges).toContainEqual(retainedAtCap);
+
+    const liveIndex = store.deviceAuthChallenges.findIndex(
+      (challenge) =>
+        challenge.operation === "manifest" && challenge.expiresAt > expiredAt,
+    );
+    expect(liveIndex).toBeGreaterThanOrEqual(0);
+    store.deviceAuthChallenges.splice(liveIndex, 1);
+    const beforeEntropyFailure = structuredClone(store.deviceAuthChallenges);
+    store.rejectChallengeId = true;
+    await expect(
+      store.issueDeviceAuthChallenge({
+        screenId: screen.id,
+        keyId,
+        challengeHashSha256: "7".repeat(64),
+        operation: "manifest",
+        requestDigestSha256: "6".repeat(64),
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      }),
+    ).rejects.toThrow("challenge entropy unavailable");
+    expect(store.deviceAuthChallenges).toEqual(beforeEntropyFailure);
+  });
+
   it("uses a stable organization fallback when an email has multiple memberships", async () => {
     const store = new MemoryStore();
     store.users.push(

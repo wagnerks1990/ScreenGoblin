@@ -108,7 +108,9 @@ model IdempotencyRecord {
   organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, operation, keyHash])
-  @@index([expiresAt])
+  /// A custom migration also creates a partial (expiresAt, id) index for rows
+  /// whose responseBody is not NULL; Prisma cannot express partial indexes.
+  @@index([expiresAt, id])
 }
 
 model Location {
@@ -328,7 +330,7 @@ model DeviceAuthChallenge {
   credential          DeviceCredential    @relation(fields: [credentialId, organizationId], references: [id, organizationId], onDelete: Cascade)
 
   @@index([organizationId, credentialId, expiresAt, consumedAt])
-  @@index([expiresAt])
+  @@index([expiresAt, id])
 }
 
 model MediaAsset {

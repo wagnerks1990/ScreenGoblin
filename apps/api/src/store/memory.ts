@@ -46,6 +46,8 @@ import type {
 import {
   SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION,
   SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS,
+  DATABASE_MAINTENANCE_BATCH_SIZE,
+  DEVICE_AUTH_CHALLENGE_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
   LOGIN_FAILURE_RETENTION_MS,
 } from "../domain/types.js";
@@ -93,6 +95,40 @@ export class MemoryStore implements DataStore {
     return Object.freeze([...this.auditRecords]);
   }
   async ping() {}
+  protected createDeviceAuthChallengeId() {
+    return randomToken();
+  }
+  private pruneOldDeviceAuthChallenges(timestamp: string) {
+    const cutoff = new Date(
+      new Date(timestamp).getTime() - DEVICE_AUTH_CHALLENGE_RETENTION_MS,
+    ).toISOString();
+    const removable = this.deviceAuthChallenges
+      .filter((challenge) => challenge.expiresAt <= cutoff)
+      .sort(
+        (a, b) =>
+          a.expiresAt.localeCompare(b.expiresAt) || a.id.localeCompare(b.id),
+      )
+      .slice(0, DATABASE_MAINTENANCE_BATCH_SIZE);
+    if (removable.length === 0) return;
+    const ids = new Set(removable.map(({ id }) => id));
+    this.deviceAuthChallenges = this.deviceAuthChallenges.filter(
+      ({ id }) => !ids.has(id),
+    );
+  }
+  private compactExpiredIdempotencyResponses(timestamp: string) {
+    for (const record of this.idempotencyRecords
+      .filter(
+        (candidate) =>
+          candidate.response !== undefined && candidate.expiresAt <= timestamp,
+      )
+      .sort(
+        (a, b) =>
+          a.expiresAt.localeCompare(b.expiresAt) ||
+          a.keyHash.localeCompare(b.keyHash),
+      )
+      .slice(0, DATABASE_MAINTENANCE_BATCH_SIZE))
+      delete record.response;
+  }
   protected buildAuditRecord(
     event: Omit<AuditRecord, "id" | "createdAt">,
   ): AuditRecord {
@@ -1643,7 +1679,7 @@ export class MemoryStore implements DataStore {
     )
       return null;
     const challenge: DeviceAuthChallengeRecord = {
-      id: randomToken(),
+      id: this.createDeviceAuthChallengeId(),
       organizationId: authenticated.credential.organizationId,
       credentialId: authenticated.credential.id,
       challengeHashSha256: input.challengeHashSha256,
@@ -1652,6 +1688,7 @@ export class MemoryStore implements DataStore {
       expiresAt: input.expiresAt,
       createdAt,
     };
+    this.pruneOldDeviceAuthChallenges(createdAt);
     this.deviceAuthChallenges.push(challenge);
     return { ...challenge };
   }
@@ -2234,7 +2271,6 @@ export class MemoryStore implements DataStore {
         existingIdempotency.expiresAt <= timestamp ||
         !existingIdempotency.response
       ) {
-        delete existingIdempotency.response;
         return { published: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
       }
       const schedule = structuredClone(existingIdempotency.response);
@@ -2250,6 +2286,7 @@ export class MemoryStore implements DataStore {
       );
       if (!release || !assignment)
         throw new Error("Idempotent publication references are missing");
+      this.compactExpiredIdempotencyResponses(timestamp);
       return { published: true, schedule, release, assignment, replayed: true };
     }
     const screenIds = [...new Set(data.screenIds)].sort();
@@ -2368,6 +2405,7 @@ export class MemoryStore implements DataStore {
         result,
         timestamp,
       );
+      this.compactExpiredIdempotencyResponses(timestamp);
       return result;
     }
     const schedule: ScheduleRecord = {
@@ -2424,6 +2462,7 @@ export class MemoryStore implements DataStore {
       result,
       timestamp,
     );
+    this.compactExpiredIdempotencyResponses(timestamp);
     return result;
   }
 

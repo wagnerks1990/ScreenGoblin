@@ -268,6 +268,8 @@ export const SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION =
   "schedule.publish" as const;
 export const SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS =
   30 * 24 * 60 * 60 * 1_000;
+export const DEVICE_AUTH_CHALLENGE_RETENTION_MS = 24 * 60 * 60 * 1_000;
+export const DATABASE_MAINTENANCE_BATCH_SIZE = 100;
 
 export interface SchedulePublicationIdempotencyInput {
   keyHash: string;

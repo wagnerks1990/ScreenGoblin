@@ -27,6 +27,11 @@ Schedule publication coverage includes tenant-bound command keys, concurrent
 same-key serialization, lost-response replay after withdrawal, fresh-key
 intentional republication, authorization races, durable expired tombstones,
 and rollback when either audit or idempotency persistence fails.
+It also verifies bounded PostgreSQL-clock pruning of old device challenges,
+preservation of live challenges, bounded unrelated idempotency-response
+compaction, permanent command tombstones, and rollback of maintenance changes
+when publication fails atomically. Rejected issuance and publication attempts
+leave otherwise eligible maintenance rows unchanged.
 Audit coverage also exercises bounded scalar/JSON fields, the authoritative 16
 KiB `metadata::text` limit through transactional mutations, rejection of
 compressible oversized legacy metadata during constraint validation, stable

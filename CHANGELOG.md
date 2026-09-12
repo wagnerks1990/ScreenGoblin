@@ -6,6 +6,14 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Bound persistent proof-challenge history with database-clock, lock-skipping
+  pruning during successful issuance, preserving every live challenge. Compact
+  bounded batches of expired schedule-publication response bodies during
+  successful authorized publication while retaining permanent idempotency tombstones and
+  transactional rollback. Document checksum-safe verification and manual
+  recovery for interrupted historical nontransactional migrations; no
+  scheduled maintenance or automatic migration repair is claimed.
+
 - Validate schedule absolute windows by parsed instants and canonicalize
   accepted timestamps to millisecond UTC before persistence, immutable
   assignment hashing, idempotency replay, and management responses. Startup
