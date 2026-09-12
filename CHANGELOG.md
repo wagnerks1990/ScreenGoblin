@@ -52,6 +52,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Serialize Player synchronization and make IndexedDB rollback version-conditional
   so stale polls, expiry callbacks, and playback failures cannot overwrite a
   newer release or withdrawal.
+- Make Player playback state render-truthful: semantic releases restart cleanly,
+  readiness starts item duration and telemetry, stalled or failed renders recover
+  once, and late events cannot advance or roll back newer content.
 - Resolve schedule boundaries deterministically across daylight-saving gaps and
   repeated hours: nonexistent boundaries advance to the first valid instant,
   repeated starts use the later occurrence, and repeated ends use the earlier
