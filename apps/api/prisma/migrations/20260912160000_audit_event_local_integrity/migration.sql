@@ -45,6 +45,14 @@ BEGIN
       IF octet_length("value" #>> '{}') > 2048 THEN
         RETURN FALSE;
       END IF;
+    WHEN 'number' THEN
+      NULL;
+    WHEN 'boolean' THEN
+      NULL;
+    WHEN 'null' THEN
+      NULL;
+    ELSE
+      RETURN FALSE;
   END CASE;
 
   RETURN TRUE;
