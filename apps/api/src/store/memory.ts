@@ -1199,11 +1199,9 @@ export class MemoryStore implements DataStore {
       lastSeenAt: now(),
       updatedAt: now(),
     });
-    if (data.manifestVersion === null)
-      delete active.screen.manifestVersion;
+    if (data.manifestVersion === null) delete active.screen.manifestVersion;
     else active.screen.manifestVersion = data.manifestVersion;
-    if (data.nowPlayingAssetId === null)
-      delete active.screen.nowPlayingAssetId;
+    if (data.nowPlayingAssetId === null) delete active.screen.nowPlayingAssetId;
     else active.screen.nowPlayingAssetId = data.nowPlayingAssetId;
     return {
       authenticated: true as const,

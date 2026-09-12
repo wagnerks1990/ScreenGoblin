@@ -46,11 +46,7 @@ jobs:
       - run: npm ci
       - run: npm run prisma:generate -w @screengoblin/api
       - run: npm run prisma:migrate -w @screengoblin/api
-      - name: Emit canonical heartbeat formatting
-        run: |
-          npx prettier --write apps/api/src/store/memory.ts apps/api/test/device-proof-routes.test.ts apps/api/integration/prisma.integration.test.ts
-          git diff -- apps/api/src/store/memory.ts apps/api/test/device-proof-routes.test.ts apps/api/integration/prisma.integration.test.ts
-          exit 1
+      - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test:coverage

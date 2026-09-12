@@ -209,13 +209,13 @@ describe("proof-v1 device routes", () => {
     const { credentials } = await pair(fixture);
     const screenId = credentials.screenId as string;
     const sendHeartbeat = async (payload: {
-        installationId: string;
-        playerVersion: string;
-        manifestVersion?: string;
-        nowPlayingAssetId?: string;
-        uptimeSeconds: number;
-        freeStorageBytes: number;
-        networkType: string;
+      installationId: string;
+      playerVersion: string;
+      manifestVersion?: string;
+      nowPlayingAssetId?: string;
+      uptimeSeconds: number;
+      freeStorageBytes: number;
+      networkType: string;
       occurredAt: string;
     }) => {
       const challenge = await issueChallenge(

@@ -1242,11 +1242,11 @@ describe("PrismaStore PostgreSQL integration", () => {
   it("persists proof heartbeats as authoritative playback snapshots", async () => {
     const paired = await pairProofDevice("proof-heartbeat-snapshot", 31);
     const sendHeartbeat = async (data: {
-        playerVersion: string;
-        manifestVersion: string | null;
-        nowPlayingAssetId: string | null;
-        uptimeSeconds: number;
-        freeStorageBytes: number;
+      playerVersion: string;
+      manifestVersion: string | null;
+      nowPlayingAssetId: string | null;
+      uptimeSeconds: number;
+      freeStorageBytes: number;
       networkType: string;
     }) => {
       const requestDigestSha256 = proofHash();
