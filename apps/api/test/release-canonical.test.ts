@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { MediaRecord, PlaylistRecord } from "../src/domain/types.js";
+import type {
+  MediaRecord,
+  PlaylistRecord,
+  PublishedReleaseRecord,
+  ReleaseAssignmentRecord,
+} from "../src/domain/types.js";
 import {
   assignmentSnapshotDigest,
   canonicalAssignmentSnapshot,
   canonicalReleaseSnapshot,
+  hasValidStoredAssignmentDigest,
+  hasValidStoredReleaseDigest,
   ReleaseSnapshotError,
   releaseSnapshotDigest,
 } from "../src/releases/canonical.js";
@@ -144,6 +151,97 @@ describe("canonical release snapshots", () => {
     expect(releaseSnapshotDigest(changed)).not.toBe(
       releaseSnapshotDigest(first),
     );
+  });
+
+  it("recomputes complete stored release and assignment snapshots", () => {
+    const snapshot = canonicalReleaseSnapshot(
+      playlist([
+        { id: "item-a", assetId: "a", position: 0, durationSeconds: 10 },
+        { id: "item-b", assetId: "b", position: 1, durationSeconds: 20 },
+      ]),
+      [asset("a"), asset("b")],
+    );
+    const release: PublishedReleaseRecord = {
+      id: "release-a",
+      organizationId: "org-a",
+      sourcePlaylistId: snapshot.sourcePlaylistId,
+      sourcePlaylistUpdatedAt: snapshot.sourcePlaylistUpdatedAt,
+      playlistName: snapshot.playlistName,
+      playlistDescription: snapshot.playlistDescription,
+      items: snapshot.items,
+      digestSha256: releaseSnapshotDigest(snapshot),
+      createdById: "user-a",
+      createdAt: timestamp,
+    };
+    const schedule = {
+      name: "School day",
+      priority: "normal" as const,
+      startsAt: timestamp,
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+    };
+    const assignment: ReleaseAssignmentRecord = {
+      id: "assignment-a",
+      organizationId: "org-a",
+      releaseId: release.id,
+      scheduleId: "schedule-a",
+      screenIds: ["screen-a"],
+      state: "ASSIGNED",
+      schedule,
+      digestSha256: assignmentSnapshotDigest(
+        canonicalAssignmentSnapshot({
+          releaseDigestSha256: release.digestSha256,
+          state: "ASSIGNED",
+          schedule,
+          screenIds: ["screen-a"],
+        }),
+      ),
+      createdById: "user-a",
+      createdAt: timestamp,
+    };
+
+    expect(hasValidStoredReleaseDigest(release)).toBe(true);
+    expect(hasValidStoredAssignmentDigest(assignment, release)).toBe(true);
+    expect(
+      hasValidStoredReleaseDigest({ ...release, playlistName: "Tampered" }),
+    ).toBe(false);
+    expect(
+      hasValidStoredReleaseDigest({
+        ...release,
+        items: [
+          { ...release.items[0]!, durationSeconds: 11 },
+          release.items[1]!,
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      hasValidStoredReleaseDigest({
+        ...release,
+        items: [...release.items].reverse(),
+      }),
+    ).toBe(false);
+    expect(
+      hasValidStoredAssignmentDigest(
+        { ...assignment, screenIds: ["screen-b"] },
+        release,
+      ),
+    ).toBe(false);
+    expect(
+      hasValidStoredAssignmentDigest(
+        {
+          ...assignment,
+          schedule: { ...assignment.schedule, timezone: "Europe/Berlin" },
+        },
+        release,
+      ),
+    ).toBe(false);
+    expect(
+      hasValidStoredAssignmentDigest(
+        { ...assignment, organizationId: "org-b" },
+        release,
+      ),
+    ).toBe(false);
   });
 
   it("fails closed for empty snapshots and unresolved assets", () => {

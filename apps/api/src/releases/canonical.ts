@@ -4,6 +4,8 @@ import type {
   FrozenScheduleSnapshot,
   MediaRecord,
   PlaylistRecord,
+  PublishedReleaseRecord,
+  ReleaseAssignmentRecord,
 } from "../domain/types.js";
 
 export type ReleaseSnapshotFailureReason =
@@ -78,6 +80,32 @@ export const releaseSnapshotDigest = (
 ): string =>
   createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
 
+export function canonicalStoredReleaseSnapshot(
+  release: PublishedReleaseRecord,
+): CanonicalReleaseSnapshot {
+  return {
+    schemaVersion: 1,
+    sourcePlaylistId: release.sourcePlaylistId,
+    sourcePlaylistUpdatedAt: release.sourcePlaylistUpdatedAt,
+    playlistName: release.playlistName,
+    playlistDescription: release.playlistDescription,
+    items: release.items,
+  };
+}
+
+export const hasValidStoredReleaseDigest = (
+  release: PublishedReleaseRecord,
+): boolean => {
+  try {
+    return (
+      release.digestSha256 ===
+      releaseSnapshotDigest(canonicalStoredReleaseSnapshot(release))
+    );
+  } catch {
+    return false;
+  }
+};
+
 export interface CanonicalAssignmentSnapshot {
   schemaVersion: 1;
   releaseDigestSha256: string;
@@ -124,3 +152,30 @@ export const assignmentSnapshotDigest = (
   snapshot: CanonicalAssignmentSnapshot,
 ): string =>
   createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+
+export const hasValidStoredAssignmentDigest = (
+  assignment: ReleaseAssignmentRecord,
+  release: PublishedReleaseRecord,
+): boolean => {
+  try {
+    return (
+      assignment.organizationId === release.organizationId &&
+      assignment.releaseId === release.id &&
+      hasValidStoredReleaseDigest(release) &&
+      assignment.digestSha256 ===
+        assignmentSnapshotDigest(
+          canonicalAssignmentSnapshot({
+            releaseDigestSha256: release.digestSha256,
+            state: assignment.state,
+            schedule: assignment.schedule,
+            screenIds: assignment.screenIds,
+            ...(assignment.previousAssignmentId
+              ? { previousAssignmentId: assignment.previousAssignmentId }
+              : {}),
+          }),
+        )
+    );
+  } catch {
+    return false;
+  }
+};

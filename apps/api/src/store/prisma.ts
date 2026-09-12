@@ -54,6 +54,7 @@ import {
   assignmentSnapshotDigest,
   canonicalAssignmentSnapshot,
   canonicalReleaseSnapshot,
+  hasValidStoredAssignmentDigest,
   ReleaseSnapshotError,
   releaseSnapshotDigest,
 } from "../releases/canonical.js";
@@ -272,6 +273,18 @@ const releaseAssignmentDto = (
   createdById: String(x.createdById),
   createdAt: iso(x.createdAt as Date)!,
 });
+
+const verifiedReleaseAssignmentDtos = (x: Record<string, unknown>) => {
+  try {
+    const assignment = releaseAssignmentDto(x);
+    const release = publishedReleaseDto(x.release as Record<string, unknown>);
+    return hasValidStoredAssignmentDigest(assignment, release)
+      ? { assignment, release }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 const pairingDto = (x: {
   id: string;
@@ -3546,7 +3559,9 @@ export class PrismaStore implements DataStore {
     });
     const instant = new Date(at);
     return assignments.flatMap((assignment) => {
-      const assignmentDto = releaseAssignmentDto(assignment);
+      const verified = verifiedReleaseAssignmentDtos(assignment);
+      if (!verified) return [];
+      const { assignment: assignmentDto, release: releaseDto } = verified;
       if (
         assignmentDto.state !== "ASSIGNED" ||
         !assignmentDto.screenIds.includes(screenId) ||
@@ -3569,7 +3584,7 @@ export class PrismaStore implements DataStore {
       if (!matchesScheduleWindow(scheduleForWindow, instant)) return [];
       return [
         {
-          release: publishedReleaseDto(assignment.release),
+          release: releaseDto,
           assignment: assignmentDto,
         },
       ];
@@ -3586,51 +3601,35 @@ export class PrismaStore implements DataStore {
       where: {
         id: input.assignmentId,
         organizationId: input.organizationId,
-        digestSha256: input.assignmentDigestSha256,
-        state: "ASSIGNED",
-        enabled: true,
-        startsAt: { lte: at },
-        OR: [{ endsAt: null }, { endsAt: { gt: at } }],
         nextAssignments: { none: {} },
-        targets: { some: { screenId: input.screenId } },
-        release: {
-          items: {
-            some: {
-              sourceAssetId: input.assetId,
-              assetStorageKey: input.storageKey,
-              assetChecksumSha256: input.checksumSha256,
-              assetSizeBytes: BigInt(input.sizeBytes),
-              OR: [{ assetExpiresAt: null }, { assetExpiresAt: { gt: at } }],
-            },
-          },
-        },
       },
-      select: {
-        endsAt: true,
-        timezone: true,
-        daysOfWeek: true,
-        dailyStartMinutes: true,
-        dailyEndMinutes: true,
+      include: {
+        targets: true,
+        release: { include: { items: { orderBy: { position: "asc" } } } },
       },
     });
-    return Boolean(
-      assignment &&
-      matchesScheduleWindow(
-        {
-          ...(assignment.endsAt
-            ? { endsAt: assignment.endsAt.toISOString() }
-            : {}),
-          timezone: assignment.timezone,
-          daysOfWeek: assignment.daysOfWeek,
-          ...(assignment.dailyStartMinutes != null
-            ? { dailyStartMinutes: assignment.dailyStartMinutes }
-            : {}),
-          ...(assignment.dailyEndMinutes != null
-            ? { dailyEndMinutes: assignment.dailyEndMinutes }
-            : {}),
-        },
-        at,
-      ),
+    if (!assignment) return false;
+    const verified = verifiedReleaseAssignmentDtos(assignment);
+    if (!verified) return false;
+    const { assignment: assignmentDto, release: releaseDto } = verified;
+    if (
+      assignmentDto.digestSha256 !== input.assignmentDigestSha256 ||
+      assignmentDto.state !== "ASSIGNED" ||
+      !assignmentDto.screenIds.includes(input.screenId) ||
+      !assignmentDto.schedule.enabled ||
+      assignmentDto.schedule.startsAt > input.at ||
+      (assignmentDto.schedule.endsAt &&
+        assignmentDto.schedule.endsAt <= input.at) ||
+      !matchesScheduleWindow(assignmentDto.schedule, at)
+    )
+      return false;
+    return releaseDto.items.some(
+      (item) =>
+        item.asset.id === input.assetId &&
+        item.asset.storageKey === input.storageKey &&
+        item.asset.checksumSha256 === input.checksumSha256 &&
+        item.asset.sizeBytes === input.sizeBytes &&
+        (!item.asset.expiresAt || item.asset.expiresAt > input.at),
     );
   }
   async activeSchedules(org: string, screenId: string, at: string) {
