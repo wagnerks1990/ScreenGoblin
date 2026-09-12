@@ -40,6 +40,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Publish ordinary schedules, frozen playlist/asset facts, target and time-window
   assignments, and required audit events atomically; validate frozen URLs
   against the exact-origin policy inside the publication transaction.
+- Enforce ordinary release publication and withdrawal through a closed,
+  deny-by-default capability adapter at both the route and transactional store
+  boundaries, including current-membership revalidation.
 
 ### Fixed
 
