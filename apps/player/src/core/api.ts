@@ -49,7 +49,7 @@ export interface PlayerRequestOptions {
 }
 
 export interface PlayerPairingOptions extends PlayerRequestOptions {
-  /** Called after a replacement key is proved and awaits operator activation. */
+  /** Called after an enrollment key is proved and awaits operator activation. */
   onPending?: (
     pending: PairingPendingApprovalResponse,
     recovery: PendingProofPairing,
@@ -876,7 +876,7 @@ export class PlayerApi {
         const remaining = pollingDeadline - Date.now();
         if (remaining <= 0)
           throw new PlayerApiFailure(
-            "Replacement approval expired before activation",
+            "Enrollment approval expired before activation",
             "timeout",
             false,
           );
@@ -915,7 +915,7 @@ export class PlayerApi {
         const remaining = Date.parse(boundedRecovery.expiresAt) - Date.now();
         if (remaining <= 0)
           throw new PlayerApiFailure(
-            "Replacement approval expired before activation",
+            "Enrollment approval expired before activation",
             "timeout",
             false,
           );

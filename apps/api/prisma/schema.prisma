@@ -69,6 +69,8 @@ enum LoginFailureReason {
 
 enum IdempotencyOperation {
   SCHEDULE_PUBLISH
+  SCREEN_ENROLLMENT_CREATE
+  SCREEN_ENROLLMENT_ACTIVATE
 }
 
 model Organization {
@@ -109,7 +111,8 @@ model IdempotencyRecord {
 
   @@unique([organizationId, operation, keyHash])
   /// A custom migration also creates a partial (expiresAt, id) index for rows
-  /// whose responseBody is not NULL; Prisma cannot express partial indexes.
+  /// whose responseBody is not NULL, plus an organization-leading equivalent
+  /// for enrollment maintenance; Prisma cannot express partial indexes.
   @@index([expiresAt, id])
 }
 
@@ -235,6 +238,9 @@ model PairingCode {
   targetOrganizationId    String?
   expectedGeneration      Int?
   authorizedByUserId      String?
+  authorizedByMembershipId String?
+  authorizedByAuthenticationEpoch Int?
+  authorizedByAuthorizationEpoch Int?
   priorCredentialId       String?
   requestReason           String?
   codeHash                String
@@ -251,6 +257,7 @@ model PairingCode {
   @@index([organizationId, status, expiresAt])
   @@index([codeHash])
   @@index([targetScreenId, targetOrganizationId, status])
+  @@index([organizationId, authorizedByUserId, status])
 }
 
 model DeviceCredential {

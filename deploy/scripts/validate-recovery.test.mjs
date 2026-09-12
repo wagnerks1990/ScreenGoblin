@@ -22,6 +22,8 @@ test("recovery drill migrates and restores representative application relations"
     "Location",
     "User",
     "Screen",
+    "PairingCode",
+    "PairingAttempt",
     "MediaAsset",
     "Playlist",
     "PlaylistItem",
@@ -42,6 +44,10 @@ test("recovery drill migrates and restores representative application relations"
   assert.match(script, /Restored AuditEvent mutation guard allowed/);
   assert.match(script, /restoredAuditGuardCount/);
   assert.match(script, /restored_relation_count/);
+  assert.match(script, /authorizedByMembershipId/);
+  assert.match(script, /authorizedByAuthenticationEpoch/);
+  assert.match(script, /authorizedByAuthorizationEpoch/);
+  assert.match(script, /pc\..*codeHash.*repeat\('f', 64\)/);
 });
 
 test("recovery evidence binds restored object metadata and rejects RPO claims", () => {

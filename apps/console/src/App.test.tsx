@@ -707,17 +707,18 @@ describe("ScreenGoblin console", () => {
 
   it("requires acknowledgement before explicitly cancelling a grant", async () => {
     const { fetchMock, user } = await openReplacementWithStatus("PENDING");
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
 
     await user.click(
       screen.getByRole("button", { name: "Cancel replacement" }),
     );
     expect(
+      screen.getByRole("button", { name: "Confirm cancel replacement" }),
+    ).toBeTruthy();
+    expect(
       fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE"),
     ).toHaveLength(0);
-    confirm.mockReturnValueOnce(true);
     await user.click(
-      screen.getByRole("button", { name: "Cancel replacement" }),
+      screen.getByRole("button", { name: "Confirm cancel replacement" }),
     );
 
     expect(

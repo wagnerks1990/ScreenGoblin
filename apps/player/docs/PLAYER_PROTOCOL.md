@@ -30,31 +30,36 @@ The plugin can sign a 16–512-byte, unpadded-base64url challenge with
 form encoded as unpadded base64url. This is the native ASN.1 ECDSA `(r,s)`
 encoding, not the fixed-width JOSE signature encoding.
 
-Pairing first sends the code, exact device metadata, and identity to the pairing
+Production enrollment begins only after an OWNER/ADMIN precreates the tenant
+Screen and issues an issuer/epoch-bound grant for it. Pairing then sends the
+code, exact device metadata, and identity to the pairing
 challenge endpoint. Both stages use recursively sorted-key canonical JSON. The
 API returns an opaque challenge envelope; the player signs those exact decoded
 bytes and repeats the exact enrollment fields with `pairingProof` containing
 `challengeId`, `challenge`, `keyId`, `signatureFormat`, and `signature`. A
 successful identical final claim is idempotent, so a timeout retries the same
-serialized body and proof rather than acquiring a different challenge. The
-response has `authMode: proof-v1`, `credentialId`, and `keyId`; the player
-rejects a response or native signature whose key ID differs from the enrolled
-identity.
+serialized body and proof rather than acquiring a different challenge. For
+both initial enrollment and targeted re-enrollment, valid proof first returns
+HTTP `202` with `status: "pending-approval"`, grant/candidate identifiers, the
+exact key fingerprint, and expiry. It does not create a usable credential.
 
 For targeted re-enrollment, an authorized operator first creates a target-bound
 grant, which revokes and detaches the prior credential. Proving a replacement
 candidate does not activate or restore it. The Player requires an explicit local
 acknowledgement before rotating to a fresh Keystore key;
 an invalid code, pairing failure, or unauthorized response must never trigger a
-rotation. After fresh-key proof, the final pairing endpoint returns HTTP `202`
-with `status: "pending-approval"`, `grantId`, `candidateId`, `keyId`,
-`fingerprint`, and `expiresAt`. The Player displays that exact fingerprint for
-physical comparison and cannot use the candidate for manifests or heartbeats.
+rotation. After fresh-key proof, the Player uses the same pending recovery
+behavior as initial enrollment. It displays the exact fingerprint for manual
+comparison and cannot use the candidate for manifests or heartbeats.
 
-An OWNER or ADMIN separately activates the matching candidate. The Player then
+An OWNER or ADMIN separately activates the matching candidate. This comparison
+does not establish attestation, physical-device identity, a distinct approver,
+or two-person control. The Player then
 retries the identical serialized final request and proof: it continues receiving
 the same `202` while pending and receives the ordinary `201` proof credential
-response after activation. The server preserves the existing screen and its
+response after activation. Only this strict `201` has `authMode: proof-v1`,
+`credentialId`, and `keyId`; the Player rejects a response whose key ID differs
+from its active identity. The server preserves the existing screen and its
 assignments. Cancelled, expired, superseded, revoked, or generation-stale grants
 fail closed; a formerly enrolled key cannot be reused.
 

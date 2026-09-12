@@ -47,8 +47,12 @@ case " $* " in
     ;;
   *" port caddy 80 "*|*" port caddy 443 "*) printf '0.0.0.0:443\\n'; exit 0 ;;
   *" port "*) exit 1 ;;
+  *" exec -T postgres "*" -At "*) printf '1\n'; exit 0 ;;
   *" exec -T postgres "*) exit 0 ;;
   *" exec -T minio "*) printf '403'; exit 0 ;;
+  *" exec -T api "*"bcrypt"*) printf '\$2b\$12\$fixture'; exit 0 ;;
+  *" exec -T api "*"accessToken"*) printf 'fixture-management-token'; exit 0 ;;
+  *" exec -T api "*".code"*) printf '123456'; exit 0 ;;
   *" exec -T api "*) printf 'valid-capability\nexpired-capability\n'; exit 0 ;;
   *" run --rm --no-deps --entrypoint node api "*)
     printf 'release-digest\nassignment-digest\nwithdrawal-digest\n'
@@ -130,6 +134,10 @@ case "$url" in
     if [[ "$request" == TRACE ]]; then status=405; body=''; fi
     if [[ "$request" == POST ]]; then status=400; body='{"error":"invalid request"}'; fi
     ;;
+  */api/v1/pairing-codes) status=410; body='{"error":{"code":"UNTARGETED_ENROLLMENT_REMOVED"}}' ;;
+  */api/v1/screens/compose-enrollment-screen/device-enrollment)
+    status=201; body='{"grantId":"fixture-grant","screenId":"compose-enrollment-screen","code":"123456","expiresAt":"2099-01-01T00:00:00Z","generation":0}'
+    ;;
   */health/live) status=204 ;;
   */health/ready) status=404 ;;
   */media/runtime-smoke.txt) status=404 ;;
@@ -137,6 +145,7 @@ case "$url" in
   *capability=valid-capabilityx|*capability=expired-capability) status=404 ;;
   *) body='<div id="root"></div>' ;;
 esac
+if [[ "$output" == *enrollment-login.json ]]; then status=200; body='{"accessToken":"fixture-management-token"}'; fi
 if [[ "$output" == *private-media-withdrawn.body ]]; then status=404; body=''; fi
 csp="default-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'none'"
 if [[ "$url" == https://player.example.test/* ]]; then
@@ -203,6 +212,10 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     const result = runSmoke(f);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /production-runtime smoke passed/);
+    assert.match(scriptSource, /UNTARGETED_ENROLLMENT_REMOVED|expected 410/);
+    assert.match(scriptSource, /device-enrollment/);
+    assert.match(scriptSource, /authorizedByAuthenticationEpoch/);
+    assert.match(scriptSource, /authorizedByAuthorizationEpoch/);
     assert.match(scriptSource, /export ACME_EMAIL="ops@smoke\.example\.test"/);
     assert.match(scriptSource, /ACME_EMAIL=\$ACME_EMAIL/);
     assert.match(scriptSource, /MEDIA_DELIVERY_SECRET=\$MEDIA_DELIVERY_SECRET/);

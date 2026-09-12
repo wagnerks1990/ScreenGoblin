@@ -175,6 +175,40 @@ const scheduledPlaylist = async (
   return result.schedule;
 };
 
+describe("browser CORS policy", () => {
+  it("allows authenticated Console DELETE preflight only from an allowed origin", async () => {
+    const allowed = await app.inject({
+      method: "OPTIONS",
+      url: "/api/v1/screens/screen-a/device-enrollment/grant-a",
+      headers: {
+        origin: "http://localhost:5173",
+        "access-control-request-method": "DELETE",
+        "access-control-request-headers": "authorization",
+      },
+    });
+    expect(allowed.statusCode).toBe(204);
+    expect(allowed.headers["access-control-allow-origin"]).toBe(
+      "http://localhost:5173",
+    );
+    expect(allowed.headers["access-control-allow-methods"]).toContain("DELETE");
+    expect(allowed.headers["access-control-allow-headers"]).toContain(
+      "authorization",
+    );
+    expect(allowed.headers["access-control-allow-credentials"]).toBe("true");
+
+    const denied = await app.inject({
+      method: "OPTIONS",
+      url: "/api/v1/screens/screen-a/device-enrollment/grant-a",
+      headers: {
+        origin: "https://untrusted.example.test",
+        "access-control-request-method": "DELETE",
+        "access-control-request-headers": "authorization",
+      },
+    });
+    expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});
+
 describe("health and error contract", () => {
   it("reports liveness and readiness", async () => {
     const live = await app.inject({ url: "/health/live" });

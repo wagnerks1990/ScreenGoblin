@@ -68,11 +68,13 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
   const [status, setStatus] = useState("All statuses");
   const [selected, setSelected] = useState<FleetScreen | null>(null);
   const [pairOpen, setPairOpen] = useState(false);
-  const [pairing, setPairing] = useState<{
-    code: string;
-    expiresAt: string;
-  }>();
+  const [pairTargetId, setPairTargetId] = useState("");
   const [pairError, setPairError] = useState("");
+  const [enrollmentMode, setEnrollmentMode] = useState<"initial" | "replace">(
+    "replace",
+  );
+  const [enrollmentCreateKey, setEnrollmentCreateKey] = useState("");
+  const [enrollmentActivationKey, setEnrollmentActivationKey] = useState("");
   const [reenrollOpen, setReenrollOpen] = useState(false);
   const [reenrollScreen, setReenrollScreen] = useState<FleetScreen | null>(
     null,
@@ -84,6 +86,8 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
     useState<DeviceReenrollmentActivation>();
   const [reenrollError, setReenrollError] = useState("");
   const [reenrollBusy, setReenrollBusy] = useState(false);
+  const [cancelConfirmationRequested, setCancelConfirmationRequested] =
+    useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [candidateConfirmed, setCandidateConfirmed] = useState(false);
   const [reenrollReason, setReenrollReason] = useState("");
@@ -125,10 +129,16 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
     let timeout: number | undefined;
     const poll = async () => {
       try {
-        const next = await api.deviceReenrollmentStatus(
-          reenrollGrant.screenId,
-          reenrollGrant.grantId,
-        );
+        const next =
+          enrollmentMode === "initial"
+            ? await api.screenEnrollmentStatus(
+                reenrollGrant.screenId,
+                reenrollGrant.grantId,
+              )
+            : await api.deviceReenrollmentStatus(
+                reenrollGrant.screenId,
+                reenrollGrant.grantId,
+              );
         if (!active) return;
         setReenrollStatus(next);
         setReenrollError("");
@@ -140,7 +150,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
         setReenrollError(
           error instanceof Error
             ? error.message
-            : "Replacement status could not be refreshed.",
+            : `${enrollmentMode === "initial" ? "Enrollment" : "Replacement"} status could not be refreshed.`,
         );
         timeout = window.setTimeout(poll, 4000);
       }
@@ -150,7 +160,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
       active = false;
       if (timeout !== undefined) window.clearTimeout(timeout);
     };
-  }, [reenrollActivation, reenrollGrant, reenrollOpen]);
+  }, [enrollmentMode, reenrollActivation, reenrollGrant, reenrollOpen]);
   useEffect(() => {
     if (
       selectedCandidateId &&
@@ -164,12 +174,16 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
     }
   }, [reenrollStatus, selectedCandidateId]);
 
-  const beginReenrollment = (screen: FleetScreen) => {
+  const beginReenrollment = (
+    screen: FleetScreen,
+    mode: "initial" | "replace" = "replace",
+  ) => {
     if (reenrollGrant && !reenrollmentIsTerminal && !reenrollActivation) {
       setReenrollOpen(true);
       return;
     }
     setReenrollScreen(screen);
+    setEnrollmentMode(mode);
     setReenrollOpen(true);
     setReenrollGrant(undefined);
     setReenrollStatus(undefined);
@@ -177,17 +191,27 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
     setReenrollError("");
     setSelectedCandidateId("");
     setCandidateConfirmed(false);
+    setCancelConfirmationRequested(false);
     setReenrollReason("");
+    setEnrollmentCreateKey(crypto.randomUUID());
+    setEnrollmentActivationKey(crypto.randomUUID());
   };
   const createReenrollment = async () => {
     if (!reenrollScreen) return;
     setReenrollBusy(true);
     setReenrollError("");
     try {
-      const grant = await api.createDeviceReenrollment(
-        reenrollScreen.id,
-        reenrollReason.trim(),
-      );
+      const grant =
+        enrollmentMode === "initial"
+          ? await api.createScreenEnrollment(
+              reenrollScreen.id,
+              reenrollReason.trim(),
+              enrollmentCreateKey,
+            )
+          : await api.createDeviceReenrollment(
+              reenrollScreen.id,
+              reenrollReason.trim(),
+            );
       setReenrollGrant(grant);
       setFleetScreens((current) =>
         current.map((screen) =>
@@ -205,7 +229,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
       setReenrollError(
         error instanceof Error
           ? error.message
-          : "A replacement code could not be created.",
+          : `An ${enrollmentMode === "initial" ? "enrollment" : "replacement"} code could not be created.`,
       );
     } finally {
       setReenrollBusy(false);
@@ -220,34 +244,34 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
       setReenrollOpen(false);
       return;
     }
-    if (
-      !window.confirm(
-        "Cancel this replacement request? The revoked old credential will not be restored.",
-      )
-    ) {
-      return;
-    }
     setReenrollBusy(true);
     setReenrollError("");
     try {
-      await api.cancelDeviceReenrollment(
-        reenrollGrant.screenId,
-        reenrollGrant.grantId,
-      );
+      if (enrollmentMode === "initial")
+        await api.cancelScreenEnrollment(
+          reenrollGrant.screenId,
+          reenrollGrant.grantId,
+        );
+      else
+        await api.cancelDeviceReenrollment(
+          reenrollGrant.screenId,
+          reenrollGrant.grantId,
+        );
       setReenrollStatus({
         grantId: reenrollGrant.grantId,
         screenId: reenrollGrant.screenId,
-        status: "REVOKED",
+        status: "revoked",
         expiresAt: reenrollGrant.expiresAt,
         candidates: [],
       });
       setSelectedCandidateId("");
       setCandidateConfirmed(false);
+      setCancelConfirmationRequested(false);
     } catch (error) {
       setReenrollError(
         error instanceof Error
           ? error.message
-          : "The replacement request could not be cancelled.",
+          : `The ${enrollmentMode === "initial" ? "enrollment" : "replacement"} request could not be cancelled.`,
       );
     } finally {
       setReenrollBusy(false);
@@ -258,17 +282,30 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
     setReenrollBusy(true);
     setReenrollError("");
     try {
-      const activation = await api.activateDeviceReenrollmentCandidate(
-        reenrollGrant.screenId,
-        reenrollGrant.grantId,
-        selectedCandidateId,
+      const candidate = reenrollStatus?.candidates.find(
+        (value) => value.id === selectedCandidateId,
       );
+      if (!candidate) return;
+      const activation =
+        enrollmentMode === "initial"
+          ? await api.activateScreenEnrollmentCandidate(
+              reenrollGrant.screenId,
+              reenrollGrant.grantId,
+              selectedCandidateId,
+              candidate.fingerprint,
+              enrollmentActivationKey,
+            )
+          : await api.activateDeviceReenrollmentCandidate(
+              reenrollGrant.screenId,
+              reenrollGrant.grantId,
+              selectedCandidateId,
+            );
       setReenrollActivation(activation);
     } catch (error) {
       setReenrollError(
         error instanceof Error
           ? error.message
-          : "The selected replacement could not be activated.",
+          : `The selected ${enrollmentMode === "initial" ? "enrollment" : "replacement"} could not be activated.`,
       );
     } finally {
       setReenrollBusy(false);
@@ -292,22 +329,13 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
             icon={<MonitorCog size={18} />}
             onClick={async () => {
               setPairOpen(true);
-              setPairing(undefined);
+              setPairTargetId("");
               setPairError("");
               if (!api.hasLiveSession()) {
                 setPairError(
                   "Connect the console to the live API before pairing a screen.",
                 );
                 return;
-              }
-              try {
-                setPairing(await api.createPairingCode());
-              } catch (error) {
-                setPairError(
-                  error instanceof Error
-                    ? error.message
-                    : "A pairing code could not be created.",
-                );
               }
             }}
           >
@@ -550,15 +578,24 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
               <div className="drawer-section device-identity-section">
                 <h3>Device identity</h3>
                 <p>
-                  Stage a new hardware identity and verify its exact key before
-                  replacing this screen&apos;s active credential.
+                  Stage a hardware identity and verify its exact key before it
+                  can control this screen.
                 </p>
                 <Button
-                  variant="danger"
+                  variant={selected.lastSeenAt ? "danger" : "primary"}
                   icon={<KeyRound size={17} />}
-                  onClick={() => beginReenrollment(selected)}
+                  onClick={() =>
+                    beginReenrollment(
+                      selected,
+                      selected.lastSeenAt || selected.playerVersion
+                        ? "replace"
+                        : "initial",
+                    )
+                  }
                 >
-                  Replace device identity
+                  {selected.lastSeenAt || selected.playerVersion
+                    ? "Replace device identity"
+                    : "Enroll this screen"}
                 </Button>
               </div>
             )}
@@ -570,29 +607,55 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
         onClose={() => setPairOpen(false)}
         title="Pair a screen"
         footer={
-          <Button variant="secondary" onClick={() => setPairOpen(false)}>
-            Close
-          </Button>
+          <>
+            <Button variant="secondary" onClick={() => setPairOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!pairTargetId}
+              onClick={() => {
+                const target = fleetScreens.find(
+                  (screen) => screen.id === pairTargetId,
+                );
+                if (!target) return;
+                setPairOpen(false);
+                beginReenrollment(target, "initial");
+              }}
+            >
+              Continue
+            </Button>
+          </>
         }
       >
-        {pairing ? (
-          <div className="pairing-result" aria-live="polite">
-            <p>Enter this single-use code on the ScreenGoblin Player:</p>
-            <strong>{pairing.code}</strong>
-            <small>
-              Expires {new Date(pairing.expiresAt).toLocaleTimeString()}
-            </small>
-          </div>
-        ) : pairError ? (
+        {pairError ? (
           <p className="error-message">{pairError}</p>
         ) : (
-          <p>Creating a secure pairing code…</p>
+          <>
+            <p>
+              Select a precreated offline screen. Enrollment will remain pending
+              until an operator verifies the Player&apos;s exact fingerprint.
+            </p>
+            <Select
+              label="Screen"
+              value={pairTargetId}
+              onChange={setPairTargetId}
+            >
+              <option value="">Select a screen</option>
+              {fleetScreens
+                .filter((screen) => !screen.lastSeenAt && !screen.playerVersion)
+                .map((screen) => (
+                  <option key={screen.id} value={screen.id}>
+                    {screen.name} — {screen.location || "Unassigned"}
+                  </option>
+                ))}
+            </Select>
+          </>
         )}
       </Modal>
       <Modal
         open={reenrollOpen}
         onClose={dismissReenrollment}
-        title={`Replace device identity${reenrollScreen ? ` — ${reenrollScreen.name}` : ""}`}
+        title={`${enrollmentMode === "initial" ? "Enroll screen" : "Replace device identity"}${reenrollScreen ? ` — ${reenrollScreen.name}` : ""}`}
         footer={
           reenrollActivation || reenrollmentIsTerminal ? (
             <Button
@@ -604,24 +667,55 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
             </Button>
           ) : (
             <>
-              <Button
-                variant="secondary"
-                disabled={reenrollBusy}
-                onClick={
-                  reenrollGrant
-                    ? () => void cancelReenrollment()
-                    : dismissReenrollment
-                }
-              >
-                {reenrollGrant ? "Cancel replacement" : "Keep current identity"}
-              </Button>
+              {reenrollGrant && cancelConfirmationRequested ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    disabled={reenrollBusy}
+                    onClick={() => setCancelConfirmationRequested(false)}
+                  >
+                    Keep{" "}
+                    {enrollmentMode === "initial"
+                      ? "enrollment"
+                      : "replacement"}
+                  </Button>
+                  <Button
+                    variant="danger"
+                    disabled={reenrollBusy}
+                    onClick={() => void cancelReenrollment()}
+                  >
+                    Confirm cancel{" "}
+                    {enrollmentMode === "initial"
+                      ? "enrollment"
+                      : "replacement"}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="secondary"
+                  disabled={reenrollBusy}
+                  onClick={
+                    reenrollGrant
+                      ? () => setCancelConfirmationRequested(true)
+                      : dismissReenrollment
+                  }
+                >
+                  {reenrollGrant
+                    ? `Cancel ${enrollmentMode === "initial" ? "enrollment" : "replacement"}`
+                    : enrollmentMode === "initial"
+                      ? "Cancel"
+                      : "Keep current identity"}
+                </Button>
+              )}
               {!reenrollGrant && (
                 <Button
                   variant="danger"
                   disabled={reenrollBusy || !reenrollReason.trim()}
                   onClick={() => void createReenrollment()}
                 >
-                  {reenrollBusy ? "Creating code…" : "Create replacement code"}
+                  {reenrollBusy
+                    ? "Creating code…"
+                    : `Create ${enrollmentMode === "initial" ? "enrollment" : "replacement"} code`}
                 </Button>
               )}
               {reenrollGrant && selectedCandidateId && (
@@ -645,47 +739,60 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
           <div className="reenrollment-success" role="status">
             <h3>
               {reenrollActivation
-                ? "Replacement activated"
-                : "Replacement activated by another administrator"}
+                ? `${enrollmentMode === "initial" ? "Enrollment" : "Replacement"} activated`
+                : `${enrollmentMode === "initial" ? "Enrollment" : "Replacement"} activated by another administrator`}
             </h3>
             <p>
               Screen identity{" "}
               <code>
                 {reenrollActivation?.screenId ?? reenrollStatus?.screenId}
               </code>{" "}
-              was preserved. The selected device must reconnect with its new
-              credential.
+              {enrollmentMode === "initial" ? "was enrolled" : "was preserved"}.
+              The selected device must reconnect with its new credential.
             </p>
           </div>
         ) : reenrollmentIsTerminal ? (
           <div className="reenrollment-terminal" role="status">
-            <h3>Replacement request {reenrollStatusName}</h3>
+            <h3>
+              {enrollmentMode === "initial" ? "Enrollment" : "Replacement"}{" "}
+              request {reenrollStatusName}
+            </h3>
             <p>
-              No replacement candidate can be activated from this request. The
-              previously revoked credential has not been restored; create a new
-              replacement request to recover this screen.
+              No candidate can be activated from this request. Create a new{" "}
+              {enrollmentMode === "initial" ? "enrollment" : "replacement"}{" "}
+              request to recover this screen.
             </p>
           </div>
         ) : !reenrollGrant ? (
           <div className="reenrollment-warning">
             <AlertTriangle aria-hidden="true" />
             <div>
-              <h3>Creating a code causes an immediate interruption</h3>
+              <h3>
+                {enrollmentMode === "initial"
+                  ? "Create enrollment authority"
+                  : "Creating a code causes an immediate interruption"}
+              </h3>
               <p>
-                Creating the replacement code immediately revokes the current
-                credential and takes this screen offline. The screen record,
-                assignments, and history remain unchanged. A new device will not
-                be attached until you verify and activate its exact fingerprint.
+                {enrollmentMode === "initial"
+                  ? "The precreated screen remains offline and no device is attached until you verify and activate an exact fingerprint."
+                  : "Creating the replacement code immediately revokes the current credential and takes this screen offline. The screen record, assignments, and history remain unchanged. A new device will not be attached until you verify and activate its exact fingerprint."}
               </p>
             </div>
             <label className="field reenrollment-reason">
-              <span>Reason for replacement</span>
+              <span>
+                Reason for{" "}
+                {enrollmentMode === "initial" ? "enrollment" : "replacement"}
+              </span>
               <textarea
-                aria-label="Reason for replacement"
+                aria-label={`Reason for ${enrollmentMode === "initial" ? "enrollment" : "replacement"}`}
                 value={reenrollReason}
                 maxLength={500}
                 rows={3}
-                placeholder="For example: player hardware was replaced"
+                placeholder={
+                  enrollmentMode === "initial"
+                    ? "For example: install the lobby player"
+                    : "For example: player hardware was replaced"
+                }
                 onChange={(event) => setReenrollReason(event.target.value)}
               />
               <small>
@@ -696,7 +803,10 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
         ) : (
           <div className="reenrollment-progress">
             <div className="pairing-result" aria-live="polite">
-              <p>Enter this single-use code on the replacement Player:</p>
+              <p>
+                Enter this single-use code on the{" "}
+                {enrollmentMode === "initial" ? "new" : "replacement"} Player:
+              </p>
               <strong>{reenrollGrant.code}</strong>
               <small>
                 Expires {new Date(reenrollGrant.expiresAt).toLocaleTimeString()}
@@ -743,8 +853,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
               </fieldset>
             ) : (
               <p>
-                No proved replacement candidates yet. This page refreshes
-                automatically.
+                No proved candidates yet. This page refreshes automatically.
               </p>
             )}
             {selectedCandidateId && (

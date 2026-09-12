@@ -29,6 +29,10 @@ import type {
   PairingProofVerifier,
   ReenrollmentActivationResult,
   ReenrollmentCandidateRecord,
+  ScreenEnrollmentActivationIdempotencyInput,
+  ScreenEnrollmentActivationResult,
+  ScreenEnrollmentIdempotencyInput,
+  ScreenEnrollmentRequestResult,
   PlaylistRecord,
   PublishedReleaseRecord,
   ReleaseAssignmentRecord,
@@ -52,6 +56,7 @@ import {
   SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS,
   DATABASE_MAINTENANCE_BATCH_SIZE,
   DEVICE_AUTH_CHALLENGE_RETENTION_MS,
+  DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
   LOGIN_FAILURE_RETENTION_MS,
 } from "../domain/types.js";
@@ -312,8 +317,12 @@ const pairingDto = (x: {
   targetScreenReferenceId?: string | null;
   expectedGeneration?: number | null;
   authorizedByUserId?: string | null;
+  authorizedByMembershipId?: string | null;
+  authorizedByAuthenticationEpoch?: number | null;
+  authorizedByAuthorizationEpoch?: number | null;
   priorCredentialId?: string | null;
   requestReason?: string | null;
+  createdAt?: Date;
 }): PairingRecord => ({
   id: x.id,
   organizationId: x.organizationId,
@@ -330,8 +339,18 @@ const pairingDto = (x: {
     ? { expectedGeneration: x.expectedGeneration }
     : {}),
   ...(x.authorizedByUserId ? { authorizedByUserId: x.authorizedByUserId } : {}),
+  ...(x.authorizedByMembershipId
+    ? { authorizedByMembershipId: x.authorizedByMembershipId }
+    : {}),
+  ...(x.authorizedByAuthenticationEpoch != null
+    ? { authorizedByAuthenticationEpoch: x.authorizedByAuthenticationEpoch }
+    : {}),
+  ...(x.authorizedByAuthorizationEpoch != null
+    ? { authorizedByAuthorizationEpoch: x.authorizedByAuthorizationEpoch }
+    : {}),
   ...(x.priorCredentialId ? { priorCredentialId: x.priorCredentialId } : {}),
   ...(x.requestReason ? { requestReason: x.requestReason } : {}),
+  ...(x.createdAt ? { createdAt: iso(x.createdAt)! } : {}),
 });
 
 const deviceCredentialDto = (x: {
@@ -564,6 +583,88 @@ export class PrismaStore implements DataStore {
           AND owner."disabledAt" IS NULL
       ) AS "present"`;
     return result?.present === true;
+  }
+  private async revokePendingIssuerGrants(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    organizationIds: readonly string[],
+    at: Date,
+  ) {
+    const grants = await tx.pairingCode.findMany({
+      where: {
+        organizationId: { in: [...organizationIds] },
+        authorizedByUserId: userId,
+        status: "PENDING",
+      },
+      select: { id: true },
+      orderBy: { id: "asc" },
+    });
+    await tx.pairingAttempt.updateMany({
+      where: {
+        pairingCodeId: { in: grants.map(({ id }) => id) },
+        boundCredentialId: null,
+        cancelledAt: null,
+      },
+      data: { cancelledAt: at },
+    });
+    await tx.pairingCode.updateMany({
+      where: { id: { in: grants.map(({ id }) => id) } },
+      data: { status: "REVOKED" },
+    });
+    return grants.length;
+  }
+  private async pruneDeviceEnrollmentAuthority(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    databaseNow: Date,
+    preserveIdempotencyKeyHash?: string,
+  ) {
+    await tx.$executeRaw`
+      WITH compactable AS (
+        SELECT record."id"
+        FROM "IdempotencyRecord" record
+        WHERE record."organizationId" = ${organizationId}
+          AND record."responseBody" IS NOT NULL
+          AND record."expiresAt" <= ${databaseNow}
+          ${preserveIdempotencyKeyHash ? Prisma.sql`AND record."keyHash" <> ${preserveIdempotencyKeyHash}` : Prisma.empty}
+        ORDER BY record."expiresAt" ASC, record."id" ASC
+        LIMIT ${DATABASE_MAINTENANCE_BATCH_SIZE}
+        FOR UPDATE OF record SKIP LOCKED
+      )
+      UPDATE "IdempotencyRecord" record
+      SET "responseBody" = NULL
+      FROM compactable
+      WHERE record."id" = compactable."id"`;
+    const expiredPendingGrants = await tx.pairingCode.findMany({
+      where: {
+        organizationId,
+        status: "PENDING",
+        expiresAt: { lte: databaseNow },
+      },
+      select: { id: true },
+      orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+      take: DATABASE_MAINTENANCE_BATCH_SIZE,
+    });
+    await tx.pairingCode.updateMany({
+      where: { id: { in: expiredPendingGrants.map(({ id }) => id) } },
+      data: { status: "EXPIRED" },
+    });
+    const authorityCutoff = new Date(
+      databaseNow.getTime() - DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
+    );
+    const terminalGrants = await tx.pairingCode.findMany({
+      where: {
+        organizationId,
+        status: { not: "PENDING" },
+        expiresAt: { lte: authorityCutoff },
+      },
+      select: { id: true },
+      orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+      take: DATABASE_MAINTENANCE_BATCH_SIZE,
+    });
+    await tx.pairingCode.deleteMany({
+      where: { id: { in: terminalGrants.map(({ id }) => id) } },
+    });
   }
   async ping() {
     await this.prisma.$queryRaw`SELECT 1`;
@@ -890,6 +991,12 @@ export class PrismaStore implements DataStore {
       const clock = memberships[0]?.databaseNow;
       if (!clock)
         return { updated: false as const, reason: "NOT_FOUND" as const };
+      await this.revokePendingIssuerGrants(
+        tx,
+        userId,
+        memberships.map(({ organizationId }) => organizationId),
+        clock,
+      );
       await tx.user.update({
         where: { id: userId },
         data: {
@@ -972,6 +1079,12 @@ export class PrismaStore implements DataStore {
             updated: false as const,
             reason: "OWNER_CONTINUITY_REQUIRED" as const,
           };
+      await this.revokePendingIssuerGrants(
+        tx,
+        userId,
+        memberships.map(({ organizationId }) => organizationId),
+        clock,
+      );
       await tx.user.update({
         where: { id: userId },
         data: {
@@ -1041,6 +1154,12 @@ export class PrismaStore implements DataStore {
           updated: false as const,
           reason: "OWNER_CONTINUITY_REQUIRED" as const,
         };
+      await this.revokePendingIssuerGrants(
+        tx,
+        userId,
+        [organizationId],
+        membership.databaseNow,
+      );
       await tx.membership.update({
         where: { id: membership.id },
         data: { role, authorizationEpoch: { increment: 1 } },
@@ -1100,6 +1219,12 @@ export class PrismaStore implements DataStore {
           updated: false as const,
           reason: "OWNER_CONTINUITY_REQUIRED" as const,
         };
+      await this.revokePendingIssuerGrants(
+        tx,
+        userId,
+        [organizationId],
+        membership.databaseNow,
+      );
       await tx.membership.update({
         where: { id: membership.id },
         data: { authorizationEpoch: { increment: 1 } },
@@ -1619,6 +1744,250 @@ export class PrismaStore implements DataStore {
       throw error;
     }
   }
+  async requestScreenEnrollmentAndAudit(
+    org: string,
+    screenId: string,
+    _expiresAt: string,
+    reason: string,
+    audit: PairingCreateAuditContext,
+    idempotency: ScreenEnrollmentIdempotencyInput,
+  ): Promise<ScreenEnrollmentRequestResult> {
+    if (
+      !lowercaseSha256.test(idempotency.keyHash) ||
+      !lowercaseSha256.test(idempotency.requestDigestSha256) ||
+      idempotency.codeCandidates.length < 1 ||
+      idempotency.codeCandidates.length > 8
+    )
+      throw new Error("Canonical enrollment idempotency input is required");
+    for (let writeAttempt = 0; writeAttempt < 3; writeAttempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const [organization] = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT organization."id" FROM "Organization" organization
+              WHERE organization."id" = ${org}
+              FOR NO KEY UPDATE OF organization`;
+            if (!organization)
+              return { created: false as const, reason: "NOT_FOUND" as const };
+            const [actor] = await tx.$queryRaw<
+              Array<{
+                membershipId: string;
+                role: string;
+                authenticationEpoch: number;
+                authorizationEpoch: number;
+                databaseNow: Date;
+              }>
+            >`
+              SELECT membership."id" AS "membershipId",
+                     membership."role"::text AS "role",
+                     actor."authenticationEpoch",
+                     membership."authorizationEpoch",
+                     CURRENT_TIMESTAMP AS "databaseNow"
+              FROM "Membership" membership
+              INNER JOIN "User" actor ON actor."id" = membership."userId"
+              WHERE membership."organizationId" = ${org}
+                AND membership."userId" = ${audit.actorUserId}
+                AND actor."disabledAt" IS NULL
+              FOR UPDATE OF membership, actor`;
+            if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+              return { created: false as const, reason: "FORBIDDEN" as const };
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`idempotency:${org}:screen-enrollment-create:${idempotency.keyHash}`}, 0))`;
+            const existing = await tx.idempotencyRecord.findUnique({
+              where: {
+                organizationId_operation_keyHash: {
+                  organizationId: org,
+                  operation: "SCREEN_ENROLLMENT_CREATE",
+                  keyHash: idempotency.keyHash,
+                },
+              },
+            });
+            if (existing) {
+              if (
+                existing.actorUserId !== audit.actorUserId ||
+                existing.requestDigestSha256 !== idempotency.requestDigestSha256
+              )
+                return {
+                  created: false as const,
+                  reason: "IDEMPOTENCY_KEY_REUSED" as const,
+                };
+              if (
+                existing.expiresAt <= actor.databaseNow ||
+                existing.responseBody === null
+              )
+                return {
+                  created: false as const,
+                  reason: "IDEMPOTENCY_KEY_EXPIRED" as const,
+                };
+              const response = existing.responseBody as Record<string, unknown>;
+              const pairing = await tx.pairingCode.findFirst({
+                where: {
+                  id: String(response.grantId),
+                  organizationId: org,
+                  targetScreenId: screenId,
+                  purpose: "NEW_SCREEN",
+                },
+              });
+              if (!pairing)
+                throw new Error("Enrollment idempotency target is missing");
+              await this.pruneDeviceEnrollmentAuthority(
+                tx,
+                org,
+                actor.databaseNow,
+                idempotency.keyHash,
+              );
+              return {
+                created: true as const,
+                pairing: pairingDto(pairing),
+                codeCounter: Number(response.codeCounter),
+                replayed: true as const,
+              };
+            }
+            const [target] = await tx.$queryRaw<
+              Array<{
+                id: string;
+                credentialGeneration: number;
+                installationId: string | null;
+                deviceTokenHash: string | null;
+              }>
+            >`
+              SELECT screen."id", screen."credentialGeneration",
+                     screen."installationId", screen."deviceTokenHash"
+              FROM "Screen" screen
+              WHERE screen."id" = ${screenId} AND screen."organizationId" = ${org}
+              FOR UPDATE OF screen`;
+            if (!target)
+              return { created: false as const, reason: "NOT_FOUND" as const };
+            if (
+              target.credentialGeneration !== 0 ||
+              target.installationId ||
+              target.deviceTokenHash ||
+              (await tx.deviceCredential.count({
+                where: { organizationId: org, screenId },
+              })) !== 0
+            )
+              return {
+                created: false as const,
+                reason: "SCREEN_NOT_ELIGIBLE" as const,
+              };
+            let available: { counter: number; codeHash: string } | undefined;
+            for (const candidate of idempotency.codeCandidates) {
+              const collision = await tx.pairingCode.findFirst({
+                where: {
+                  codeHash: candidate.codeHash,
+                  status: "PENDING",
+                  expiresAt: { gt: actor.databaseNow },
+                },
+                select: { id: true },
+              });
+              if (!collision) {
+                available = candidate;
+                break;
+              }
+              available = undefined;
+            }
+            if (!available)
+              return {
+                created: false as const,
+                reason: "CODE_COLLISION" as const,
+              };
+            const competitors = await tx.pairingCode.findMany({
+              where: {
+                organizationId: org,
+                targetScreenId: screenId,
+                purpose: "NEW_SCREEN",
+                status: "PENDING",
+              },
+              select: { id: true },
+              orderBy: { id: "asc" },
+            });
+            await this.pruneDeviceEnrollmentAuthority(
+              tx,
+              org,
+              actor.databaseNow,
+              idempotency.keyHash,
+            );
+            await tx.pairingAttempt.updateMany({
+              where: {
+                pairingCodeId: { in: competitors.map(({ id }) => id) },
+                boundCredentialId: null,
+              },
+              data: { cancelledAt: actor.databaseNow },
+            });
+            await tx.pairingCode.updateMany({
+              where: { id: { in: competitors.map(({ id }) => id) } },
+              data: { status: "REVOKED" },
+            });
+            const grantExpiresAt = new Date(
+              actor.databaseNow.getTime() + 10 * 60_000,
+            );
+            const pairing = await tx.pairingCode.create({
+              data: {
+                organizationId: org,
+                codeHash: available.codeHash,
+                expiresAt: grantExpiresAt,
+                purpose: "NEW_SCREEN",
+                targetScreenId: screenId,
+                targetScreenReferenceId: screenId,
+                targetOrganizationId: org,
+                expectedGeneration: 0,
+                authorizedByUserId: audit.actorUserId,
+                authorizedByMembershipId: actor.membershipId,
+                authorizedByAuthenticationEpoch: actor.authenticationEpoch,
+                authorizedByAuthorizationEpoch: actor.authorizationEpoch,
+                requestReason: reason,
+              },
+            });
+            await tx.auditEvent.create({
+              data: {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actorType: "user",
+                action: "device.enrollment.requested",
+                entityType: "screen",
+                entityId: screenId,
+                ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                metadata: {
+                  grantId: pairing.id,
+                  expectedGeneration: 0,
+                  reason,
+                },
+              },
+            });
+            await tx.idempotencyRecord.create({
+              data: {
+                organizationId: org,
+                operation: "SCREEN_ENROLLMENT_CREATE",
+                keyHash: idempotency.keyHash,
+                actorUserId: audit.actorUserId,
+                requestDigestSha256: idempotency.requestDigestSha256,
+                statusCode: 201,
+                responseBody: {
+                  grantId: pairing.id,
+                  codeCounter: available.counter,
+                },
+                expiresAt: new Date(
+                  actor.databaseNow.getTime() +
+                    DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
+                ),
+              },
+            });
+            return {
+              created: true as const,
+              pairing: pairingDto(pairing),
+              codeCounter: available.counter,
+            };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (isRetryableWriteConflict(error) || isUniqueConstraintError(error))
+          continue;
+        throw error;
+      }
+    }
+    return { created: false, reason: "CODE_COLLISION" };
+  }
   async requestScreenReenrollmentAndAudit(
     org: string,
     screenId: string,
@@ -1628,137 +1997,169 @@ export class PrismaStore implements DataStore {
     audit: PairingCreateAuditContext,
   ) {
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const [actor] = await tx.$queryRaw<Array<{ role: string }>>`
-          SELECT membership."role"::text AS "role" FROM "Membership" membership
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const [organization] = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT organization."id" FROM "Organization" organization
+          WHERE organization."id" = ${org}
+          FOR NO KEY UPDATE OF organization`;
+          if (!organization)
+            return { created: false as const, reason: "NOT_FOUND" as const };
+          const [actor] = await tx.$queryRaw<
+            Array<{
+              membershipId: string;
+              role: string;
+              authenticationEpoch: number;
+              authorizationEpoch: number;
+            }>
+          >`
+          SELECT membership."id" AS "membershipId",
+                 membership."role"::text AS "role",
+                 actor."authenticationEpoch",
+                 membership."authorizationEpoch"
+          FROM "Membership" membership
           INNER JOIN "User" actor ON actor."id" = membership."userId"
           WHERE membership."organizationId" = ${org} AND membership."userId" = ${audit.actorUserId}
             AND actor."disabledAt" IS NULL FOR UPDATE OF membership, actor`;
-        if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
-          return { created: false as const, reason: "FORBIDDEN" as const };
-        const [locked] = await tx.$queryRaw<
-          Array<{ id: string; credentialGeneration: number; databaseNow: Date }>
-        >`
+          if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+            return { created: false as const, reason: "FORBIDDEN" as const };
+          const [locked] = await tx.$queryRaw<
+            Array<{
+              id: string;
+              credentialGeneration: number;
+              databaseNow: Date;
+            }>
+          >`
           SELECT screen."id", screen."credentialGeneration", CURRENT_TIMESTAMP AS "databaseNow"
           FROM "Screen" screen WHERE screen."id" = ${screenId} AND screen."organizationId" = ${org}
           FOR UPDATE OF screen`;
-        if (!locked)
-          return { created: false as const, reason: "NOT_FOUND" as const };
-        await tx.pairingCode.updateMany({
-          where: {
-            organizationId: org,
-            status: "PENDING",
-            expiresAt: { lte: locked.databaseNow },
-            OR: [{ codeHash }, { targetScreenId: screenId }],
-          },
-          data: { status: "EXPIRED" },
-        });
-        const superseded = await tx.pairingCode.findMany({
-          where: {
-            organizationId: org,
-            targetScreenId: screenId,
-            purpose: "REENROLL",
-            status: "PENDING",
-          },
-          select: { id: true },
-        });
-        await tx.pairingAttempt.updateMany({
-          where: {
-            pairingCodeId: { in: superseded.map((grant) => grant.id) },
-            consumedAt: null,
-          },
-          data: { cancelledAt: locked.databaseNow },
-        });
-        await tx.pairingCode.updateMany({
-          where: { id: { in: superseded.map((grant) => grant.id) } },
-          data: { status: "REVOKED" },
-        });
-        const live = await tx.deviceCredential.findFirst({
-          where: {
-            organizationId: org,
-            screenId,
-            liveScreenId: screenId,
-            revokedAt: null,
-          },
-          orderBy: { createdAt: "desc" },
-        });
-        if (live) {
-          await tx.deviceCredential.update({
-            where: { id: live.id },
-            data: {
-              revokedAt: locked.databaseNow,
-              liveScreenId: null,
-              liveScreenOrganizationId: null,
-            },
-          });
-          await tx.deviceAuthChallenge.updateMany({
+          if (!locked)
+            return { created: false as const, reason: "NOT_FOUND" as const };
+          await this.pruneDeviceEnrollmentAuthority(
+            tx,
+            org,
+            locked.databaseNow,
+          );
+          await tx.pairingCode.updateMany({
             where: {
-              credentialId: live.id,
-              consumedAt: null,
-              expiresAt: { gt: locked.databaseNow },
+              organizationId: org,
+              status: "PENDING",
+              expiresAt: { lte: locked.databaseNow },
+              OR: [{ codeHash }, { targetScreenId: screenId }],
             },
-            data: { consumedAt: locked.databaseNow },
+            data: { status: "EXPIRED" },
           });
-        }
-        const generation = locked.credentialGeneration + 1;
-        const grantExpiresAt = new Date(
-          locked.databaseNow.getTime() + 10 * 60_000,
-        );
-        await tx.screen.update({
-          where: { id: screenId },
-          data: {
-            credentialGeneration: generation,
-            credentialRevokedAt: locked.databaseNow,
-            deviceTokenHash: null,
-            status: "OFFLINE",
-            lastSeenAt: null,
-            manifestVersion: null,
-            nowPlayingAssetId: null,
-            uptimeSeconds: null,
-            freeStorageBytes: null,
-            networkType: null,
-          },
-        });
-        const pairing = await tx.pairingCode.create({
-          data: {
-            organizationId: org,
-            codeHash,
-            expiresAt: grantExpiresAt,
-            purpose: "REENROLL",
-            targetScreenId: screenId,
-            targetScreenReferenceId: screenId,
-            targetOrganizationId: org,
-            expectedGeneration: generation,
-            authorizedByUserId: audit.actorUserId,
-            ...(live ? { priorCredentialId: live.id } : {}),
-            requestReason: reason,
-          },
-        });
-        await tx.auditEvent.create({
-          data: {
-            organizationId: org,
-            actorUserId: audit.actorUserId,
-            actorType: "user",
-            action: "device.reenrollment.requested",
-            entityType: "screen",
-            entityId: screenId,
-            ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-            ...(audit.requestId ? { requestId: audit.requestId } : {}),
-            metadata: {
-              grantId: pairing.id,
-              expectedGeneration: generation,
-              reason,
-              supersededGrantIds: superseded.map((grant) => grant.id),
-              ...(live
-                ? { priorCredentialId: live.id, priorKeyId: live.keyId }
-                : {}),
+          const superseded = await tx.pairingCode.findMany({
+            where: {
+              organizationId: org,
+              targetScreenId: screenId,
+              purpose: "REENROLL",
+              status: "PENDING",
             },
-          },
-        });
-        return { created: true as const, pairing: pairingDto(pairing) };
-      });
+            select: { id: true },
+          });
+          await tx.pairingAttempt.updateMany({
+            where: {
+              pairingCodeId: { in: superseded.map((grant) => grant.id) },
+              consumedAt: null,
+            },
+            data: { cancelledAt: locked.databaseNow },
+          });
+          await tx.pairingCode.updateMany({
+            where: { id: { in: superseded.map((grant) => grant.id) } },
+            data: { status: "REVOKED" },
+          });
+          const live = await tx.deviceCredential.findFirst({
+            where: {
+              organizationId: org,
+              screenId,
+              liveScreenId: screenId,
+              revokedAt: null,
+            },
+            orderBy: { createdAt: "desc" },
+          });
+          if (live) {
+            await tx.deviceCredential.update({
+              where: { id: live.id },
+              data: {
+                revokedAt: locked.databaseNow,
+                liveScreenId: null,
+                liveScreenOrganizationId: null,
+              },
+            });
+            await tx.deviceAuthChallenge.updateMany({
+              where: {
+                credentialId: live.id,
+                consumedAt: null,
+                expiresAt: { gt: locked.databaseNow },
+              },
+              data: { consumedAt: locked.databaseNow },
+            });
+          }
+          const generation = locked.credentialGeneration + 1;
+          const grantExpiresAt = new Date(
+            locked.databaseNow.getTime() + 10 * 60_000,
+          );
+          await tx.screen.update({
+            where: { id: screenId },
+            data: {
+              credentialGeneration: generation,
+              credentialRevokedAt: locked.databaseNow,
+              deviceTokenHash: null,
+              status: "OFFLINE",
+              lastSeenAt: null,
+              manifestVersion: null,
+              nowPlayingAssetId: null,
+              uptimeSeconds: null,
+              freeStorageBytes: null,
+              networkType: null,
+            },
+          });
+          const pairing = await tx.pairingCode.create({
+            data: {
+              organizationId: org,
+              codeHash,
+              expiresAt: grantExpiresAt,
+              purpose: "REENROLL",
+              targetScreenId: screenId,
+              targetScreenReferenceId: screenId,
+              targetOrganizationId: org,
+              expectedGeneration: generation,
+              authorizedByUserId: audit.actorUserId,
+              authorizedByMembershipId: actor.membershipId,
+              authorizedByAuthenticationEpoch: actor.authenticationEpoch,
+              authorizedByAuthorizationEpoch: actor.authorizationEpoch,
+              ...(live ? { priorCredentialId: live.id } : {}),
+              requestReason: reason,
+            },
+          });
+          await tx.auditEvent.create({
+            data: {
+              organizationId: org,
+              actorUserId: audit.actorUserId,
+              actorType: "user",
+              action: "device.reenrollment.requested",
+              entityType: "screen",
+              entityId: screenId,
+              ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+              ...(audit.requestId ? { requestId: audit.requestId } : {}),
+              metadata: {
+                grantId: pairing.id,
+                expectedGeneration: generation,
+                reason,
+                supersededGrantIds: superseded.map((grant) => grant.id),
+                ...(live
+                  ? { priorCredentialId: live.id, priorKeyId: live.keyId }
+                  : {}),
+              },
+            },
+          });
+          return { created: true as const, pairing: pairingDto(pairing) };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
     } catch (error) {
-      if (isUniqueConstraintError(error))
+      if (isUniqueConstraintError(error) || isRetryableWriteConflict(error))
         return { created: false as const, reason: "CODE_COLLISION" as const };
       throw error;
     }
@@ -1768,6 +2169,7 @@ export class PrismaStore implements DataStore {
     screenId: string,
     grantId: string,
     actorUserId: string,
+    purpose: "NEW_SCREEN" | "REENROLL" = "REENROLL",
   ) {
     const actor = await this.prisma.membership.findFirst({
       where: {
@@ -1784,7 +2186,7 @@ export class PrismaStore implements DataStore {
         id: grantId,
         organizationId: org,
         targetScreenId: screenId,
-        purpose: "REENROLL",
+        purpose,
       },
       select: { id: true, status: true, expiresAt: true },
     });
@@ -1824,6 +2226,352 @@ export class PrismaStore implements DataStore {
       candidates,
     };
   }
+  async activateScreenEnrollmentCandidateAndAudit(
+    org: string,
+    screenId: string,
+    grantId: string,
+    candidateId: string,
+    fingerprint: string,
+    audit: PairingCreateAuditContext,
+    idempotency: ScreenEnrollmentActivationIdempotencyInput,
+  ): Promise<ScreenEnrollmentActivationResult> {
+    for (let writeAttempt = 0; writeAttempt < 3; writeAttempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const [organization] = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT organization."id" FROM "Organization" organization
+            WHERE organization."id" = ${org}
+            FOR NO KEY UPDATE OF organization`;
+            if (!organization)
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            // Discover the immutable issuer identifier, then lock every involved
+            // principal in stable order before any Screen/grant/attempt lock.
+            // Identity lifecycle mutations use the same organization -> user /
+            // membership order, preventing crossed activator/issuer deadlocks.
+            const discoveredGrant = await tx.pairingCode.findFirst({
+              where: {
+                id: grantId,
+                organizationId: org,
+                targetScreenId: screenId,
+                purpose: "NEW_SCREEN",
+              },
+              select: { authorizedByUserId: true },
+            });
+            const principalIds = [
+              ...new Set(
+                [audit.actorUserId, discoveredGrant?.authorizedByUserId].filter(
+                  (value): value is string => Boolean(value),
+                ),
+              ),
+            ].sort();
+            const principals = await tx.$queryRaw<
+              Array<{
+                userId: string;
+                membershipId: string;
+                role: string;
+                authenticationEpoch: number;
+                authorizationEpoch: number;
+                databaseNow: Date;
+              }>
+            >`
+            SELECT actor."id" AS "userId", membership."id" AS "membershipId",
+                   membership."role"::text AS "role", actor."authenticationEpoch",
+                   membership."authorizationEpoch", CURRENT_TIMESTAMP AS "databaseNow"
+            FROM "Membership" membership
+            INNER JOIN "User" actor ON actor."id" = membership."userId"
+            WHERE membership."organizationId" = ${org}
+              AND membership."userId" IN (${Prisma.join(principalIds)})
+              AND actor."disabledAt" IS NULL
+            ORDER BY actor."id" ASC
+            FOR UPDATE OF membership, actor`;
+            const actor = principals.find(
+              (principal) => principal.userId === audit.actorUserId,
+            );
+            if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+              return {
+                activated: false as const,
+                reason: "FORBIDDEN" as const,
+              };
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`idempotency:${org}:screen-enrollment-activate:${idempotency.keyHash}`}, 0))`;
+            const existing = await tx.idempotencyRecord.findUnique({
+              where: {
+                organizationId_operation_keyHash: {
+                  organizationId: org,
+                  operation: "SCREEN_ENROLLMENT_ACTIVATE",
+                  keyHash: idempotency.keyHash,
+                },
+              },
+            });
+            if (existing) {
+              if (
+                existing.actorUserId !== audit.actorUserId ||
+                existing.requestDigestSha256 !== idempotency.requestDigestSha256
+              )
+                return {
+                  activated: false as const,
+                  reason: "IDEMPOTENCY_KEY_REUSED" as const,
+                };
+              if (
+                existing.expiresAt <= actor.databaseNow ||
+                existing.responseBody === null
+              )
+                return {
+                  activated: false as const,
+                  reason: "IDEMPOTENCY_KEY_EXPIRED" as const,
+                };
+              const response = existing.responseBody as Record<string, unknown>;
+              const [screen, credential] = await Promise.all([
+                tx.screen.findFirst({
+                  where: { id: screenId, organizationId: org },
+                }),
+                tx.deviceCredential.findFirst({
+                  where: {
+                    id: String(response.credentialId),
+                    organizationId: org,
+                    screenId,
+                  },
+                }),
+              ]);
+              if (!screen || !credential)
+                throw new Error(
+                  "Enrollment activation replay target is missing",
+                );
+              await this.pruneDeviceEnrollmentAuthority(
+                tx,
+                org,
+                actor.databaseNow,
+                idempotency.keyHash,
+              );
+              return {
+                activated: true as const,
+                screen: screenDto(screen),
+                credential: deviceCredentialDto(credential),
+                replayed: true as const,
+              };
+            }
+            const [target] = await tx.$queryRaw<
+              Array<{
+                id: string;
+                credentialGeneration: number;
+                installationId: string | null;
+                deviceTokenHash: string | null;
+              }>
+            >`
+            SELECT screen."id", screen."credentialGeneration",
+                   screen."installationId", screen."deviceTokenHash"
+            FROM "Screen" screen
+            WHERE screen."id" = ${screenId} AND screen."organizationId" = ${org}
+            FOR UPDATE OF screen`;
+            if (!target)
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            const [grantLock] = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT pairing_grant."id" FROM "PairingCode" pairing_grant
+            WHERE pairing_grant."id" = ${grantId}
+              AND pairing_grant."organizationId" = ${org}
+              AND pairing_grant."targetScreenId" = ${screenId}
+              AND pairing_grant."purpose" = 'NEW_SCREEN'::"PairingPurpose"
+            FOR UPDATE OF pairing_grant`;
+            if (!grantLock)
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            const [attemptLock] = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT attempt."id" FROM "PairingAttempt" attempt
+            WHERE attempt."id" = ${candidateId}
+              AND attempt."pairingCodeId" = ${grantId}
+              AND attempt."organizationId" = ${org}
+            FOR UPDATE OF attempt`;
+            if (!attemptLock)
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            const attempt = await tx.pairingAttempt.findUnique({
+              where: { id: candidateId },
+              include: { pairingCode: true },
+            });
+            if (!attempt || attempt.keyId !== fingerprint)
+              return {
+                activated: false as const,
+                reason: "FINGERPRINT_MISMATCH" as const,
+              };
+            const grant = attempt.pairingCode;
+            const issuer = principals.find(
+              (principal) => principal.userId === grant.authorizedByUserId,
+            );
+            if (
+              !issuer ||
+              grant.authorizedByUserId !==
+                discoveredGrant?.authorizedByUserId ||
+              (issuer.role !== "OWNER" && issuer.role !== "ADMIN") ||
+              issuer.membershipId !== grant.authorizedByMembershipId ||
+              issuer.authenticationEpoch !==
+                grant.authorizedByAuthenticationEpoch ||
+              issuer.authorizationEpoch !==
+                grant.authorizedByAuthorizationEpoch ||
+              grant.status !== "PENDING" ||
+              grant.expiresAt <= actor.databaseNow ||
+              grant.expectedGeneration !== 0 ||
+              target.credentialGeneration !== 0 ||
+              target.installationId ||
+              target.deviceTokenHash ||
+              !attempt.provedAt ||
+              attempt.cancelledAt ||
+              attempt.activatedAt ||
+              (await tx.deviceCredential.count({
+                where: { organizationId: org, screenId },
+              })) !== 0
+            )
+              return { activated: false as const, reason: "STALE" as const };
+            const claimed = await tx.pairingCode.updateMany({
+              where: {
+                id: grantId,
+                organizationId: org,
+                targetScreenId: screenId,
+                purpose: "NEW_SCREEN",
+                status: "PENDING",
+                expectedGeneration: 0,
+                expiresAt: { gt: actor.databaseNow },
+              },
+              data: {
+                status: "CLAIMED",
+                claimedAt: actor.databaseNow,
+                screenId,
+                screenOrganizationId: org,
+              },
+            });
+            if (claimed.count !== 1)
+              return { activated: false as const, reason: "STALE" as const };
+            await this.pruneDeviceEnrollmentAuthority(
+              tx,
+              org,
+              actor.databaseNow,
+              idempotency.keyHash,
+            );
+            await tx.deviceKeyTombstone.create({
+              data: { keyId: attempt.keyId },
+            });
+            const credential = await tx.deviceCredential.create({
+              data: {
+                organizationId: org,
+                screenId,
+                liveScreenId: screenId,
+                liveScreenOrganizationId: org,
+                keyId: attempt.keyId,
+                publicKeySpki: attempt.publicKeySpki,
+                algorithm: "ES256",
+                securityLevel: attempt.securityLevel,
+                expiresAt: attempt.credentialExpiresAt,
+              },
+            });
+            const screen = await tx.screen.update({
+              where: { id: screenId },
+              data: {
+                installationId: attempt.installationId,
+                model: attempt.model,
+                osVersion: attempt.osVersion,
+                playerVersion: attempt.playerVersion,
+                credentialRevokedAt: null,
+                deviceTokenHash: null,
+                credentialGeneration: 1,
+                status: "OFFLINE",
+                lastSeenAt: null,
+                manifestVersion: null,
+                nowPlayingAssetId: null,
+                uptimeSeconds: null,
+                freeStorageBytes: null,
+                networkType: null,
+              },
+            });
+            await tx.pairingAttempt.update({
+              where: { id: candidateId },
+              data: {
+                activatedAt: actor.databaseNow,
+                boundCredentialId: credential.id,
+              },
+            });
+            const competitors = await tx.pairingCode.findMany({
+              where: {
+                organizationId: org,
+                targetScreenId: screenId,
+                id: { not: grantId },
+                status: "PENDING",
+              },
+              select: { id: true },
+            });
+            await tx.pairingAttempt.updateMany({
+              where: {
+                OR: [
+                  { pairingCodeId: grantId, id: { not: candidateId } },
+                  { pairingCodeId: { in: competitors.map(({ id }) => id) } },
+                ],
+                boundCredentialId: null,
+              },
+              data: { cancelledAt: actor.databaseNow },
+            });
+            await tx.pairingCode.updateMany({
+              where: { id: { in: competitors.map(({ id }) => id) } },
+              data: { status: "REVOKED" },
+            });
+            await tx.auditEvent.create({
+              data: {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actorType: "user",
+                action: "device.enrollment.activated",
+                entityType: "screen",
+                entityId: screenId,
+                ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                metadata: {
+                  grantId,
+                  candidateId,
+                  credentialId: credential.id,
+                  keyId: credential.keyId,
+                  reason: grant.requestReason,
+                },
+              },
+            });
+            await tx.idempotencyRecord.create({
+              data: {
+                organizationId: org,
+                operation: "SCREEN_ENROLLMENT_ACTIVATE",
+                keyHash: idempotency.keyHash,
+                actorUserId: audit.actorUserId,
+                requestDigestSha256: idempotency.requestDigestSha256,
+                statusCode: 200,
+                responseBody: { credentialId: credential.id },
+                expiresAt: new Date(
+                  actor.databaseNow.getTime() +
+                    DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
+                ),
+              },
+            });
+            return {
+              activated: true as const,
+              screen: screenDto(screen),
+              credential: deviceCredentialDto(credential),
+            };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (isRetryableWriteConflict(error)) continue;
+        if (isUniqueConstraintError(error))
+          return { activated: false, reason: "STALE" };
+        throw error;
+      }
+    }
+    return { activated: false, reason: "STALE" };
+  }
   async activateReenrollmentCandidateAndAudit(
     org: string,
     screenId: string,
@@ -1831,242 +2579,309 @@ export class PrismaStore implements DataStore {
     candidateId: string,
     audit: PairingCreateAuditContext,
   ): Promise<ReenrollmentActivationResult> {
-    try {
-      return await this.prisma.$transaction(
-        async (tx) => {
-          const [actor] = await tx.$queryRaw<
-            Array<{ role: string }>
-          >`SELECT membership."role"::text AS "role" FROM "Membership" membership INNER JOIN "User" actor ON actor."id" = membership."userId" WHERE membership."organizationId"=${org} AND membership."userId"=${audit.actorUserId} AND actor."disabledAt" IS NULL FOR UPDATE OF membership, actor`;
-          if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
-            return { activated: false as const, reason: "FORBIDDEN" as const };
-          const [locked] = await tx.$queryRaw<
-            Array<{
-              id: string;
-              credentialGeneration: number;
-              databaseNow: Date;
-            }>
-          >`SELECT screen."id", screen."credentialGeneration", CURRENT_TIMESTAMP AS "databaseNow" FROM "Screen" screen WHERE screen."id"=${screenId} AND screen."organizationId"=${org} FOR UPDATE OF screen`;
-          if (!locked)
-            return { activated: false as const, reason: "NOT_FOUND" as const };
-          const [grantLock] = await tx.$queryRaw<Array<{ id: string }>>`
+    for (let writeAttempt = 0; writeAttempt < 3; writeAttempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const [organization] = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT organization."id" FROM "Organization" organization
+            WHERE organization."id" = ${org}
+            FOR NO KEY UPDATE OF organization`;
+            if (!organization)
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            const discoveredGrant = await tx.pairingCode.findFirst({
+              where: {
+                id: grantId,
+                organizationId: org,
+                targetScreenId: screenId,
+                purpose: "REENROLL",
+              },
+              select: { authorizedByUserId: true },
+            });
+            const principalIds = [
+              ...new Set(
+                [audit.actorUserId, discoveredGrant?.authorizedByUserId].filter(
+                  (value): value is string => Boolean(value),
+                ),
+              ),
+            ].sort();
+            const principals = await tx.$queryRaw<
+              Array<{
+                userId: string;
+                membershipId: string;
+                role: string;
+                authenticationEpoch: number;
+                authorizationEpoch: number;
+              }>
+            >`SELECT actor."id" AS "userId", membership."id" AS "membershipId",
+                   membership."role"::text AS "role", actor."authenticationEpoch",
+                   membership."authorizationEpoch"
+             FROM "Membership" membership
+             INNER JOIN "User" actor ON actor."id" = membership."userId"
+             WHERE membership."organizationId"=${org}
+               AND membership."userId" IN (${Prisma.join(principalIds)})
+               AND actor."disabledAt" IS NULL
+             ORDER BY actor."id" ASC
+             FOR UPDATE OF membership, actor`;
+            const actor = principals.find(
+              (principal) => principal.userId === audit.actorUserId,
+            );
+            if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+              return {
+                activated: false as const,
+                reason: "FORBIDDEN" as const,
+              };
+            const [locked] = await tx.$queryRaw<
+              Array<{
+                id: string;
+                credentialGeneration: number;
+                databaseNow: Date;
+              }>
+            >`SELECT screen."id", screen."credentialGeneration", CURRENT_TIMESTAMP AS "databaseNow" FROM "Screen" screen WHERE screen."id"=${screenId} AND screen."organizationId"=${org} FOR UPDATE OF screen`;
+            if (!locked)
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            const [grantLock] = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT pairing_grant."id" FROM "PairingCode" pairing_grant
             WHERE pairing_grant."id" = ${grantId} AND pairing_grant."organizationId" = ${org}
               AND pairing_grant."targetScreenId" = ${screenId}
               AND pairing_grant."purpose" = 'REENROLL'::"PairingPurpose"
             FOR UPDATE OF pairing_grant`;
-          if (!grantLock)
-            return { activated: false as const, reason: "NOT_FOUND" as const };
-          const [attemptLock] = await tx.$queryRaw<Array<{ id: string }>>`
+            if (!grantLock)
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            const [attemptLock] = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT attempt."id" FROM "PairingAttempt" attempt
             WHERE attempt."id" = ${candidateId}
               AND attempt."pairingCodeId" = ${grantId}
               AND attempt."organizationId" = ${org}
             FOR UPDATE OF attempt`;
-          if (!attemptLock)
-            return { activated: false as const, reason: "NOT_FOUND" as const };
-          const attempt = await tx.pairingAttempt.findUnique({
-            where: { id: attemptLock.id },
-            include: { pairingCode: true, boundCredential: true },
-          });
-          if (
-            (attempt?.consumedAt || attempt?.activatedAt) &&
-            attempt.boundCredential
-          ) {
+            if (!attemptLock)
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            const attempt = await tx.pairingAttempt.findUnique({
+              where: { id: attemptLock.id },
+              include: { pairingCode: true, boundCredential: true },
+            });
             if (
-              attempt.boundCredential.revokedAt ||
-              attempt.boundCredential.liveScreenId !== screenId ||
-              attempt.pairingCode.expectedGeneration == null ||
-              locked.credentialGeneration !==
-                attempt.pairingCode.expectedGeneration + 1
+              (attempt?.consumedAt || attempt?.activatedAt) &&
+              attempt.boundCredential
+            ) {
+              if (
+                attempt.boundCredential.revokedAt ||
+                attempt.boundCredential.liveScreenId !== screenId ||
+                attempt.pairingCode.expectedGeneration == null ||
+                locked.credentialGeneration !==
+                  attempt.pairingCode.expectedGeneration + 1
+              )
+                return { activated: false as const, reason: "STALE" as const };
+              return {
+                activated: true as const,
+                credential: deviceCredentialDto(attempt.boundCredential),
+                screen: screenDto(
+                  await tx.screen.findUniqueOrThrow({
+                    where: { id: screenId },
+                  }),
+                ),
+              };
+            }
+            if (
+              !attempt ||
+              !attempt.provedAt ||
+              attempt.cancelledAt ||
+              attempt.pairingCode.purpose !== "REENROLL" ||
+              attempt.pairingCode.targetScreenId !== screenId
+            )
+              return {
+                activated: false as const,
+                reason: "NOT_FOUND" as const,
+              };
+            const issuer = principals.find(
+              (principal) =>
+                principal.userId === attempt.pairingCode.authorizedByUserId,
+            );
+            if (
+              !issuer ||
+              attempt.pairingCode.authorizedByUserId !==
+                discoveredGrant?.authorizedByUserId ||
+              (issuer.role !== "OWNER" && issuer.role !== "ADMIN") ||
+              issuer.membershipId !==
+                attempt.pairingCode.authorizedByMembershipId ||
+              issuer.authenticationEpoch !==
+                attempt.pairingCode.authorizedByAuthenticationEpoch ||
+              issuer.authorizationEpoch !==
+                attempt.pairingCode.authorizedByAuthorizationEpoch ||
+              attempt.pairingCode.status !== "PENDING" ||
+              attempt.pairingCode.expiresAt <= locked.databaseNow ||
+              attempt.pairingCode.expectedGeneration !==
+                locked.credentialGeneration
             )
               return { activated: false as const, reason: "STALE" as const };
+            const claimed = await tx.pairingCode.updateMany({
+              where: {
+                id: grantId,
+                organizationId: org,
+                targetScreenId: screenId,
+                purpose: "REENROLL",
+                status: "PENDING",
+                expectedGeneration: locked.credentialGeneration,
+                expiresAt: { gt: locked.databaseNow },
+              },
+              data: { status: "CLAIMED", claimedAt: locked.databaseNow },
+            });
+            if (claimed.count !== 1)
+              return { activated: false as const, reason: "STALE" as const };
+            await tx.deviceKeyTombstone.create({
+              data: { keyId: attempt.keyId },
+            });
+            const credential = await tx.deviceCredential.create({
+              data: {
+                organizationId: org,
+                screenId,
+                liveScreenId: screenId,
+                liveScreenOrganizationId: org,
+                keyId: attempt.keyId,
+                publicKeySpki: attempt.publicKeySpki,
+                algorithm: "ES256",
+                securityLevel: attempt.securityLevel,
+                expiresAt: attempt.credentialExpiresAt,
+              },
+            });
+            const screen = await tx.screen.update({
+              where: { id: screenId },
+              data: {
+                installationId: attempt.installationId,
+                model: attempt.model,
+                osVersion: attempt.osVersion,
+                playerVersion: attempt.playerVersion,
+                credentialRevokedAt: null,
+                deviceTokenHash: null,
+                credentialGeneration: { increment: 1 },
+                status: "OFFLINE",
+                lastSeenAt: null,
+                manifestVersion: null,
+                nowPlayingAssetId: null,
+                uptimeSeconds: null,
+                freeStorageBytes: null,
+                networkType: null,
+              },
+            });
+            await tx.pairingAttempt.update({
+              where: { id: attempt.id },
+              data: {
+                activatedAt: locked.databaseNow,
+                boundCredentialId: credential.id,
+              },
+            });
+            await tx.pairingAttempt.updateMany({
+              where: {
+                pairingCodeId: grantId,
+                id: { not: attempt.id },
+                boundCredentialId: null,
+              },
+              data: { cancelledAt: locked.databaseNow },
+            });
+            await tx.pairingCode.update({
+              where: { id: grantId },
+              data: { screenId, screenOrganizationId: org },
+            });
+            const otherGrants = await tx.pairingCode.findMany({
+              where: {
+                organizationId: org,
+                targetScreenId: screenId,
+                status: "PENDING",
+              },
+              select: { id: true },
+            });
+            await tx.pairingAttempt.updateMany({
+              where: {
+                pairingCodeId: { in: otherGrants.map((g) => g.id) },
+                boundCredentialId: null,
+              },
+              data: { cancelledAt: locked.databaseNow },
+            });
+            await tx.pairingCode.updateMany({
+              where: { id: { in: otherGrants.map((g) => g.id) } },
+              data: { status: "REVOKED" },
+            });
+            await tx.auditEvent.create({
+              data: {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actorType: "user",
+                action: "device.reenrollment.activated",
+                entityType: "screen",
+                entityId: screenId,
+                ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                metadata: {
+                  grantId,
+                  candidateId,
+                  credentialId: credential.id,
+                  keyId: credential.keyId,
+                  reason: attempt.pairingCode.requestReason,
+                },
+              },
+            });
             return {
               activated: true as const,
-              credential: deviceCredentialDto(attempt.boundCredential),
-              screen: screenDto(
-                await tx.screen.findUniqueOrThrow({ where: { id: screenId } }),
-              ),
+              screen: screenDto(screen),
+              credential: deviceCredentialDto(credential),
             };
-          }
-          if (
-            !attempt ||
-            !attempt.provedAt ||
-            attempt.cancelledAt ||
-            attempt.pairingCode.purpose !== "REENROLL" ||
-            attempt.pairingCode.targetScreenId !== screenId
-          )
-            return { activated: false as const, reason: "NOT_FOUND" as const };
-          const issuer = attempt.pairingCode.authorizedByUserId
-            ? await tx.membership.findFirst({
-                where: {
-                  organizationId: org,
-                  userId: attempt.pairingCode.authorizedByUserId,
-                  role: { in: ["OWNER", "ADMIN"] },
-                  user: { disabledAt: null },
-                },
-                select: { id: true },
-              })
-            : null;
-          if (
-            !issuer ||
-            attempt.pairingCode.status !== "PENDING" ||
-            attempt.pairingCode.expiresAt <= locked.databaseNow ||
-            attempt.pairingCode.expectedGeneration !==
-              locked.credentialGeneration
-          )
-            return { activated: false as const, reason: "STALE" as const };
-          const claimed = await tx.pairingCode.updateMany({
-            where: {
-              id: grantId,
-              organizationId: org,
-              targetScreenId: screenId,
-              purpose: "REENROLL",
-              status: "PENDING",
-              expectedGeneration: locked.credentialGeneration,
-              expiresAt: { gt: locked.databaseNow },
-            },
-            data: { status: "CLAIMED", claimedAt: locked.databaseNow },
-          });
-          if (claimed.count !== 1)
-            return { activated: false as const, reason: "STALE" as const };
-          await tx.deviceKeyTombstone.create({
-            data: { keyId: attempt.keyId },
-          });
-          const credential = await tx.deviceCredential.create({
-            data: {
-              organizationId: org,
-              screenId,
-              liveScreenId: screenId,
-              liveScreenOrganizationId: org,
-              keyId: attempt.keyId,
-              publicKeySpki: attempt.publicKeySpki,
-              algorithm: "ES256",
-              securityLevel: attempt.securityLevel,
-              expiresAt: attempt.credentialExpiresAt,
-            },
-          });
-          const screen = await tx.screen.update({
-            where: { id: screenId },
-            data: {
-              installationId: attempt.installationId,
-              model: attempt.model,
-              osVersion: attempt.osVersion,
-              playerVersion: attempt.playerVersion,
-              credentialRevokedAt: null,
-              deviceTokenHash: null,
-              credentialGeneration: { increment: 1 },
-              status: "OFFLINE",
-              lastSeenAt: null,
-              manifestVersion: null,
-              nowPlayingAssetId: null,
-              uptimeSeconds: null,
-              freeStorageBytes: null,
-              networkType: null,
-            },
-          });
-          await tx.pairingAttempt.update({
-            where: { id: attempt.id },
-            data: {
-              activatedAt: locked.databaseNow,
-              boundCredentialId: credential.id,
-            },
-          });
-          await tx.pairingAttempt.updateMany({
-            where: {
-              pairingCodeId: grantId,
-              id: { not: attempt.id },
-              boundCredentialId: null,
-            },
-            data: { cancelledAt: locked.databaseNow },
-          });
-          await tx.pairingCode.update({
-            where: { id: grantId },
-            data: { screenId, screenOrganizationId: org },
-          });
-          const otherGrants = await tx.pairingCode.findMany({
-            where: {
-              organizationId: org,
-              targetScreenId: screenId,
-              status: "PENDING",
-            },
-            select: { id: true },
-          });
-          await tx.pairingAttempt.updateMany({
-            where: {
-              pairingCodeId: { in: otherGrants.map((g) => g.id) },
-              boundCredentialId: null,
-            },
-            data: { cancelledAt: locked.databaseNow },
-          });
-          await tx.pairingCode.updateMany({
-            where: { id: { in: otherGrants.map((g) => g.id) } },
-            data: { status: "REVOKED" },
-          });
-          await tx.auditEvent.create({
-            data: {
-              organizationId: org,
-              actorUserId: audit.actorUserId,
-              actorType: "user",
-              action: "device.reenrollment.activated",
-              entityType: "screen",
-              entityId: screenId,
-              ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-              ...(audit.requestId ? { requestId: audit.requestId } : {}),
-              metadata: {
-                grantId,
-                candidateId,
-                credentialId: credential.id,
-                keyId: credential.keyId,
-                reason: attempt.pairingCode.requestReason,
-              },
-            },
-          });
-          return {
-            activated: true as const,
-            screen: screenDto(screen),
-            credential: deviceCredentialDto(credential),
-          };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      );
-    } catch (error) {
-      if (isRetryableWriteConflict(error) || isUniqueConstraintError(error)) {
-        const completed = await this.prisma.pairingAttempt.findFirst({
-          where: {
-            id: candidateId,
-            pairingCodeId: grantId,
-            organizationId: org,
-            activatedAt: { not: null },
           },
-          include: { pairingCode: true, boundCredential: true },
-        });
-        const screen = await this.prisma.screen.findFirst({
-          where: { id: screenId, organizationId: org },
-        });
-        if (
-          completed?.boundCredential &&
-          screen &&
-          !completed.boundCredential.revokedAt &&
-          completed.boundCredential.liveScreenId === screenId &&
-          completed.pairingCode.expectedGeneration != null &&
-          screen.credentialGeneration ===
-            completed.pairingCode.expectedGeneration + 1
-        )
-          return {
-            activated: true,
-            credential: deviceCredentialDto(completed.boundCredential),
-            screen: screenDto(screen),
-          };
-        return { activated: false, reason: "STALE" };
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (isRetryableWriteConflict(error) && writeAttempt < 2) continue;
+        if (isRetryableWriteConflict(error) || isUniqueConstraintError(error)) {
+          const completed = await this.prisma.pairingAttempt.findFirst({
+            where: {
+              id: candidateId,
+              pairingCodeId: grantId,
+              organizationId: org,
+              activatedAt: { not: null },
+            },
+            include: { pairingCode: true, boundCredential: true },
+          });
+          const screen = await this.prisma.screen.findFirst({
+            where: { id: screenId, organizationId: org },
+          });
+          if (
+            completed?.boundCredential &&
+            screen &&
+            !completed.boundCredential.revokedAt &&
+            completed.boundCredential.liveScreenId === screenId &&
+            completed.pairingCode.expectedGeneration != null &&
+            screen.credentialGeneration ===
+              completed.pairingCode.expectedGeneration + 1
+          )
+            return {
+              activated: true,
+              credential: deviceCredentialDto(completed.boundCredential),
+              screen: screenDto(screen),
+            };
+          return { activated: false, reason: "STALE" };
+        }
+        throw error;
       }
-      throw error;
     }
+    return { activated: false, reason: "STALE" };
   }
   async cancelScreenReenrollmentAndAudit(
     org: string,
     screenId: string,
     grantId: string,
     audit: PairingCreateAuditContext,
+    purpose: "NEW_SCREEN" | "REENROLL" = "REENROLL",
   ) {
     try {
       return await this.prisma.$transaction(
@@ -2094,7 +2909,7 @@ export class PrismaStore implements DataStore {
           SELECT pairing_grant."id", pairing_grant."status"::text AS "status" FROM "PairingCode" pairing_grant
           WHERE pairing_grant."id" = ${grantId} AND pairing_grant."organizationId" = ${org}
             AND pairing_grant."targetScreenId" = ${screenId}
-            AND pairing_grant."purpose" = 'REENROLL'::"PairingPurpose"
+            AND pairing_grant."purpose" = ${purpose}::"PairingPurpose"
           FOR UPDATE OF pairing_grant`;
           if (!grant || grant.status !== "PENDING")
             return { cancelled: false as const, reason: "NOT_FOUND" as const };
@@ -2107,7 +2922,7 @@ export class PrismaStore implements DataStore {
               id: grantId,
               organizationId: org,
               targetScreenId: screenId,
-              purpose: "REENROLL",
+              purpose,
               status: "PENDING",
             },
             data: { status: "REVOKED" },
@@ -2123,7 +2938,10 @@ export class PrismaStore implements DataStore {
               organizationId: org,
               actorUserId: audit.actorUserId,
               actorType: "user",
-              action: "device.reenrollment.cancelled",
+              action:
+                purpose === "REENROLL"
+                  ? "device.reenrollment.cancelled"
+                  : "device.enrollment.cancelled",
               entityType: "screen",
               entityId: screenId,
               ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
@@ -2153,7 +2971,13 @@ export class PrismaStore implements DataStore {
   ) {
     return this.prisma.$transaction(async (tx) => {
       const p = await tx.pairingCode.findFirst({
-        where: { codeHash, status: "PENDING", purpose: "NEW_SCREEN" },
+        where: {
+          codeHash,
+          status: "PENDING",
+          purpose: "NEW_SCREEN",
+          targetScreenId: null,
+          authorizedByUserId: null,
+        },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       });
       if (!p || p.status !== "PENDING" || p.expiresAt <= new Date())
@@ -2197,7 +3021,13 @@ export class PrismaStore implements DataStore {
   ) {
     return this.prisma.$transaction(async (tx) => {
       const p = await tx.pairingCode.findFirst({
-        where: { codeHash, status: "PENDING", purpose: "NEW_SCREEN" },
+        where: {
+          codeHash,
+          status: "PENDING",
+          purpose: "NEW_SCREEN",
+          targetScreenId: null,
+          authorizedByUserId: null,
+        },
         orderBy: { createdAt: "desc" },
       });
       if (!p || p.expiresAt <= new Date()) return null;
@@ -2271,6 +3101,24 @@ export class PrismaStore implements DataStore {
           ? await tx.pairingCode.findUnique({ where: { id: locked.id } })
           : null;
         if (!pairing) return null;
+        if (pairing.authorizedByUserId) {
+          const issuer = await tx.membership.findFirst({
+            where: {
+              id: pairing.authorizedByMembershipId ?? "",
+              organizationId: pairing.organizationId,
+              userId: pairing.authorizedByUserId,
+              authorizationEpoch: pairing.authorizedByAuthorizationEpoch ?? -1,
+              role: { in: ["OWNER", "ADMIN"] },
+              user: {
+                disabledAt: null,
+                authenticationEpoch:
+                  pairing.authorizedByAuthenticationEpoch ?? -1,
+              },
+            },
+            select: { id: true },
+          });
+          if (!issuer) return null;
+        } else if (pairing.targetScreenId) return null;
         if (
           expiresAt <= locked!.databaseNow ||
           expiresAt.getTime() - locked!.databaseNow.getTime() > 45_000
@@ -2287,7 +3135,6 @@ export class PrismaStore implements DataStore {
           (await tx.pairingAttempt.count({
             where: {
               pairingCodeId: pairing.id,
-              keyId: input.credential.keyId,
               consumedAt: null,
               expiresAt: { gt: locked!.databaseNow },
             },
@@ -2339,12 +3186,41 @@ export class PrismaStore implements DataStore {
     verify: PairingProofVerifier,
     audit: PairingClaimAuditContext,
   ) {
-    try {
-      return await this.prisma.$transaction(
-        async (tx) => {
-          const [locked] = await tx.$queryRaw<
-            Array<{ id: string; databaseNow: Date }>
-          >`
+    const authorityHint = await this.prisma.pairingAttempt.findFirst({
+      where: {
+        id: input.pairingAttemptId,
+        pairingCode: { codeHash: input.codeHash },
+      },
+      select: {
+        organizationId: true,
+        pairingCode: { select: { authorizedByUserId: true } },
+      },
+    });
+    if (!authorityHint)
+      return { paired: false as const, reason: "INVALID" as const };
+    for (let writeAttempt = 0; writeAttempt < 3; writeAttempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const [organization] = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT organization."id" FROM "Organization" organization
+            WHERE organization."id" = ${authorityHint.organizationId}
+            FOR NO KEY UPDATE OF organization`;
+            if (!organization)
+              return { paired: false as const, reason: "INVALID" as const };
+            if (authorityHint.pairingCode.authorizedByUserId) {
+              const [issuerLock] = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT membership."id" FROM "Membership" membership
+              INNER JOIN "User" issuer ON issuer."id" = membership."userId"
+              WHERE membership."organizationId" = ${authorityHint.organizationId}
+                AND membership."userId" = ${authorityHint.pairingCode.authorizedByUserId}
+              FOR UPDATE OF membership, issuer`;
+              if (!issuerLock)
+                return { paired: false as const, reason: "INVALID" as const };
+            }
+            const [locked] = await tx.$queryRaw<
+              Array<{ id: string; databaseNow: Date }>
+            >`
             SELECT attempt."id", CURRENT_TIMESTAMP AS "databaseNow"
             FROM "PairingAttempt" AS attempt
             INNER JOIN "PairingCode" AS pairing
@@ -2353,223 +3229,254 @@ export class PrismaStore implements DataStore {
             WHERE attempt."id" = ${input.pairingAttemptId}
               AND pairing."codeHash" = ${input.codeHash}
             FOR UPDATE OF attempt, pairing`;
-          if (!locked)
-            return { paired: false as const, reason: "INVALID" as const };
-          const attempt = await tx.pairingAttempt.findUnique({
-            where: { id: locked.id },
-            include: {
-              pairingCode: true,
-              boundCredential: { include: { liveScreen: true } },
-            },
-          });
-          if (
-            !attempt ||
-            attempt.challengeHashSha256 !== input.challengeHashSha256 ||
-            attempt.transcriptDigestSha256 !== input.transcriptDigestSha256 ||
-            attempt.keyId !== input.keyId
-          )
-            return { paired: false as const, reason: "INVALID" as const };
-          const enrollment: DeviceCredentialEnrollment = {
-            keyId: attempt.keyId,
-            publicKeySpki: Buffer.from(attempt.publicKeySpki).toString(
-              "base64url",
-            ),
-            algorithm: "ES256",
-            securityLevel:
-              attempt.securityLevel as DeviceCredentialEnrollment["securityLevel"],
-            ...(attempt.credentialExpiresAt
-              ? { expiresAt: iso(attempt.credentialExpiresAt) }
-              : {}),
-          };
-          if (!(await verify(enrollment)))
-            return { paired: false as const, reason: "INVALID" as const };
-
-          if (
-            (attempt.consumedAt || attempt.activatedAt) &&
-            attempt.boundCredential &&
-            !attempt.boundCredential.revokedAt &&
-            (!attempt.boundCredential.expiresAt ||
-              attempt.boundCredential.expiresAt > locked.databaseNow)
-          ) {
-            const screen = attempt.boundCredential.liveScreen;
-            return screen
-              ? {
-                  paired: true as const,
-                  screen: screenDto(screen),
-                  credential: deviceCredentialDto(attempt.boundCredential),
-                }
-              : { paired: false as const, reason: "INVALID" as const };
-          }
-          if (
-            attempt.pairingCode.purpose === "REENROLL" &&
-            attempt.provedAt &&
-            !attempt.cancelledAt &&
-            attempt.pairingCode.status === "PENDING" &&
-            attempt.pairingCode.expiresAt > locked.databaseNow
-          ) {
-            return {
-              paired: false as const,
-              reason: "PENDING_APPROVAL" as const,
-              grantId: attempt.pairingCode.id,
-              candidateId: attempt.id,
-              keyId: attempt.keyId,
-              expiresAt: iso(attempt.pairingCode.expiresAt)!,
-            };
-          }
-          const currentTime = locked.databaseNow;
-          if (
-            attempt.consumedAt ||
-            attempt.expiresAt <= currentTime ||
-            attempt.pairingCode.status !== "PENDING" ||
-            attempt.pairingCode.expiresAt <= currentTime
-          )
-            return { paired: false as const, reason: "INVALID" as const };
-          if (attempt.pairingCode.purpose === "REENROLL") {
-            const issuer = attempt.pairingCode.authorizedByUserId
-              ? await tx.membership.findFirst({
-                  where: {
-                    organizationId: attempt.organizationId,
-                    userId: attempt.pairingCode.authorizedByUserId,
-                    role: { in: ["OWNER", "ADMIN"] },
-                    user: { disabledAt: null },
-                  },
-                  select: { id: true },
-                })
-              : null;
+            if (!locked)
+              return { paired: false as const, reason: "INVALID" as const };
+            const attempt = await tx.pairingAttempt.findUnique({
+              where: { id: locked.id },
+              include: {
+                pairingCode: true,
+                boundCredential: { include: { liveScreen: true } },
+              },
+            });
             if (
-              !attempt.pairingCode.targetScreenId ||
-              !issuer ||
-              attempt.cancelledAt ||
-              (await tx.pairingAttempt.count({
-                where: {
-                  pairingCodeId: attempt.pairingCodeId,
-                  provedAt: { not: null },
-                  cancelledAt: null,
-                },
-              })) >= 4
+              !attempt ||
+              attempt.challengeHashSha256 !== input.challengeHashSha256 ||
+              attempt.transcriptDigestSha256 !== input.transcriptDigestSha256 ||
+              attempt.keyId !== input.keyId
             )
               return { paired: false as const, reason: "INVALID" as const };
-            await tx.pairingAttempt.update({
-              where: { id: attempt.id },
+            const enrollment: DeviceCredentialEnrollment = {
+              keyId: attempt.keyId,
+              publicKeySpki: Buffer.from(attempt.publicKeySpki).toString(
+                "base64url",
+              ),
+              algorithm: "ES256",
+              securityLevel:
+                attempt.securityLevel as DeviceCredentialEnrollment["securityLevel"],
+              ...(attempt.credentialExpiresAt
+                ? { expiresAt: iso(attempt.credentialExpiresAt) }
+                : {}),
+            };
+            if (!(await verify(enrollment)))
+              return { paired: false as const, reason: "INVALID" as const };
+
+            if (
+              (attempt.consumedAt || attempt.activatedAt) &&
+              attempt.boundCredential &&
+              !attempt.boundCredential.revokedAt &&
+              (!attempt.boundCredential.expiresAt ||
+                attempt.boundCredential.expiresAt > locked.databaseNow)
+            ) {
+              const screen = attempt.boundCredential.liveScreen;
+              return screen
+                ? {
+                    paired: true as const,
+                    screen: screenDto(screen),
+                    credential: deviceCredentialDto(attempt.boundCredential),
+                  }
+                : { paired: false as const, reason: "INVALID" as const };
+            }
+            if (
+              (attempt.pairingCode.purpose === "REENROLL" ||
+                attempt.pairingCode.purpose === "NEW_SCREEN") &&
+              attempt.provedAt &&
+              !attempt.cancelledAt &&
+              attempt.pairingCode.status === "PENDING" &&
+              attempt.pairingCode.expiresAt > locked.databaseNow
+            ) {
+              return {
+                paired: false as const,
+                reason: "PENDING_APPROVAL" as const,
+                grantId: attempt.pairingCode.id,
+                candidateId: attempt.id,
+                keyId: attempt.keyId,
+                expiresAt: iso(attempt.pairingCode.expiresAt)!,
+              };
+            }
+            const currentTime = locked.databaseNow;
+            if (
+              attempt.consumedAt ||
+              attempt.expiresAt <= currentTime ||
+              attempt.pairingCode.status !== "PENDING" ||
+              attempt.pairingCode.expiresAt <= currentTime
+            )
+              return { paired: false as const, reason: "INVALID" as const };
+            if (
+              attempt.pairingCode.purpose === "REENROLL" ||
+              attempt.pairingCode.purpose === "NEW_SCREEN"
+            ) {
+              const issuer = attempt.pairingCode.authorizedByUserId
+                ? await tx.membership.findFirst({
+                    where: {
+                      organizationId: attempt.organizationId,
+                      userId: attempt.pairingCode.authorizedByUserId,
+                      role: { in: ["OWNER", "ADMIN"] },
+                      user: { disabledAt: null },
+                    },
+                    select: { id: true },
+                  })
+                : null;
+              if (
+                !attempt.pairingCode.targetScreenId ||
+                !issuer ||
+                (attempt.pairingCode.authorizedByMembershipId != null &&
+                  (issuer.id !== attempt.pairingCode.authorizedByMembershipId ||
+                    attempt.pairingCode.authorizedByAuthenticationEpoch ==
+                      null ||
+                    attempt.pairingCode.authorizedByAuthorizationEpoch ==
+                      null ||
+                    (await tx.user.count({
+                      where: {
+                        id: attempt.pairingCode.authorizedByUserId!,
+                        disabledAt: null,
+                        authenticationEpoch:
+                          attempt.pairingCode.authorizedByAuthenticationEpoch,
+                      },
+                    })) !== 1 ||
+                    (await tx.membership.count({
+                      where: {
+                        id: attempt.pairingCode.authorizedByMembershipId,
+                        authorizationEpoch:
+                          attempt.pairingCode.authorizedByAuthorizationEpoch,
+                      },
+                    })) !== 1)) ||
+                attempt.cancelledAt ||
+                (await tx.pairingAttempt.count({
+                  where: {
+                    pairingCodeId: attempt.pairingCodeId,
+                    provedAt: { not: null },
+                    cancelledAt: null,
+                  },
+                })) >= 4
+              )
+                return { paired: false as const, reason: "INVALID" as const };
+              await tx.pairingAttempt.update({
+                where: { id: attempt.id },
+                data: {
+                  provedAt: currentTime,
+                  installationId: input.device.installationId,
+                  model: input.device.model,
+                  osVersion: input.device.osVersion,
+                  playerVersion: input.device.playerVersion,
+                },
+              });
+              await tx.auditEvent.create({
+                data: {
+                  organizationId: attempt.organizationId,
+                  actorType: "device",
+                  action:
+                    attempt.pairingCode.purpose === "REENROLL"
+                      ? "device.reenrollment.candidate_proved"
+                      : "device.enrollment.candidate_proved",
+                  entityType: "screen",
+                  entityId: attempt.pairingCode.targetScreenId,
+                  ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                  ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                  metadata: {
+                    grantId: attempt.pairingCode.id,
+                    candidateId: attempt.id,
+                    keyId: attempt.keyId,
+                    installationId: input.device.installationId,
+                  },
+                },
+              });
+              return {
+                paired: false as const,
+                reason: "PENDING_APPROVAL" as const,
+                grantId: attempt.pairingCode.id,
+                candidateId: attempt.id,
+                keyId: attempt.keyId,
+                expiresAt: iso(attempt.pairingCode.expiresAt)!,
+              };
+            }
+            const claimed = await tx.pairingCode.updateMany({
+              where: {
+                id: attempt.pairingCodeId,
+                organizationId: attempt.organizationId,
+                status: "PENDING",
+                expiresAt: { gt: currentTime },
+              },
+              data: { status: "CLAIMED", claimedAt: currentTime },
+            });
+            if (claimed.count !== 1)
+              return { paired: false as const, reason: "INVALID" as const };
+            const screen = await tx.screen.create({
               data: {
-                provedAt: currentTime,
+                organizationId: attempt.organizationId,
+                name: `New screen ${input.device.installationId.slice(-6)}`,
+                location: "Unassigned",
                 installationId: input.device.installationId,
                 model: input.device.model,
                 osVersion: input.device.osVersion,
                 playerVersion: input.device.playerVersion,
+                status: "ONLINE",
+                lastSeenAt: currentTime,
+              },
+            });
+            await tx.deviceKeyTombstone.create({
+              data: { keyId: attempt.keyId },
+            });
+            const credential = await tx.deviceCredential.create({
+              data: {
+                organizationId: attempt.organizationId,
+                screenId: screen.id,
+                liveScreenId: screen.id,
+                liveScreenOrganizationId: attempt.organizationId,
+                keyId: attempt.keyId,
+                publicKeySpki: attempt.publicKeySpki,
+                algorithm: "ES256",
+                securityLevel: attempt.securityLevel,
+                expiresAt: attempt.credentialExpiresAt,
+              },
+            });
+            await tx.pairingCode.update({
+              where: { id: attempt.pairingCodeId },
+              data: {
+                screenId: screen.id,
+                screenOrganizationId: attempt.organizationId,
+              },
+            });
+            await tx.pairingAttempt.update({
+              where: { id: attempt.id },
+              data: {
+                consumedAt: currentTime,
+                boundCredentialId: credential.id,
               },
             });
             await tx.auditEvent.create({
               data: {
                 organizationId: attempt.organizationId,
                 actorType: "device",
-                action: "device.reenrollment.candidate_proved",
+                action: "device.paired",
                 entityType: "screen",
-                entityId: attempt.pairingCode.targetScreenId,
+                entityId: screen.id,
                 ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
                 ...(audit.requestId ? { requestId: audit.requestId } : {}),
                 metadata: {
-                  grantId: attempt.pairingCode.id,
-                  candidateId: attempt.id,
-                  keyId: attempt.keyId,
+                  ...audit.metadata,
                   installationId: input.device.installationId,
+                  credentialId: credential.id,
+                  keyId: credential.keyId,
+                  pairingAttemptId: attempt.id,
                 },
               },
             });
             return {
-              paired: false as const,
-              reason: "PENDING_APPROVAL" as const,
-              grantId: attempt.pairingCode.id,
-              candidateId: attempt.id,
-              keyId: attempt.keyId,
-              expiresAt: iso(attempt.pairingCode.expiresAt)!,
+              paired: true as const,
+              screen: screenDto(screen),
+              credential: deviceCredentialDto(credential),
             };
-          }
-          const claimed = await tx.pairingCode.updateMany({
-            where: {
-              id: attempt.pairingCodeId,
-              organizationId: attempt.organizationId,
-              status: "PENDING",
-              expiresAt: { gt: currentTime },
-            },
-            data: { status: "CLAIMED", claimedAt: currentTime },
-          });
-          if (claimed.count !== 1)
-            return { paired: false as const, reason: "INVALID" as const };
-          const screen = await tx.screen.create({
-            data: {
-              organizationId: attempt.organizationId,
-              name: `New screen ${input.device.installationId.slice(-6)}`,
-              location: "Unassigned",
-              installationId: input.device.installationId,
-              model: input.device.model,
-              osVersion: input.device.osVersion,
-              playerVersion: input.device.playerVersion,
-              status: "ONLINE",
-              lastSeenAt: currentTime,
-            },
-          });
-          await tx.deviceKeyTombstone.create({
-            data: { keyId: attempt.keyId },
-          });
-          const credential = await tx.deviceCredential.create({
-            data: {
-              organizationId: attempt.organizationId,
-              screenId: screen.id,
-              liveScreenId: screen.id,
-              liveScreenOrganizationId: attempt.organizationId,
-              keyId: attempt.keyId,
-              publicKeySpki: attempt.publicKeySpki,
-              algorithm: "ES256",
-              securityLevel: attempt.securityLevel,
-              expiresAt: attempt.credentialExpiresAt,
-            },
-          });
-          await tx.pairingCode.update({
-            where: { id: attempt.pairingCodeId },
-            data: {
-              screenId: screen.id,
-              screenOrganizationId: attempt.organizationId,
-            },
-          });
-          await tx.pairingAttempt.update({
-            where: { id: attempt.id },
-            data: {
-              consumedAt: currentTime,
-              boundCredentialId: credential.id,
-            },
-          });
-          await tx.auditEvent.create({
-            data: {
-              organizationId: attempt.organizationId,
-              actorType: "device",
-              action: "device.paired",
-              entityType: "screen",
-              entityId: screen.id,
-              ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-              ...(audit.requestId ? { requestId: audit.requestId } : {}),
-              metadata: {
-                ...audit.metadata,
-                installationId: input.device.installationId,
-                credentialId: credential.id,
-                keyId: credential.keyId,
-                pairingAttemptId: attempt.id,
-              },
-            },
-          });
-          return {
-            paired: true as const,
-            screen: screenDto(screen),
-            credential: deviceCredentialDto(credential),
-          };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
-      );
-    } catch (error) {
-      if (isUniqueConstraintError(error) || isRetryableWriteConflict(error))
-        return { paired: false as const, reason: "INVALID" as const };
-      throw error;
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (isRetryableWriteConflict(error) && writeAttempt < 2) continue;
+        if (isUniqueConstraintError(error) || isRetryableWriteConflict(error))
+          return { paired: false as const, reason: "INVALID" as const };
+        throw error;
+      }
     }
+    return { paired: false as const, reason: "INVALID" as const };
   }
   async authenticateDevice(id: string) {
     const x = await this.prisma.screen.findFirst({

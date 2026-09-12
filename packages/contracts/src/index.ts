@@ -208,7 +208,7 @@ export interface PairingResponse {
   manifestVerificationKey: string;
 }
 
-/** A proved replacement key awaiting explicit operator activation. */
+/** A proved enrollment key awaiting explicit operator activation. */
 export interface PairingPendingApprovalResponse {
   status: "pending-approval";
   grantId: string;
@@ -217,6 +217,42 @@ export interface PairingPendingApprovalResponse {
   /** Canonical SHA-256 base64url public-key fingerprint; equal to keyId in proof-v1. */
   fingerprint: string;
   expiresAt: string;
+}
+
+export interface DeviceEnrollmentGrant {
+  grantId: string;
+  screenId: string;
+  code: string;
+  expiresAt: string;
+  generation: number;
+}
+
+export interface DeviceEnrollmentCandidate {
+  id: string;
+  keyId: string;
+  /** Canonical SHA-256 base64url public-key fingerprint; equal to keyId. */
+  fingerprint: string;
+  securityLevel: DeviceIdentityEnrollment["securityLevel"];
+  device: DeviceMetadata;
+  provedAt: string;
+}
+
+export interface DeviceEnrollmentStatus {
+  grantId: string;
+  screenId: string;
+  status: "pending" | "claimed" | "expired" | "revoked";
+  expiresAt: string;
+  candidates: DeviceEnrollmentCandidate[];
+}
+
+export interface DeviceEnrollmentActivation {
+  grantId: string;
+  screenId: string;
+  candidateId: string;
+  credentialId: string;
+  keyId: string;
+  activatedAt: string;
+  status: "activated";
 }
 
 export type DeviceProofOperation = "manifest" | "heartbeat";

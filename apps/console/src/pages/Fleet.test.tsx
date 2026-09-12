@@ -131,3 +131,138 @@ it("distinguishes a successful empty live inventory from a failed read", async (
     screen.queryByRole("heading", { name: "Screen data unavailable" }),
   ).toBeNull();
 });
+
+it("uses the precreated-screen enrollment and exact-fingerprint activation flow", async () => {
+  setLiveSession();
+  const fingerprint = "A".repeat(43);
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/screens") && !init?.method)
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "precreated-screen",
+                name: "Precreated Screen",
+                location: "Lab",
+                status: "offline",
+                orientation: "landscape",
+                resolution: "1920x1080",
+                tags: [],
+              },
+              {
+                id: "already-enrolled-screen",
+                name: "Already Enrolled Screen",
+                location: "Lobby",
+                status: "offline",
+                orientation: "landscape",
+                resolution: "1920x1080",
+                tags: [],
+                playerVersion: "0.2.0",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      if (url.endsWith("/device-enrollment") && init?.method === "POST")
+        return new Response(
+          JSON.stringify({
+            grantId: "initial-grant",
+            screenId: "precreated-screen",
+            code: "123456",
+            expiresAt: "2030-01-01T12:00:00.000Z",
+            generation: 0,
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      if (
+        url.endsWith("/device-enrollment/initial-grant") &&
+        init?.method === "GET"
+      )
+        return new Response(
+          JSON.stringify({
+            grantId: "initial-grant",
+            screenId: "precreated-screen",
+            status: "pending",
+            expiresAt: "2030-01-01T12:00:00.000Z",
+            candidates: [
+              {
+                id: "initial-candidate",
+                keyId: fingerprint,
+                fingerprint,
+                securityLevel: "software",
+                device: {
+                  installationId: fingerprint,
+                  model: "Player",
+                  osVersion: "15",
+                  playerVersion: "0.2.0",
+                },
+                provedAt: "2026-09-12T12:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      if (url.includes("/candidates/initial-candidate/activate"))
+        return new Response(
+          JSON.stringify({
+            grantId: "initial-grant",
+            screenId: "precreated-screen",
+            candidateId: "initial-candidate",
+            credentialId: "credential-a",
+            keyId: fingerprint,
+            activatedAt: "2026-09-12T12:01:00.000Z",
+            status: "activated",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const user = userEvent.setup();
+  render(<Fleet canManage />);
+
+  await user.click(
+    await screen.findByRole("button", { name: "Pair a screen" }),
+  );
+  expect(
+    screen.queryByRole("option", { name: /Already Enrolled Screen/ }),
+  ).toBeNull();
+  await user.selectOptions(
+    screen.getByLabelText("Screen"),
+    "precreated-screen",
+  );
+  await user.click(screen.getByRole("button", { name: "Continue" }));
+  expect(screen.getByText("Create enrollment authority")).toBeTruthy();
+  expect(screen.queryByText(/immediate interruption/i)).toBeNull();
+  await user.type(
+    screen.getByLabelText("Reason for enrollment"),
+    "Install the lab player",
+  );
+  await user.click(
+    screen.getByRole("button", { name: "Create enrollment code" }),
+  );
+  expect(await screen.findByText(fingerprint)).toBeTruthy();
+  await user.click(screen.getByRole("radio"));
+  await user.click(
+    screen
+      .getByText(/I verified this exact fingerprint/)
+      .closest("label")!
+      .querySelector("input")!,
+  );
+  await user.click(
+    screen.getByRole("button", { name: "Activate exact candidate" }),
+  );
+  expect(await screen.findByText("Enrollment activated")).toBeTruthy();
+  const creation = fetchMock.mock.calls.find(
+    ([url, init]) =>
+      String(url).endsWith("/device-enrollment") && init?.method === "POST",
+  );
+  expect(creation?.[1]?.headers).toMatchObject({
+    "Idempotency-Key": expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    ),
+  });
+});

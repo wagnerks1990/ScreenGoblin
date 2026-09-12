@@ -38,7 +38,14 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   identities use the fixed cost-12 dummy credential. Describe this only as
   reduced timing distinguishability, never as constant-time authentication, and
   never expose membership existence.
-- Enrollment is a two-stage, transcript-bound challenge exchange. Android installation ID equals the server-derived SHA-256 SPKI key ID; an identical successful final claim is idempotently recoverable. A reported Keystore security level is not attestation, and a stolen pairing code remains first-winner authority.
+- Production initial enrollment starts from a tenant Screen precreated by an
+  OWNER/ADMIN and an issuer/epoch-bound grant. The two-stage, transcript-bound
+  proof only stages a pending candidate; a current OWNER/ADMIN must activate
+  its exact displayed fingerprint before an identical proof retry can recover
+  the credential response. Android installation ID equals the server-derived
+  SHA-256 SPKI key ID. A code alone cannot mint authority. Fingerprint
+  comparison and reported Keystore security level are not attestation,
+  physical-device identity, or two-person approval.
 - Device revocation is an OWNER/ADMIN capability revalidated transactionally with the credential/screen change, outstanding-challenge invalidation, and one audit record. Revocation blocks online proof use but cannot recall or erase content from an offline player.
 - Targeted re-enrollment is a manual, zero-overlap recovery protocol for an
   existing screen. An authorized request requires an operational reason,

@@ -11,6 +11,7 @@ export interface SessionUser {
   role: Role;
   authenticationEpoch: number;
   authorizationEpoch: number;
+  membershipId?: string;
   disabledAt?: string;
 }
 export const LOGIN_FAILURE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -366,6 +367,7 @@ export interface PairingRecord {
   organizationId: string;
   codeHash: string;
   expiresAt: string;
+  claimedAt?: string | undefined;
   status: "PENDING" | "CLAIMED" | "EXPIRED" | "REVOKED";
   screenId?: string | undefined;
   purpose?: "NEW_SCREEN" | "REENROLL" | undefined;
@@ -373,9 +375,15 @@ export interface PairingRecord {
   targetScreenReferenceId?: string | undefined;
   expectedGeneration?: number | undefined;
   authorizedByUserId?: string | undefined;
+  authorizedByMembershipId?: string | undefined;
+  authorizedByAuthenticationEpoch?: number | undefined;
+  authorizedByAuthorizationEpoch?: number | undefined;
   priorCredentialId?: string | undefined;
   requestReason?: string | undefined;
+  createdAt?: string | undefined;
 }
+
+export const DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
 export type PairingCreateResult =
   | { created: true; pairing: PairingRecord }
@@ -552,6 +560,53 @@ export type ScreenUpdateResult =
       reason: "NOT_FOUND" | "FORBIDDEN" | "INVALID_LOCATION";
     };
 
+export interface ScreenEnrollmentIdempotencyInput {
+  keyHash: string;
+  requestDigestSha256: string;
+  codeCandidates: Array<{ counter: number; codeHash: string }>;
+}
+
+export type ScreenEnrollmentRequestResult =
+  | {
+      created: true;
+      pairing: PairingRecord;
+      codeCounter: number;
+      replayed?: true;
+    }
+  | {
+      created: false;
+      reason:
+        | "NOT_FOUND"
+        | "FORBIDDEN"
+        | "SCREEN_NOT_ELIGIBLE"
+        | "CODE_COLLISION"
+        | "IDEMPOTENCY_KEY_REUSED"
+        | "IDEMPOTENCY_KEY_EXPIRED";
+    };
+
+export interface ScreenEnrollmentActivationIdempotencyInput {
+  keyHash: string;
+  requestDigestSha256: string;
+}
+
+export type ScreenEnrollmentActivationResult =
+  | {
+      activated: true;
+      screen: ScreenRecord;
+      credential: DeviceCredentialRecord;
+      replayed?: true;
+    }
+  | {
+      activated: false;
+      reason:
+        | "NOT_FOUND"
+        | "FORBIDDEN"
+        | "STALE"
+        | "FINGERPRINT_MISMATCH"
+        | "IDEMPOTENCY_KEY_REUSED"
+        | "IDEMPOTENCY_KEY_EXPIRED";
+    };
+
 export type ScreenMutationInput = Pick<
   ScreenRecord,
   "name" | "location" | "orientation" | "resolution" | "tags"
@@ -686,11 +741,20 @@ export interface DataStore {
     reason: string,
     audit: PairingCreateAuditContext,
   ): Promise<ReenrollmentRequestResult>;
+  requestScreenEnrollmentAndAudit(
+    orgId: string,
+    screenId: string,
+    expiresAt: string,
+    reason: string,
+    audit: PairingCreateAuditContext,
+    idempotency: ScreenEnrollmentIdempotencyInput,
+  ): Promise<ScreenEnrollmentRequestResult>;
   getReenrollmentStatus(
     orgId: string,
     screenId: string,
     grantId: string,
     actorUserId: string,
+    purpose?: "NEW_SCREEN" | "REENROLL",
   ): Promise<{
     grantId: string;
     screenId: string;
@@ -705,11 +769,21 @@ export interface DataStore {
     candidateId: string,
     audit: PairingCreateAuditContext,
   ): Promise<ReenrollmentActivationResult>;
+  activateScreenEnrollmentCandidateAndAudit(
+    orgId: string,
+    screenId: string,
+    grantId: string,
+    candidateId: string,
+    fingerprint: string,
+    audit: PairingCreateAuditContext,
+    idempotency: ScreenEnrollmentActivationIdempotencyInput,
+  ): Promise<ScreenEnrollmentActivationResult>;
   cancelScreenReenrollmentAndAudit(
     orgId: string,
     screenId: string,
     grantId: string,
     audit: PairingCreateAuditContext,
+    purpose?: "NEW_SCREEN" | "REENROLL",
   ): Promise<ReenrollmentCancelResult>;
   claimPairing(
     codeHash: string,

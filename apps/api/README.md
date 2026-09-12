@@ -36,8 +36,11 @@ All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the
 - `GET|POST|DELETE /api/v1/schedules`
 - `POST /api/v1/emergencies`, `POST /api/v1/emergencies/:id/clear`
 - `GET /api/v1/audit-events`
-- `POST /api/v1/pairing-codes`
+- `POST /api/v1/pairing-codes` (deprecated and unavailable in production proof mode)
 - `POST /api/v1/screens/:id/device-credential/revoke`
+- `POST /api/v1/screens/:id/device-enrollment` (required reason and idempotency key)
+- `GET|DELETE /api/v1/screens/:id/device-enrollment/:grantId`
+- `POST /api/v1/screens/:id/device-enrollment/:grantId/candidates/:candidateId/activate`
 - `POST /api/v1/screens/:id/device-reenrollment` (required operational reason)
 - `GET|DELETE /api/v1/screens/:id/device-reenrollment/:grantId`
 - `POST /api/v1/screens/:id/device-reenrollment/:grantId/candidates/:candidateId/activate`
@@ -126,13 +129,23 @@ downstream disconnect destroys the upstream object stream.
   rows in deterministic `(createdAt, id)` order and is not an audit export.
 - Proof-v1 supports manual, targeted, zero-overlap re-enrollment of an
   existing screen. The request immediately revokes the old identity; fresh-key
-  proof stages a candidate; and a separate OWNER/ADMIN exact-fingerprint
+  proof stages a candidate; and a later current OWNER/ADMIN exact-fingerprint
   activation is required. Request and activation keep the screen offline and
   clear old identity-specific heartbeat telemetry; only the activated
   credential's first authenticated heartbeat marks it online. It does not provide server-verified
   hardware/application attestation, automatic overlapping key rotation, offline
   recall, verified native erasure, or physical-device identity; those remain
   pilot/release gates.
+- Proof-v1 initial enrollment also targets a precreated tenant Screen. The
+  ten-minute grant snapshots its issuing membership and authentication/
+  authorization epochs; proof stages a candidate only, and a current
+  OWNER/ADMIN must activate its exact fingerprint. Creation and activation use
+  30-day exact-response idempotency records without storing the raw key or
+  plaintext code. Later authorized enrollment writes prune at most 100 expired
+  rows in each enrollment maintenance phase; dormant/backlogged tenants still
+  need scheduled cleanup. The Screen remains offline until the new credential's
+  first authenticated heartbeat. This does not prove physical identity, hardware or
+  application attestation, two-person approval, MFA, or location scope.
 - Staff email login is case-insensitive. PostgreSQL enforces a functional unique index on `LOWER(email)`; its migration aborts without changing data when legacy case-only duplicates exist, and runtime lookup also fails closed if it encounters ambiguous identity data.
 - User access tokens expire after one hour and contain a random per-login session
   identity. Only its SHA-256 hash is stored. Every authenticated request rechecks

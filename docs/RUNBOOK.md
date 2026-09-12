@@ -15,7 +15,14 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 5. During the maintenance window, run `docker compose --env-file deploy/.env pull` for referenced images and `docker compose --env-file deploy/.env build --pull` for application images.
 6. Run `docker compose --env-file deploy/.env up -d` and inspect `docker compose --env-file deploy/.env ps`.
 7. On a new installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Confirm the owner can sign in, then remove all `SEED_*` values from the host environment.
-8. Verify readiness, login, two-stage Android Keystore pairing, proof-authorized heartbeat and manifest delivery, atomic pairing/audit, Ed25519 manifest verification, media checksum, signed withdrawal, schedule-boundary blanking, last-known-good playback, and OWNER/ADMIN credential revocation. Confirm replayed proofs fail. Do not claim that a revoked online player erased managed media until verified native erasure is implemented and evidenced.
+8. Verify readiness, login, precreated-screen enrollment with staged proof and
+   exact-fingerprint activation, proof-authorized heartbeat and manifest
+   delivery, atomic enrollment/audit, Ed25519 manifest verification, media
+   checksum, signed withdrawal, schedule-boundary blanking, last-known-good
+   playback, and OWNER/ADMIN credential revocation. Confirm replayed proofs fail
+   and an activated screen remains offline until heartbeat. Do not claim that a
+   revoked online player erased managed media until verified native erasure is
+   implemented and evidenced.
 
 On a disposable host with ports 80 and 443 free, exercise the assembled stack
 before staging promotion:
@@ -51,6 +58,13 @@ The remaining key tombstones are retained with release and audit history and
 must not be manually pruned or reused. This is opportunistic maintenance during
 ordinary publication, not a scheduled worker. Restore validation includes a
 representative ledger relationship.
+
+The targeted enrollment migration revokes every preexisting `PENDING` pairing
+or re-enrollment grant and cancels its unbound attempts because legacy rows do
+not carry a trustworthy issuer epoch snapshot. A Player with persisted pending
+proof spanning this rollout therefore fails closed; an authorized operator must
+issue a new target-bound grant and the Player must begin a new proof exchange.
+Do not restore or relabel the legacy pending authority.
 
 ## Verifying interrupted historical migrations
 
@@ -116,6 +130,16 @@ unrecorded credential failure. The newest 10,000 rows are retained and rows
 older than 30 days are pruned on the next insert; a dormant database therefore
 needs a separately approved retention job if exact-time deletion is required.
 Do not treat this bounded local table as a SIEM or durable long-term archive.
+
+Terminal pairing grants/attempts use a 30-day engineering retention bound and
+are pruned tenant-by-tenant in at most 100 rows per maintenance phase on each
+later authorized enrollment write. Enrollment replays retain their exact
+response for 30 days; later successful enrollment writes compact at most 100
+expired response bodies while permanently retaining the key hash, request
+digest, actor, operation, and status tombstone. This bounds request work, but a
+dormant or unusually backlogged tenant can retain expired response bodies past
+the deadline. Deploy an approved scheduled cleanup/reconciliation job before
+treating response-body compaction as an exact-time promise.
 
 `AuditEvent` rejects ordinary updates and direct row deletion while its
 organization exists. The exceptions are deliberate: deleting a `User` sets
@@ -251,7 +275,7 @@ is insufficient to keep up with retention.
   the target screen, required operational reason, and starting generation;
   immediate old-key revocation and the resulting offline state;
   explicit local Player key reset; exact candidate fingerprint comparison on the
-  physical display and Console; separate OWNER/ADMIN activation; preservation of
+  physical display and Console; explicit current OWNER/ADMIN activation; preservation of
   screen assignments; denial of the old key; and cancellation of stale grants.
   Treat expiry or a fingerprint mismatch as a stop condition and cancel the
   grant. Do not activate an unverified candidate.

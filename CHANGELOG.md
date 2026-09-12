@@ -27,6 +27,16 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   validation now identifies invalid media-origin entries only by position and
   never echoes their raw URL, credentials, query, or private hostname.
 
+- Replace proof-v1's unbound, first-winner initial pairing authority with
+  precreated tenant screens, issuer membership/epoch-bound grants, candidate-only
+  device proof, and explicit exact-fingerprint OWNER/ADMIN activation. Creation
+  and activation are idempotently replayable without plaintext code storage;
+  one serializable winner revokes competitors and remains offline until an
+  authenticated heartbeat. Identity lifecycle changes revoke both initial and
+  replacement grants, including concurrent replacement proof. Manual
+  fingerprint comparison is not attestation, physical identity, two-person
+  approval, MFA, or location-scoped authorization.
+
 - Preserve an active owner for every tenant when internal identity lifecycle
   helpers disable a user, demote an owner, or remove an owner membership.
   PostgreSQL serializes competing owner changes per tenant; rejected changes

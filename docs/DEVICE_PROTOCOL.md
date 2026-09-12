@@ -27,7 +27,10 @@ the first attacker-controlled key that completes enrollment.
 
 ## Enrollment
 
-1. An authorized operator creates a six-digit pairing code in the Console/API.
+1. An authorized operator precreates the tenant Screen and creates a ten-minute
+   grant for that exact Screen. Creation requires an idempotency key; the API
+   stores its hash, an HMAC verifier, and deterministic code counter, not either
+   plaintext value.
 2. The operator enters that code on the unpaired player.
 3. The player sends the code, device metadata, and P-256 identity to
    `POST /api/v1/device/pair/challenge`.
@@ -37,21 +40,27 @@ the first attacker-controlled key that completes enrollment.
    indistinguishable response shape but cannot complete pairing.
 5. The player signs the challenge and repeats the exact enrollment fields plus
    the proof at `POST /api/v1/device/pair`.
-6. The server atomically verifies and consumes the code and challenge, creates
-   the screen and public-key credential, and appends the pairing audit event.
-7. The Player stores only the public credential metadata and pinned manifest
+6. The server atomically verifies the proof and stages a pending candidate. It
+   does not attach a credential.
+7. A current OWNER/ADMIN verifies and activates the candidate's exact public-key
+   fingerprint. The transaction rechecks the grant issuer's exact membership
+   and authentication/authorization epochs, allows one winner, revokes competing
+   candidates, creates the credential on the precreated Screen, and audits it.
+8. The Screen remains offline until that credential's first authenticated
+   heartbeat. The Player then stores only public credential metadata and pinned manifest
    verification key in IndexedDB, while the private key remains in Keystore.
 
-Codes expire after ten minutes. At most four unconsumed, unexpired pairing
-attempts are retained for the same code and key. The final request is
-idempotently recoverable only when it repeats the identical successfully
-verified transcript and proof, preventing response loss from creating a second
-screen or audit record. Source/code distributed rate limits also apply.
+Codes expire after ten minutes. At most four live attempts/candidates are
+admitted per grant. The final device proof is idempotently recoverable, while
+management creation and activation have separate 30-day exact-response replay
+keys. Terminal grants, attempts, and replay rows are pruned on later tenant
+enrollment writes; dormant tenants need a scheduled exact-time cleanup job.
+Source/code/operator/tenant distributed rate limits also apply.
 
-Operator confirmation for initial enrollment, attestation, automatic overlapping
-credential rotation, and verified decommissioning remain release gates. A
-separately authorized, zero-overlap targeted re-enrollment flow is described
-below; it is a manual recovery control, not automatic rotation.
+The code is not credential authority by itself, but the manual fingerprint
+comparison is not hardware/application attestation or proof of physical device
+identity. MFA/step-up, two-person approval, location-scoped authorization,
+automatic overlapping rotation, and verified decommissioning remain gates.
 
 ### Android challenge-signing contract
 

@@ -170,42 +170,37 @@ const createMember = async (
 
 const pairProofDevice = async (label: string, byte: number) => {
   const organization = await createOrganization(label);
-  const pairing = await store.createPairing(
-    organization.id,
-    `proof-code-${randomUUID()}`,
-    new Date(Date.now() + 60_000).toISOString(),
-  );
   const credential = proofEnrollment(byte);
-  const challengeHashSha256 = proofHash();
-  const transcriptDigestSha256 = proofHash();
-  const attempt = await store.issuePairingChallenge({
-    codeHash: pairing.codeHash,
-    credential,
-    challengeHashSha256,
-    transcriptDigestSha256,
-    expiresAt: new Date(Date.now() + 30_000).toISOString(),
-  });
-  if (!attempt) throw new Error("proof pairing challenge was not issued");
-  const claimInput = {
-    codeHash: pairing.codeHash,
-    pairingAttemptId: attempt.id,
-    challengeHashSha256,
-    transcriptDigestSha256,
-    keyId: credential.keyId,
-    device: {
-      installationId: `proof-installation-${randomUUID()}`,
+  const screen = await prisma.screen.create({
+    data: {
+      organizationId: organization.id,
+      name: `Fixture ${label}`,
+      location: "Fixture",
+      orientation: "LANDSCAPE",
+      resolution: "1920x1080",
+      tags: [],
+      installationId: credential.keyId,
       model: "Proof player",
       osVersion: "test",
       playerVersion: "0.1.0",
+      credentialGeneration: 1,
+      status: "OFFLINE",
     },
-  };
-  const result = await store.claimPairingWithCredentialAndAudit(
-    claimInput,
-    () => true,
-    { requestId: `proof-pair-${label}` },
-  );
-  if (!result.paired) throw new Error("proof pairing failed");
-  return { organization, pairing, attempt, claimInput, ...result };
+  });
+  await prisma.deviceKeyTombstone.create({ data: { keyId: credential.keyId } });
+  const storedCredential = await prisma.deviceCredential.create({
+    data: {
+      organizationId: organization.id,
+      screenId: screen.id,
+      liveScreenId: screen.id,
+      liveScreenOrganizationId: organization.id,
+      keyId: credential.keyId,
+      publicKeySpki: Buffer.from(credential.publicKeySpki, "base64url"),
+      algorithm: "ES256",
+      securityLevel: credential.securityLevel,
+    },
+  });
+  return { organization, screen, credential: storedCredential };
 };
 
 const stageReenrollmentCandidate = async (
@@ -1733,7 +1728,7 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).toBe(0);
   });
 
-  it("atomically enrolls one proof credential and recovers identical pairing responses", async () => {
+  it("never lets an unbound proof mint initial device authority", async () => {
     const organization = await createOrganization("proof-pair-race");
     const pairing = await store.createPairing(
       organization.id,
@@ -1771,19 +1766,12 @@ describe("PrismaStore PostgreSQL integration", () => {
         }),
       ),
     );
-    expect(results.every((result) => result.paired)).toBe(true);
-    const paired = results[0]!;
-    if (!paired.paired) throw new Error("proof enrollment failed");
-    expect(
-      results.map((result) =>
-        result.paired ? [result.screen.id, result.credential.id] : null,
-      ),
-    ).toEqual(
-      Array.from({ length: 8 }, () => [paired.screen.id, paired.credential.id]),
+    expect(results).toEqual(
+      Array.from({ length: 8 }, () => ({ paired: false, reason: "INVALID" })),
     );
-    expect(await prisma.screen.count()).toBe(1);
-    expect(await prisma.deviceCredential.count()).toBe(1);
-    expect(await prisma.auditEvent.count()).toBe(1);
+    expect(await prisma.screen.count()).toBe(0);
+    expect(await prisma.deviceCredential.count()).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
     await expect(
       store.claimPairingWithCredentialAndAudit(
         { ...input, transcriptDigestSha256: proofHash() },
@@ -1791,7 +1779,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         {},
       ),
     ).resolves.toEqual({ paired: false, reason: "INVALID" });
-    expect(await prisma.auditEvent.count()).toBe(1);
+    expect(await prisma.auditEvent.count()).toBe(0);
   });
 
   it("rolls back proof enrollment when its required audit fails", async () => {
@@ -1834,7 +1822,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           () => true,
           {},
         ),
-      ).rejects.toThrow();
+      ).resolves.toEqual({ paired: false, reason: "INVALID" });
     } finally {
       await prisma.$executeRawUnsafe(
         'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_proof_paired"',
@@ -2247,6 +2235,639 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).rejects.toMatchObject({ code: "P2002" });
   });
 
+  it("rejects NULL components in targeted pending enrollment authority", async () => {
+    const organization = await createOrganization("targeted-null-check");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "targeted-null-check-owner",
+    );
+    const membership = await prisma.membership.findUniqueOrThrow({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+    });
+    const screen = await store.createScreen(organization.id, {
+      name: "NULL check target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const base = {
+      organizationId: organization.id,
+      purpose: "NEW_SCREEN" as const,
+      targetScreenId: screen.id,
+      targetScreenReferenceId: screen.id,
+      targetOrganizationId: organization.id,
+      expectedGeneration: 0,
+      authorizedByUserId: actor.id,
+      authorizedByMembershipId: membership.id,
+      authorizedByAuthenticationEpoch: actor.authenticationEpoch,
+      authorizedByAuthorizationEpoch: membership.authorizationEpoch,
+      status: "PENDING" as const,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    for (const field of [
+      "targetScreenReferenceId",
+      "targetOrganizationId",
+      "expectedGeneration",
+    ] as const) {
+      await expect(
+        prisma.pairingCode.create({
+          data: {
+            ...base,
+            id: `targeted-null-${field}`,
+            codeHash: `targeted-null-${field}-${randomUUID()}`,
+            [field]: null,
+          },
+        }),
+      ).rejects.toThrow();
+    }
+    for (const expectedGeneration of [0, -1]) {
+      await expect(
+        prisma.pairingCode.create({
+          data: {
+            ...base,
+            id: `terminal-reenroll-generation-${expectedGeneration}`,
+            codeHash: `terminal-reenroll-generation-${expectedGeneration}-${randomUUID()}`,
+            purpose: "REENROLL",
+            status: "REVOKED",
+            expectedGeneration,
+            requestReason: "Invalid terminal replacement history",
+          },
+        }),
+      ).rejects.toThrow();
+    }
+    for (const field of [
+      "authorizedByMembershipId",
+      "authorizedByAuthenticationEpoch",
+      "authorizedByAuthorizationEpoch",
+    ] as const) {
+      await expect(
+        prisma.pairingCode.create({
+          data: {
+            ...base,
+            id: `terminal-new-authority-${field}`,
+            codeHash: `terminal-new-authority-${field}-${randomUUID()}`,
+            status: "REVOKED",
+            requestReason: "Invalid terminal enrollment history",
+            [field]: null,
+          },
+        }),
+      ).rejects.toThrow();
+    }
+    for (const [operation, statusCode] of [
+      ["SCREEN_ENROLLMENT_CREATE", 200],
+      ["SCREEN_ENROLLMENT_ACTIVATE", 201],
+    ] as const) {
+      await expect(
+        prisma.idempotencyRecord.create({
+          data: {
+            organizationId: organization.id,
+            operation,
+            keyHash: proofHash(),
+            actorUserId: actor.id,
+            requestDigestSha256: proofHash(),
+            statusCode,
+            responseBody: { invalid: true },
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+        }),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("stages targeted initial enrollment and atomically activates one exact fingerprint", async () => {
+    const organization = await createOrganization("targeted-enrollment");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "targeted-enrollment-owner",
+    );
+    const screen = await store.createScreen(organization.id, {
+      name: "Precreated player",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const createKeyHash = proofHash();
+    const requestDigestSha256 = proofHash();
+    const codeHash = `targeted-${randomUUID()}`;
+    const requested = await store.requestScreenEnrollmentAndAudit(
+      organization.id,
+      screen.id,
+      new Date(Date.now() + 60_000).toISOString(),
+      "Install the precreated player",
+      { actorUserId: actor.id },
+      {
+        keyHash: createKeyHash,
+        requestDigestSha256,
+        codeCandidates: [{ counter: 0, codeHash }],
+      },
+    );
+    if (!requested.created) throw new Error("initial grant was not created");
+    const replay = await store.requestScreenEnrollmentAndAudit(
+      organization.id,
+      screen.id,
+      new Date(Date.now() + 60_000).toISOString(),
+      "Install the precreated player",
+      { actorUserId: actor.id },
+      {
+        keyHash: createKeyHash,
+        requestDigestSha256,
+        codeCandidates: [{ counter: 0, codeHash }],
+      },
+    );
+    expect(replay).toMatchObject({
+      created: true,
+      replayed: true,
+      pairing: { id: requested.pairing.id },
+    });
+
+    const stage = async (credential: ReturnType<typeof proofEnrollment>) => {
+      const challengeHashSha256 = proofHash();
+      const transcriptDigestSha256 = proofHash();
+      const attempt = await store.issuePairingChallenge({
+        codeHash,
+        credential,
+        challengeHashSha256,
+        transcriptDigestSha256,
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      });
+      if (!attempt) throw new Error("initial challenge was not issued");
+      const result = await store.claimPairingWithCredentialAndAudit(
+        {
+          codeHash,
+          pairingAttemptId: attempt.id,
+          challengeHashSha256,
+          transcriptDigestSha256,
+          keyId: credential.keyId,
+          device: {
+            installationId: credential.keyId,
+            model: "Candidate player",
+            osVersion: "15",
+            playerVersion: "0.2.0",
+          },
+        },
+        () => true,
+        {},
+      );
+      if (result.paired || result.reason !== "PENDING_APPROVAL")
+        throw new Error("initial candidate was not staged");
+      return result;
+    };
+    const [candidateA, candidateB] = await Promise.all([
+      stage(proofEnrollment(55)),
+      stage(proofEnrollment(56)),
+    ]);
+    await expect(
+      prisma.screen.findUniqueOrThrow({ where: { id: screen.id } }),
+    ).resolves.toMatchObject({
+      status: "OFFLINE",
+      installationId: null,
+      credentialGeneration: 0,
+    });
+    await expect(
+      store.activateScreenEnrollmentCandidateAndAudit(
+        organization.id,
+        screen.id,
+        requested.pairing.id,
+        candidateA.candidateId,
+        candidateB.keyId,
+        { actorUserId: actor.id },
+        { keyHash: proofHash(), requestDigestSha256: proofHash() },
+      ),
+    ).resolves.toMatchObject({
+      activated: false,
+      reason: "FINGERPRINT_MISMATCH",
+    });
+    const activationKeyA = proofHash();
+    const activationDigestA = proofHash();
+    const [activationA, activationB] = await Promise.all([
+      store.activateScreenEnrollmentCandidateAndAudit(
+        organization.id,
+        screen.id,
+        requested.pairing.id,
+        candidateA.candidateId,
+        candidateA.keyId,
+        { actorUserId: actor.id },
+        {
+          keyHash: activationKeyA,
+          requestDigestSha256: activationDigestA,
+        },
+      ),
+      store.activateScreenEnrollmentCandidateAndAudit(
+        organization.id,
+        screen.id,
+        requested.pairing.id,
+        candidateA.candidateId,
+        candidateA.keyId,
+        { actorUserId: actor.id },
+        {
+          keyHash: activationKeyA,
+          requestDigestSha256: activationDigestA,
+        },
+      ),
+    ]);
+    expect(activationA).toMatchObject({ activated: true });
+    expect(activationB).toMatchObject({ activated: true });
+    if (!activationA.activated || !activationB.activated)
+      throw new Error("same-key activation did not replay");
+    expect(
+      Number(activationA.replayed === true) +
+        Number(activationB.replayed === true),
+    ).toBe(1);
+    const winner = candidateA;
+    expect(
+      await prisma.deviceCredential.count({
+        where: { organizationId: organization.id, screenId: screen.id },
+      }),
+    ).toBe(1);
+    await expect(
+      prisma.screen.findUniqueOrThrow({ where: { id: screen.id } }),
+    ).resolves.toMatchObject({
+      status: "OFFLINE",
+      installationId: winner.keyId,
+      credentialGeneration: 1,
+      lastSeenAt: null,
+    });
+    await expect(
+      store.activateScreenEnrollmentCandidateAndAudit(
+        organization.id,
+        screen.id,
+        requested.pairing.id,
+        candidateA.candidateId,
+        candidateA.keyId,
+        { actorUserId: actor.id },
+        {
+          keyHash: activationKeyA,
+          requestDigestSha256: activationDigestA,
+        },
+      ),
+    ).resolves.toMatchObject({ activated: true, replayed: true });
+  });
+
+  it("keeps enrollment maintenance and mutations fail-atomic on rejection and audit failure", async () => {
+    const organization = await createOrganization("enrollment-fail-atomic");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "enrollment-fail-atomic-owner",
+    );
+    const screen = await store.createScreen(organization.id, {
+      name: "Fail-atomic target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const seedSentinel = () =>
+      prisma.idempotencyRecord.create({
+        data: {
+          organizationId: organization.id,
+          operation: "SCREEN_ENROLLMENT_CREATE",
+          keyHash: proofHash(),
+          actorUserId: actor.id,
+          requestDigestSha256: proofHash(),
+          statusCode: 201,
+          responseBody: { sentinel: true },
+          expiresAt: new Date(0),
+          createdAt: new Date(-1),
+        },
+      });
+    let sentinel = await seedSentinel();
+    const requestInput = () => ({
+      keyHash: proofHash(),
+      requestDigestSha256: proofHash(),
+      codeCandidates: [{ counter: 0, codeHash: `fail-atomic-${randomUUID()}` }],
+    });
+    await expect(
+      store.requestScreenEnrollmentAndAudit(
+        organization.id,
+        "missing-screen",
+        new Date(Date.now() + 60_000).toISOString(),
+        "Rejected",
+        { actorUserId: actor.id },
+        requestInput(),
+      ),
+    ).resolves.toEqual({ created: false, reason: "NOT_FOUND" });
+    await expect(
+      prisma.idempotencyRecord.findUniqueOrThrow({
+        where: { id: sentinel.id },
+      }),
+    ).resolves.toMatchObject({ responseBody: { sentinel: true } });
+
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_enrollment_request_audit" CHECK ("action" <> 'device.enrollment.requested')`,
+    );
+    try {
+      await expect(
+        store.requestScreenEnrollmentAndAudit(
+          organization.id,
+          screen.id,
+          new Date(Date.now() + 60_000).toISOString(),
+          "Audit rejection",
+          { actorUserId: actor.id },
+          requestInput(),
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_enrollment_request_audit"',
+      );
+    }
+    await expect(
+      prisma.idempotencyRecord.findUniqueOrThrow({
+        where: { id: sentinel.id },
+      }),
+    ).resolves.toMatchObject({ responseBody: { sentinel: true } });
+    expect(
+      await prisma.pairingCode.count({
+        where: { organizationId: organization.id },
+      }),
+    ).toBe(0);
+
+    await prisma.idempotencyRecord.delete({ where: { id: sentinel.id } });
+    const codeHash = `activation-fail-atomic-${randomUUID()}`;
+    const requested = await store.requestScreenEnrollmentAndAudit(
+      organization.id,
+      screen.id,
+      new Date(Date.now() + 60_000).toISOString(),
+      "Activation audit rejection",
+      { actorUserId: actor.id },
+      {
+        keyHash: proofHash(),
+        requestDigestSha256: proofHash(),
+        codeCandidates: [{ counter: 0, codeHash }],
+      },
+    );
+    if (!requested.created) throw new Error("grant was not created");
+    const credential = proofEnrollment(75);
+    const challengeHashSha256 = proofHash();
+    const transcriptDigestSha256 = proofHash();
+    const attempt = await store.issuePairingChallenge({
+      codeHash,
+      credential,
+      challengeHashSha256,
+      transcriptDigestSha256,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    if (!attempt) throw new Error("challenge was not issued");
+    const staged = await store.claimPairingWithCredentialAndAudit(
+      {
+        codeHash,
+        pairingAttemptId: attempt.id,
+        challengeHashSha256,
+        transcriptDigestSha256,
+        keyId: credential.keyId,
+        device: {
+          installationId: credential.keyId,
+          model: "Fail-atomic candidate",
+          osVersion: "15",
+          playerVersion: "0.2.0",
+        },
+      },
+      () => true,
+      {},
+    );
+    if (staged.paired || staged.reason !== "PENDING_APPROVAL")
+      throw new Error("candidate was not staged");
+    sentinel = await seedSentinel();
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_enrollment_activation_audit" CHECK ("action" <> 'device.enrollment.activated')`,
+    );
+    try {
+      await expect(
+        store.activateScreenEnrollmentCandidateAndAudit(
+          organization.id,
+          screen.id,
+          requested.pairing.id,
+          staged.candidateId,
+          staged.keyId,
+          { actorUserId: actor.id },
+          { keyHash: proofHash(), requestDigestSha256: proofHash() },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_enrollment_activation_audit"',
+      );
+    }
+    await expect(
+      prisma.idempotencyRecord.findUniqueOrThrow({
+        where: { id: sentinel.id },
+      }),
+    ).resolves.toMatchObject({ responseBody: { sentinel: true } });
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({
+        where: { id: requested.pairing.id },
+      }),
+    ).resolves.toMatchObject({ status: "PENDING" });
+    expect(
+      await prisma.deviceCredential.count({
+        where: { organizationId: organization.id, screenId: screen.id },
+      }),
+    ).toBe(0);
+  });
+
+  it("serializes replacement proof against issuer demotion and revokes staged authority", async () => {
+    const paired = await pairProofDevice("reenrollment-proof-demotion", 57);
+    const issuer = await createMember(
+      paired.organization.id,
+      "ADMIN",
+      "reenrollment-proof-demotion-issuer",
+    );
+    await createMember(
+      paired.organization.id,
+      "OWNER",
+      "reenrollment-proof-demotion-owner",
+    );
+    const grant = await store.requestScreenReenrollmentAndAudit(
+      paired.organization.id,
+      paired.screen.id,
+      `reenroll-${randomUUID()}`,
+      new Date(Date.now() + 60_000).toISOString(),
+      "Replace player during issuer race",
+      { actorUserId: issuer.id },
+    );
+    if (!grant.created) throw new Error("replacement grant was not created");
+    const credential = proofEnrollment(58);
+    const challengeHashSha256 = proofHash();
+    const transcriptDigestSha256 = proofHash();
+    const attempt = await store.issuePairingChallenge({
+      codeHash: grant.pairing.codeHash,
+      credential,
+      challengeHashSha256,
+      transcriptDigestSha256,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    if (!attempt) throw new Error("replacement challenge was not issued");
+    const [proofResult, demotionResult] =
+      await queueOwnerContinuityOperations<unknown>(paired.organization.id, [
+        () =>
+          store.claimPairingWithCredentialAndAudit(
+            {
+              codeHash: grant.pairing.codeHash,
+              pairingAttemptId: attempt.id,
+              challengeHashSha256,
+              transcriptDigestSha256,
+              keyId: credential.keyId,
+              device: {
+                installationId: credential.keyId,
+                model: "Racing replacement",
+                osVersion: "15",
+                playerVersion: "0.2.0",
+              },
+            },
+            () => true,
+            {},
+          ),
+        () =>
+          store.changeMembershipRoleAndAudit(
+            paired.organization.id,
+            issuer.id,
+            "VIEWER",
+            { reason: "Concurrent issuer demotion" },
+          ),
+      ]);
+    const proof = proofResult as { paired: boolean };
+    const demotion = demotionResult as { updated: boolean; reason?: string };
+    expect(demotion).toEqual({ updated: true });
+    expect(proof.paired).toBe(false);
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: grant.pairing.id } }),
+    ).resolves.toMatchObject({ status: "REVOKED" });
+    await expect(
+      prisma.pairingAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+    ).resolves.toMatchObject({ cancelledAt: expect.any(Date) });
+  });
+
+  it("prunes terminal enrollment authority without crossing tenant boundaries", async () => {
+    const [ownOrganization, foreignOrganization] = await Promise.all([
+      createOrganization("enrollment-retention-own"),
+      createOrganization("enrollment-retention-foreign"),
+    ]);
+    const ownActor = await createMember(
+      ownOrganization.id,
+      "OWNER",
+      "enrollment-retention-own",
+    );
+    const target = await store.createScreen(ownOrganization.id, {
+      name: "Retention target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const oldExpiry = new Date(Date.now() - 31 * 24 * 60 * 60_000);
+    await prisma.pairingCode.createMany({
+      data: [
+        ...Array.from(
+          { length: DATABASE_MAINTENANCE_BATCH_SIZE + 5 },
+          (_, index) => ({
+            id: `retention-own-grant-${index.toString().padStart(3, "0")}`,
+            organizationId: ownOrganization.id,
+            codeHash: `retention-own-${randomUUID()}`,
+            status: "EXPIRED" as const,
+            expiresAt: oldExpiry,
+          }),
+        ),
+        {
+          id: "retention-foreign-grant",
+          organizationId: foreignOrganization.id,
+          codeHash: `retention-foreign-${randomUUID()}`,
+          status: "EXPIRED",
+          expiresAt: oldExpiry,
+        },
+      ],
+    });
+    await prisma.idempotencyRecord.createMany({
+      data: [
+        ...Array.from({ length: DATABASE_MAINTENANCE_BATCH_SIZE + 5 }, () => ({
+          organizationId: ownOrganization.id,
+          operation: "SCREEN_ENROLLMENT_CREATE" as const,
+          keyHash: proofHash(),
+          actorUserId: ownActor.id,
+          requestDigestSha256: proofHash(),
+          statusCode: 201,
+          responseBody: { retained: true },
+          expiresAt: oldExpiry,
+          createdAt: new Date(oldExpiry.getTime() - 1),
+        })),
+        {
+          organizationId: foreignOrganization.id,
+          operation: "SCREEN_ENROLLMENT_CREATE",
+          keyHash: proofHash(),
+          actorUserId: "foreign-retention-fixture",
+          requestDigestSha256: proofHash(),
+          statusCode: 201,
+          responseBody: { retained: true },
+          expiresAt: oldExpiry,
+          createdAt: new Date(oldExpiry.getTime() - 1),
+        },
+      ],
+    });
+    await expect(
+      store.requestScreenEnrollmentAndAudit(
+        ownOrganization.id,
+        target.id,
+        new Date(Date.now() + 60_000).toISOString(),
+        "Trigger tenant retention cleanup",
+        { actorUserId: ownActor.id },
+        {
+          keyHash: proofHash(),
+          requestDigestSha256: proofHash(),
+          codeCandidates: [
+            { counter: 0, codeHash: `retention-new-${randomUUID()}` },
+          ],
+        },
+      ),
+    ).resolves.toMatchObject({ created: true });
+    expect(
+      await prisma.pairingCode.count({
+        where: {
+          organizationId: ownOrganization.id,
+          id: { startsWith: "retention-own-grant-" },
+        },
+      }),
+    ).toBe(5);
+    expect(
+      await prisma.pairingCode.count({
+        where: { id: "retention-foreign-grant" },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.idempotencyRecord.count({
+        where: {
+          organizationId: ownOrganization.id,
+          expiresAt: { lte: oldExpiry },
+        },
+      }),
+    ).toBe(DATABASE_MAINTENANCE_BATCH_SIZE + 5);
+    expect(
+      await prisma.idempotencyRecord.count({
+        where: {
+          organizationId: ownOrganization.id,
+          expiresAt: { lte: oldExpiry },
+          responseBody: { not: Prisma.DbNull },
+        },
+      }),
+    ).toBe(5);
+    expect(
+      await prisma.idempotencyRecord.count({
+        where: {
+          organizationId: foreignOrganization.id,
+          expiresAt: { lte: oldExpiry },
+        },
+      }),
+    ).toBe(1);
+  });
+
   it("contains a screen while replacing and reasserting targeted re-enrollment grants", async () => {
     const paired = await pairProofDevice("proof-reenrollment", 18);
     const actor = await createUser("proof-reenrollment-owner@example.test");
@@ -2326,7 +2947,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         where: { id: paired.screen.id },
       }),
     ).toMatchObject({
-      credentialGeneration: 3,
+      credentialGeneration: 4,
       credentialRevokedAt: expect.any(Date),
     });
     expect(

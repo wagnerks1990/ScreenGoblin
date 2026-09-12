@@ -54,12 +54,12 @@ performs the mutation and appends its audit event. Screens require `OWNER` or
 demotion, cross-organization identifier, resource-in-use conflict, or audit
 write failure leaves both resource state and audit history unchanged.
 
-Pairing-code issuance requires `OWNER` or `ADMIN` at both the route and store
-boundaries. The store locks and revalidates the actor's current active
-membership before expiring colliding codes or creating the new ten-minute
-enrollment authority and audit event. A concurrent demotion, disablement, or
-membership removal returns `403` without retrying and changes neither pairing
-nor audit state.
+Production initial-enrollment authority can be created only for a precreated,
+tenant-owned `Screen` by an `OWNER` or `ADMIN`. The transaction locks the tenant,
+revalidates the issuer's membership and authentication/authorization epochs,
+and binds those snapshots to a ten-minute grant. A concurrent password reset,
+disablement, demotion, or membership removal revokes that pending grant. The old
+unbound `POST /pairing-codes` route returns `410` in proof-v1 mode.
 
 Device-credential revocation and targeted re-enrollment require their exact
 screen credential capabilities. The compatibility role adapter grants them only
@@ -129,14 +129,34 @@ Production requires `DEVICE_AUTH_MODE=proof-v1`; configuration validation reject
 
 ### Enrollment
 
-1. `POST /device/pair/challenge` receives the six-digit code, device metadata, and `{ algorithm: "ES256", publicKeySpki, keyId, securityLevel }`.
-2. The API requires canonical unpadded base64url SPKI for a P-256 key, derives `keyId` as unpadded base64url SHA-256 of the SPKI, and requires `device.installationId === keyId`.
-3. The API returns an opaque `{ id, challenge, expiresAt }`. The 32-byte pairing challenge expires after 30 seconds, leaving bounded API/database clock-skew tolerance below the database's 45-second hard cap. A syntactically valid request for an invalid code receives the same response shape to reduce code enumeration, but cannot complete enrollment.
-4. The device signs `UTF8("ScreenGoblin device proof v1") || 0x00 || challengeBytes` with `SHA256withECDSA`, returning strict ASN.1 DER as unpadded base64url (`ES256-DER`).
-5. `POST /device/pair` repeats the exact code, device, and identity fields and adds `pairingProof: { challengeId, challenge, keyId, signatureFormat, signature }`.
-6. The API atomically verifies the peppered, domain-separated transcript MAC (including the code), challenge binding, key, signature, expiry, and one-time claim; creates the screen and credential; and appends `device.paired`. The six-digit code is never stored in a recoverable plain digest. An identical successful final request returns the same screen and credential so a lost response can be recovered without duplicating records.
+1. An `OWNER` or `ADMIN` precreates the tenant `Screen`, then calls
+   `POST /screens/:id/device-enrollment` with a reason and canonical UUIDv4
+   `Idempotency-Key`. The response contains a ten-minute six-digit code and
+   target-bound grant. Only an HMAC verifier and a deterministic code counter
+   are stored; the plaintext code and raw idempotency key are not.
+2. `POST /device/pair/challenge` receives the code, device metadata, and `{ algorithm: "ES256", publicKeySpki, keyId, securityLevel }`.
+3. The API validates the P-256 identity and returns a 30-second challenge.
+4. The device signs the domain-separated challenge and repeats the exact
+   enrollment transcript at `POST /device/pair`.
+5. Valid proof stages a candidate and returns `202 pending-approval`; it does
+   not create a credential or attach the device.
+6. A current `OWNER` or `ADMIN` reads the candidate metadata and activates the
+   exact 43-character fingerprint through the target screen route with a second
+   idempotency key. The serializable transaction rechecks the original issuer's
+   exact membership and epochs, permits one winner, revokes competitors, creates
+   the credential, and keeps the screen offline until its first authenticated
+   heartbeat.
 
-At most four live pairing challenges are retained for the same pairing code and key. Pairing codes still expire after ten minutes and remain first-claim-wins; possession of a code is therefore enrollment authority until operator confirmation or attestation is added.
+At most four live challenges/candidates are admitted per grant. A stolen code
+can stage a candidate but cannot activate it. Fingerprint comparison is a manual
+operator control, not server-verified physical identity, application/hardware
+attestation, two-person approval, MFA/step-up, or location-scoped authorization.
+Creation and activation responses are exactly replayable for 30 days; expired
+grants/attempts and response records are pruned opportunistically in bounded
+100-row batches per maintenance phase on later authorized enrollment writes, so a
+dormant or unusually backlogged database still needs an approved scheduled
+retention job. A replay describes the original command result, not current
+grant or credential state; clients must read the grant/screen after recovery.
 
 ### Manifest and heartbeat authorization
 
@@ -164,6 +184,25 @@ only when their stored last-seen time exactly equals the bound candidate's
 activation time, the exact tuple emitted by the former synthetic path. Unequal
 authenticated-heartbeat timestamps remain authoritative regardless of clock
 ordering, and rerunning the guarded backfill does not churn healed rows.
+
+### Targeted initial enrollment
+
+Proof-v1 initial enrollment uses a precreated screen and these no-store
+management endpoints:
+
+- `POST /screens/:id/device-enrollment` with a required reason and canonical
+  UUIDv4 `Idempotency-Key` creates or exactly replays the ten-minute grant.
+- `GET /screens/:id/device-enrollment/:grantId` lists only proved candidate
+  metadata and public-key fingerprints.
+- `POST /screens/:id/device-enrollment/:grantId/candidates/:candidateId/activate`
+  requires the exact fingerprint plus its own UUIDv4 idempotency key.
+- `DELETE /screens/:id/device-enrollment/:grantId` revokes the pending grant.
+
+The Player never chooses a screen identifier. The server derives the target
+from the grant, rechecks its original issuer and a current activating
+OWNER/ADMIN, and creates exactly one credential. A competing candidate or grant
+is cancelled. Activation does not synthesize telemetry: the precreated screen
+remains offline until the selected credential proves its first heartbeat.
 
 ### Targeted re-enrollment
 

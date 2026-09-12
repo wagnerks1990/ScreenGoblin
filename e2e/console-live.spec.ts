@@ -83,7 +83,7 @@ test.beforeEach(async ({ page }) => {
   await clearBrowserSession(page);
 });
 
-test("an owner connects to live fleet data, creates a pairing code, and disconnects", async ({
+test("an owner connects to live fleet data, creates targeted enrollment authority, and disconnects", async ({
   page,
 }) => {
   await loginAsSeededOwner(page);
@@ -95,24 +95,73 @@ test("an owner connects to live fleet data, creates a pairing code, and disconne
     page.getByRole("cell", { name: liveScreenName, exact: true }),
   ).toBeVisible();
 
+  await page.getByRole("button", { name: "Pair a screen" }).click();
+  const targetDialog = page.getByRole("dialog", { name: "Pair a screen" });
+  await targetDialog.getByLabel("Screen").selectOption({
+    label: `${liveScreenName} — Automated browser fixture`,
+  });
+  await targetDialog.getByRole("button", { name: "Continue" }).click();
+  const enrollmentDialog = page.getByRole("dialog", {
+    name: new RegExp(`Enroll screen.*${liveScreenName}`),
+  });
+  await enrollmentDialog
+    .getByLabel("Reason for enrollment")
+    .fill("Exercise targeted enrollment from the live console");
   const pairingResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
-      response.url() === `${apiBaseUrl}/pairing-codes`,
+      response.url().startsWith(`${apiBaseUrl}/screens/`) &&
+      response.url().endsWith("/device-enrollment"),
   );
-  await page.getByRole("button", { name: "Pair a screen" }).click();
-  const pairingDialog = page.getByRole("dialog", { name: "Pair a screen" });
-  await expect(pairingDialog).toBeVisible();
+  await enrollmentDialog
+    .getByRole("button", { name: "Create enrollment code" })
+    .click();
   expect((await pairingResponse).status()).toBe(201);
   await expect
     .poll(async () => {
-      const code = await pairingDialog
+      const code = await enrollmentDialog
         .locator(".pairing-result strong")
         .textContent();
       return /^\d{6}$/.test(code ?? "");
     })
     .toBe(true);
-  await pairingDialog
+  let cancellationRequests = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "DELETE" &&
+      request.url().startsWith(`${apiBaseUrl}/screens/`) &&
+      request.url().includes("/device-enrollment/")
+    ) {
+      cancellationRequests += 1;
+    }
+  });
+  await enrollmentDialog
+    .getByRole("button", { name: "Cancel enrollment", exact: true })
+    .click();
+  await expect(
+    enrollmentDialog.getByRole("button", {
+      name: "Confirm cancel enrollment",
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(cancellationRequests).toBe(0);
+  const cancellationResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "DELETE" &&
+      response.url().startsWith(`${apiBaseUrl}/screens/`) &&
+      response.url().includes("/device-enrollment/"),
+  );
+  await enrollmentDialog
+    .getByRole("button", { name: "Confirm cancel enrollment", exact: true })
+    .click();
+  expect((await cancellationResponse).status()).toBe(204);
+  expect(cancellationRequests).toBe(1);
+  await expect(
+    enrollmentDialog.getByRole("heading", {
+      name: "Enrollment request revoked",
+    }),
+  ).toBeVisible();
+  await enrollmentDialog
     .getByRole("button", { name: "Close", exact: true })
     .click();
 

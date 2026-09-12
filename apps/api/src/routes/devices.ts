@@ -157,14 +157,18 @@ export const pairingAdminRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (request, reply) => {
+      if (app.config.deviceAuthMode === "proof-v1")
+        throw new ApiError(
+          410,
+          "UNTARGETED_ENROLLMENT_REMOVED",
+          "Create enrollment authority for a precreated screen",
+        );
       const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-      let code: string | undefined;
-      let pairingId: string | undefined;
       for (let attempt = 0; attempt < 8; attempt += 1) {
-        const candidate = randomInt(0, 1_000_000).toString().padStart(6, "0");
+        const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
         const result = await app.store.tryCreatePairingAndAudit(
           request.user.organizationId,
-          pairingCodeHash(candidate, app.config.pairingCodePepper),
+          pairingCodeHash(code, app.config.pairingCodePepper),
           expiresAt,
           {
             actorUserId: request.user.sub,
@@ -178,19 +182,13 @@ export const pairingAdminRoutes: FastifyPluginAsync = async (app) => {
             "FORBIDDEN",
             "You do not have permission to perform this action",
           );
-        if (result.created) {
-          code = candidate;
-          pairingId = result.pairing.id;
-          break;
-        }
+        if (result.created) return reply.code(201).send({ code, expiresAt });
       }
-      if (!code || !pairingId)
-        throw new ApiError(
-          503,
-          "PAIRING_CODE_SPACE_EXHAUSTED",
-          "A pairing code could not be allocated; try again",
-        );
-      return reply.code(201).send({ code, expiresAt });
+      throw new ApiError(
+        503,
+        "PAIRING_CODE_SPACE_EXHAUSTED",
+        "A pairing code could not be allocated; try again",
+      );
     },
   );
 };

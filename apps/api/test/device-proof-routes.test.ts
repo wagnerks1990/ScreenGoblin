@@ -28,6 +28,7 @@ interface ProofIdentity {
 }
 
 interface PairingFixture {
+  screenId: string;
   code: string;
   device: {
     installationId: string;
@@ -112,11 +113,127 @@ describe("proof-v1 device routes", () => {
     await app.close();
   });
 
-  const pairingFixture = async (): Promise<PairingFixture> => {
-    const pairingCode = await app.inject({
+  it("removes unbound pairing authority from proof-v1", async () => {
+    const response = await app.inject({
       method: "POST",
       url: "/api/v1/pairing-codes",
       headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(response.statusCode).toBe(410);
+    expect(response.json()).toMatchObject({
+      error: { code: "UNTARGETED_ENROLLMENT_REMOVED" },
+    });
+    expect(store.pairings).toEqual([]);
+  });
+
+  it("replays targeted enrollment creation without storing its plaintext code", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Idempotent target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const idempotency = crypto.randomUUID();
+    const request = {
+      method: "POST" as const,
+      url: `/api/v1/screens/${screen.id}/device-enrollment`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+        "idempotency-key": idempotency,
+      },
+      payload: { reason: "Install the new lobby player" },
+    };
+    const first = await app.inject(request);
+    const replay = await app.inject(request);
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(201);
+    expect(replay.body).toBe(first.body);
+    const response = first.json<{ code: string; grantId: string }>();
+    expect(store.pairings).toHaveLength(1);
+    expect(store.pairings[0]?.codeHash).not.toContain(response.code);
+    expect(
+      JSON.stringify(store.screenEnrollmentIdempotencyRecords),
+    ).not.toContain(response.code);
+    expect(
+      store.audits.filter(
+        (audit) => audit.action === "device.enrollment.requested",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("keeps enrollment tenant-bound and revokes issuer authority on demotion", async () => {
+    const foreign = await store.createScreen("org-b", {
+      name: "Foreign target",
+      location: "Other tenant",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const foreignRequest = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${foreign.id}/device-enrollment`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+        "idempotency-key": crypto.randomUUID(),
+      },
+      payload: { reason: "Must not cross tenant boundaries" },
+    });
+    expect(foreignRequest.statusCode).toBe(404);
+
+    const local = await store.createScreen("org-a", {
+      name: "Issuer lifecycle target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const requested = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${local.id}/device-enrollment`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+        "idempotency-key": crypto.randomUUID(),
+      },
+      payload: { reason: "Exercise issuer lifecycle revocation" },
+    });
+    expect(requested.statusCode).toBe(201);
+    const grantId = requested.json<{ grantId: string }>().grantId;
+    store.users.push({
+      ...store.users[0]!,
+      id: "00000000-0000-4000-8000-000000000002",
+      email: "backup@example.test",
+      name: "Backup owner",
+    });
+    await expect(
+      store.changeMembershipRoleAndAudit(
+        "org-a",
+        store.users[0]!.id,
+        "VIEWER",
+        { reason: "Remove enrollment authority" },
+      ),
+    ).resolves.toEqual({ updated: true });
+    expect(
+      store.pairings.find((pairing) => pairing.id === grantId)?.status,
+    ).toBe("REVOKED");
+  });
+
+  const pairingFixture = async (): Promise<PairingFixture> => {
+    const screen = await store.createScreen("org-a", {
+      name: `Target screen ${crypto.randomUUID()}`,
+      location: "Test lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const pairingCode = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${screen.id}/device-enrollment`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+        "idempotency-key": crypto.randomUUID(),
+      },
+      payload: { reason: "Initial test enrollment" },
     });
     expect(pairingCode.statusCode).toBe(201);
 
@@ -126,6 +243,7 @@ describe("proof-v1 device routes", () => {
     const spki = Buffer.from(publicKey.export({ format: "der", type: "spki" }));
     const keyId = sha256Base64Url(spki);
     return {
+      screenId: screen.id,
       code: pairingCode.json<{ code: string }>().code,
       device: {
         installationId: keyId,
@@ -144,6 +262,9 @@ describe("proof-v1 device routes", () => {
   };
 
   const pair = async (fixture: PairingFixture) => {
+    const activationAuditCount = store.audits.filter(
+      (audit) => audit.action === "device.enrollment.activated",
+    ).length;
     const request = {
       code: fixture.code,
       device: fixture.device,
@@ -175,8 +296,47 @@ describe("proof-v1 device routes", () => {
       url: "/api/v1/device/pair",
       payload,
     });
-    expect(response.statusCode).toBe(201);
-    return { payload, credentials: response.json<Record<string, unknown>>() };
+    expect(response.statusCode).toBe(202);
+    const pending = response.json<{
+      grantId: string;
+      candidateId: string;
+      fingerprint: string;
+    }>();
+    const activationKey = crypto.randomUUID();
+    const activationRequest = {
+      method: "POST",
+      url: `/api/v1/screens/${fixture.screenId}/device-enrollment/${pending.grantId}/candidates/${pending.candidateId}/activate`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+        "idempotency-key": activationKey,
+      },
+      payload: { fingerprint: pending.fingerprint },
+    } as const;
+    const activation = await app.inject(activationRequest);
+    expect(activation.statusCode).toBe(200);
+    const activationReplay = await app.inject(activationRequest);
+    expect(activationReplay.statusCode).toBe(200);
+    expect(activationReplay.body).toBe(activation.body);
+    expect(
+      store.audits.filter(
+        (audit) => audit.action === "device.enrollment.activated",
+      ),
+    ).toHaveLength(activationAuditCount + 1);
+    const activatedScreen = store.screens.find(
+      (candidate) => candidate.id === fixture.screenId,
+    );
+    expect(activatedScreen).toMatchObject({ status: "offline" });
+    expect(activatedScreen).not.toHaveProperty("lastSeenAt");
+    const completed = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/pair",
+      payload,
+    });
+    expect(completed.statusCode).toBe(201);
+    return {
+      payload,
+      credentials: completed.json<Record<string, unknown>>(),
+    };
   };
 
   const issueChallenge = async (
@@ -218,7 +378,9 @@ describe("proof-v1 device routes", () => {
     expect(store.screens).toHaveLength(1);
     expect(store.deviceCredentials).toHaveLength(1);
     expect(
-      store.audits.filter((audit) => audit.action === "device.paired"),
+      store.audits.filter(
+        (audit) => audit.action === "device.enrollment.activated",
+      ),
     ).toHaveLength(1);
   });
 
@@ -543,7 +705,7 @@ describe("proof-v1 device routes", () => {
       code: string;
       generation: number;
     }>();
-    expect(firstGrant.generation).toBe(1);
+    expect(firstGrant.generation).toBe(2);
     expect(store.screens[0]).toMatchObject({ status: "offline" });
     for (const field of [
       "lastSeenAt",
@@ -567,7 +729,7 @@ describe("proof-v1 device routes", () => {
       generation: number;
     }>();
     expect(grant.grantId).not.toBe(firstGrant.grantId);
-    expect(grant.generation).toBe(2);
+    expect(grant.generation).toBe(3);
     const superseded = await app.inject({
       method: "GET",
       url: `/api/v1/screens/${screenId}/device-reenrollment/${firstGrant.grantId}`,
