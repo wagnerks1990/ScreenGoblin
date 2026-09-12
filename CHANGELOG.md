@@ -188,6 +188,14 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   deny-by-default capability adapter at both the route and transactional store
   boundaries, including current-membership revalidation.
 
+### Changed
+
+- Upgrade the API's direct `fastify-plugin` dependency to 6.0.0. The existing
+  default-import registration contract remains covered by API type, unit,
+  integration, and production-build gates.
+- Run the recovery drill automatically for root lockfile pull-request changes
+  so dependency candidates receive recovery evidence for their exact head.
+
 ### Fixed
 
 - Omit the JSON content type from bodyless Console mutations so strict API
