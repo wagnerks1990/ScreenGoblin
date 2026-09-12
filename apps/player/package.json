@@ -15,6 +15,7 @@
     "android:check": "cd android && ./gradlew lintDebug testDebugUnitTest"
   },
   "dependencies": {
+    "@screengoblin/contracts": "*",
     "@capacitor/android": "^7.4.3",
     "@capacitor/core": "^7.4.3",
     "react": "^19.1.1",

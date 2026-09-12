@@ -8,14 +8,14 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 
 ## Deploy
 
-1. Review the release notes, database migrations, and rollback compatibility.
+1. Review the release notes, database migrations, and rollback compatibility. Confirm production has `DEVICE_AUTH_MODE=proof-v1`; the API must refuse `development-bearer` in production.
 2. Back up PostgreSQL and object storage; record the backup IDs.
 3. Build immutable images from the reviewed commit and run CI/security gates.
 4. Deploy to a staging host and run smoke tests with an offline player.
 5. During the maintenance window, run `docker compose --env-file deploy/.env pull` for referenced images and `docker compose --env-file deploy/.env build --pull` for application images.
 6. Run `docker compose --env-file deploy/.env up -d` and inspect `docker compose --env-file deploy/.env ps`.
 7. On a new installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Confirm the owner can sign in, then remove all `SEED_*` values from the host environment.
-8. Verify readiness, login, publish, atomic pairing/audit, Ed25519 manifest verification, media checksum, heartbeat, signed withdrawal, schedule-boundary blanking, and last-known-good playback.
+8. Verify readiness, login, two-stage Android Keystore pairing, proof-authorized heartbeat and manifest delivery, atomic pairing/audit, Ed25519 manifest verification, media checksum, signed withdrawal, schedule-boundary blanking, last-known-good playback, and OWNER/ADMIN credential revocation. Confirm replayed proofs fail and a revoked online player returns to enrollment without retaining managed media.
 
 Tenant-integrity and normalized-email migrations deliberately abort if they find cross-organization relationships or case-colliding accounts. Before applying them, stop writers, take a verified backup, run the documented preflight queries in a restored staging copy, and investigate every conflict; do not bypass the checks or relabel records automatically.
 
@@ -32,7 +32,7 @@ docker compose --env-file deploy/.env logs --since=30m api caddy
 docker compose --env-file deploy/.env ps
 ```
 
-Logs must carry a request ID and must not contain passwords, JWTs, device tokens, signed URLs, or full sensitive payloads.
+Logs must carry a request ID and must not contain passwords, JWTs, bearer device tokens, pairing codes, device proof challenges/signatures, public-key enrollment payloads, signed URLs, or full sensitive payloads.
 
 ## Back up and restore
 
@@ -69,7 +69,7 @@ The release-evidence workflow retains checksum-bound local Docker archives for t
 
 ## Incident priorities
 
-- **P1:** unauthorized/emergency content, suspected credential compromise, or district-wide outage. Revoke affected credentials, clear malicious overrides, preserve evidence, notify the incident lead, and use the out-of-band communication plan.
+- **P1:** unauthorized/emergency content, suspected device-key/credential compromise, or district-wide outage. Revoke affected credentials, isolate affected players at the network/device-management layer, recover offline units physically when recall is required, clear malicious overrides, preserve evidence, notify the incident lead, and use the out-of-band communication plan. Server revocation alone cannot erase cached media from a disconnected player.
 - **P2:** building-wide outage or publishing failure. Preserve cached playback, isolate the failing release, and roll back if schema-compatible.
 - **P3:** individual player or noncritical feature. Capture diagnostics, keep fallback content active, and schedule repair.
 
@@ -79,4 +79,4 @@ After containment, rotate exposed secrets, retain audit/log evidence, identify a
 
 - Weekly: review offline screens, failed jobs, capacity, certificate expiry, and security alerts.
 - Monthly: patch staging, promote through release rings, restore a small backup sample, and review privileged users.
-- Quarterly: full restore drill, device credential rotation sample, incident exercise, and access review.
+- Quarterly: full restore drill, lab device revoke/re-enrollment exercise, incident exercise, and access review. Credential/key rotation is not yet implemented and must remain a tracked release gate rather than a claimed maintenance control.

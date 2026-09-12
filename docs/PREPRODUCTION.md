@@ -23,7 +23,9 @@ An unchecked item is a known gap, not an implicit approval.
 
 - [ ] Organization isolation has positive and negative API tests.
 - [ ] Production SSO/MFA and least-privilege roles are enabled.
-- [ ] Pairing is single-use, short-lived, rate-limited, and audited.
+- [ ] Pairing is single-use, short-lived, rate-limited, transcript/key-bound, proof-verified, and audited on representative managed Android hardware.
+- [ ] Device revocation, targeted re-enrollment, credential/key rotation, offline recovery, and verified local media/state erasure pass operational and physical-device tests.
+- [ ] Android hardware/application attestation policy is implemented, or its absence has a named risk owner, compensating controls, and an approved review date.
 - [ ] Upload scanning, type validation, limits, and safe transcoding are enabled.
 - [ ] Secrets are in a managed secret store and rotation is rehearsed.
 - [ ] Images are digest-pinned; release artifacts have SBOMs and signatures.

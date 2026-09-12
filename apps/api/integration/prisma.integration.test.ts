@@ -26,6 +26,13 @@ if (databaseName !== "screengoblin_test" || !loopbackHosts.has(databaseHost)) {
 
 const store = new PrismaStore();
 const prisma = store.prisma;
+const proofHash = () => randomUUID().replaceAll("-", "").repeat(2);
+const proofEnrollment = (byte: number) => ({
+  keyId: Buffer.alloc(32, byte).toString("base64url"),
+  publicKeySpki: Buffer.alloc(91, byte).toString("base64url"),
+  algorithm: "ES256" as const,
+  securityLevel: "trusted-environment" as const,
+});
 
 const createOrganization = (label: string) =>
   prisma.organization.create({
@@ -43,6 +50,46 @@ const createUser = (email: string) =>
       passwordHash: "integration-test-hash",
     },
   });
+
+const pairProofDevice = async (label: string, byte: number) => {
+  const organization = await createOrganization(label);
+  const pairing = await store.createPairing(
+    organization.id,
+    `proof-code-${randomUUID()}`,
+    new Date(Date.now() + 60_000).toISOString(),
+  );
+  const credential = proofEnrollment(byte);
+  const challengeHashSha256 = proofHash();
+  const transcriptDigestSha256 = proofHash();
+  const attempt = await store.issuePairingChallenge({
+    codeHash: pairing.codeHash,
+    credential,
+    challengeHashSha256,
+    transcriptDigestSha256,
+    expiresAt: new Date(Date.now() + 30_000).toISOString(),
+  });
+  if (!attempt) throw new Error("proof pairing challenge was not issued");
+  const claimInput = {
+    codeHash: pairing.codeHash,
+    pairingAttemptId: attempt.id,
+    challengeHashSha256,
+    transcriptDigestSha256,
+    keyId: credential.keyId,
+    device: {
+      installationId: `proof-installation-${randomUUID()}`,
+      model: "Proof player",
+      osVersion: "test",
+      playerVersion: "0.1.0",
+    },
+  };
+  const result = await store.claimPairingWithCredentialAndAudit(
+    claimInput,
+    () => true,
+    { requestId: `proof-pair-${label}` },
+  );
+  if (!result.paired) throw new Error("proof pairing failed");
+  return { organization, pairing, attempt, claimInput, ...result };
+};
 
 beforeAll(async () => {
   await store.ping();
@@ -470,6 +517,267 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
       }),
     ).toBe(0);
+  });
+
+  it("atomically enrolls one proof credential and recovers identical pairing responses", async () => {
+    const organization = await createOrganization("proof-pair-race");
+    const pairing = await store.createPairing(
+      organization.id,
+      `proof-code-${randomUUID()}`,
+      new Date(Date.now() + 60_000).toISOString(),
+    );
+    const enrollment = proofEnrollment(11);
+    const challengeHashSha256 = proofHash();
+    const transcriptDigestSha256 = proofHash();
+    const attempt = await store.issuePairingChallenge({
+      codeHash: pairing.codeHash,
+      credential: enrollment,
+      challengeHashSha256,
+      transcriptDigestSha256,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    if (!attempt) throw new Error("pairing challenge was not issued");
+    const input = {
+      codeHash: pairing.codeHash,
+      pairingAttemptId: attempt.id,
+      challengeHashSha256,
+      transcriptDigestSha256,
+      keyId: enrollment.keyId,
+      device: {
+        installationId: `proof-installation-${randomUUID()}`,
+        model: "Proof race player",
+        osVersion: "test",
+        playerVersion: "0.1.0",
+      },
+    };
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        store.claimPairingWithCredentialAndAudit(input, () => true, {
+          requestId: `proof-pair-race-${index}`,
+        }),
+      ),
+    );
+    expect(results.every((result) => result.paired)).toBe(true);
+    const paired = results[0]!;
+    if (!paired.paired) throw new Error("proof enrollment failed");
+    expect(
+      results.map((result) =>
+        result.paired ? [result.screen.id, result.credential.id] : null,
+      ),
+    ).toEqual(
+      Array.from({ length: 8 }, () => [paired.screen.id, paired.credential.id]),
+    );
+    expect(await prisma.screen.count()).toBe(1);
+    expect(await prisma.deviceCredential.count()).toBe(1);
+    expect(await prisma.auditEvent.count()).toBe(1);
+    await expect(
+      store.claimPairingWithCredentialAndAudit(
+        { ...input, transcriptDigestSha256: proofHash() },
+        () => true,
+        {},
+      ),
+    ).resolves.toEqual({ paired: false, reason: "INVALID" });
+    expect(await prisma.auditEvent.count()).toBe(1);
+  });
+
+  it("rolls back proof enrollment when its required audit fails", async () => {
+    const organization = await createOrganization("proof-pair-rollback");
+    const pairing = await store.createPairing(
+      organization.id,
+      `proof-code-${randomUUID()}`,
+      new Date(Date.now() + 60_000).toISOString(),
+    );
+    const enrollment = proofEnrollment(12);
+    const challengeHashSha256 = proofHash();
+    const transcriptDigestSha256 = proofHash();
+    const attempt = await store.issuePairingChallenge({
+      codeHash: pairing.codeHash,
+      credential: enrollment,
+      challengeHashSha256,
+      transcriptDigestSha256,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    if (!attempt) throw new Error("pairing challenge was not issued");
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_proof_paired" CHECK ("action" <> \'device.paired\')',
+    );
+    try {
+      await expect(
+        store.claimPairingWithCredentialAndAudit(
+          {
+            codeHash: pairing.codeHash,
+            pairingAttemptId: attempt.id,
+            challengeHashSha256,
+            transcriptDigestSha256,
+            keyId: enrollment.keyId,
+            device: {
+              installationId: `proof-rollback-${randomUUID()}`,
+              model: "Proof rollback player",
+              osVersion: "test",
+              playerVersion: "0.1.0",
+            },
+          },
+          () => true,
+          {},
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_proof_paired"',
+      );
+    }
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: pairing.id } }),
+    ).resolves.toMatchObject({ status: "PENDING", screenId: null });
+    await expect(
+      prisma.pairingAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+    ).resolves.toMatchObject({ consumedAt: null, boundCredentialId: null });
+    expect(await prisma.screen.count()).toBe(0);
+    expect(await prisma.deviceCredential.count()).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
+  });
+
+  it("consumes a bound proof once with heartbeat and serializes credential revocation", async () => {
+    const paired = await pairProofDevice("proof-consume", 13);
+    const requestDigestSha256 = proofHash();
+    const challengeHashSha256 = proofHash();
+    const challenge = await store.issueDeviceAuthChallenge({
+      screenId: paired.screen.id,
+      keyId: paired.credential.keyId,
+      challengeHashSha256,
+      operation: "heartbeat",
+      requestDigestSha256,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    if (!challenge) throw new Error("device challenge was not issued");
+    const proof = {
+      credentialId: paired.credential.id,
+      challengeId: challenge.id,
+      challengeHashSha256,
+      operation: "heartbeat" as const,
+      requestDigestSha256,
+    };
+    await expect(
+      store.consumeDeviceAuthChallenge(
+        { ...proof, requestDigestSha256: proofHash() },
+        () => true,
+      ),
+    ).resolves.toEqual({ authenticated: false, reason: "INVALID_PROOF" });
+    await expect(
+      store.consumeDeviceAuthChallenge(proof, () => false),
+    ).resolves.toEqual({ authenticated: false, reason: "INVALID_PROOF" });
+    await expect(
+      prisma.deviceAuthChallenge.findUniqueOrThrow({
+        where: { id: challenge.id },
+      }),
+    ).resolves.toMatchObject({ consumedAt: null });
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        store.heartbeatWithDeviceProof(
+          proof,
+          { playerVersion: `proof-${index}` },
+          () => true,
+        ),
+      ),
+    );
+    expect(results.filter((result) => result.authenticated)).toHaveLength(1);
+    expect(
+      await prisma.deviceAuthChallenge.count({
+        where: { id: challenge.id, consumedAt: { not: null } },
+      }),
+    ).toBe(1);
+
+    const revokeChallengeHash = proofHash();
+    const revokeDigest = proofHash();
+    const revokeChallenge = await store.issueDeviceAuthChallenge({
+      screenId: paired.screen.id,
+      keyId: paired.credential.keyId,
+      challengeHashSha256: revokeChallengeHash,
+      operation: "heartbeat",
+      requestDigestSha256: revokeDigest,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    if (!revokeChallenge) throw new Error("revoke-race challenge missing");
+    const actor = await createUser("proof-revoke-owner@example.test");
+    await prisma.membership.create({
+      data: {
+        organizationId: paired.organization.id,
+        userId: actor.id,
+        role: "OWNER",
+      },
+    });
+    const [heartbeatResult, revokeResult] = await Promise.all([
+      store.heartbeatWithDeviceProof(
+        {
+          credentialId: paired.credential.id,
+          challengeId: revokeChallenge.id,
+          challengeHashSha256: revokeChallengeHash,
+          operation: "heartbeat",
+          requestDigestSha256: revokeDigest,
+        },
+        { playerVersion: "revoke-race" },
+        () => true,
+      ),
+      store.revokeDeviceCredentialAndAudit(
+        paired.organization.id,
+        paired.screen.id,
+        { actorUserId: actor.id },
+      ),
+    ]);
+    expect(revokeResult).toMatchObject({ revoked: true });
+    expect([true, false]).toContain(heartbeatResult.authenticated);
+    await expect(
+      store.authenticateDeviceCredential(
+        paired.screen.id,
+        paired.credential.keyId,
+      ),
+    ).resolves.toEqual({ authenticated: false, reason: "INVALID_PROOF" });
+    await expect(
+      store.revokeDeviceCredentialAndAudit(
+        paired.organization.id,
+        paired.screen.id,
+        { actorUserId: actor.id },
+      ),
+    ).resolves.toEqual({ revoked: false, reason: "ALREADY_REVOKED" });
+    expect(
+      await prisma.auditEvent.count({
+        where: { action: "device.credential.revoked" },
+      }),
+    ).toBe(1);
+    await expect(
+      prisma.screen.findUniqueOrThrow({ where: { id: paired.screen.id } }),
+    ).resolves.toMatchObject({ credentialRevokedAt: expect.any(Date) });
+  });
+
+  it("enforces one live credential per screen at the database boundary", async () => {
+    const paired = await pairProofDevice("proof-live-unique", 14);
+    const duplicate = proofEnrollment(15);
+
+    await expect(
+      prisma.deviceCredential.create({
+        data: {
+          organizationId: paired.organization.id,
+          screenId: paired.screen.id,
+          liveScreenId: paired.screen.id,
+          liveScreenOrganizationId: paired.organization.id,
+          keyId: duplicate.keyId,
+          publicKeySpki: Buffer.from(duplicate.publicKeySpki, "base64url"),
+          algorithm: duplicate.algorithm,
+          securityLevel: duplicate.securityLevel,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
+  });
+
+  it("can delete a tenant containing consumed proof history", async () => {
+    const paired = await pairProofDevice("proof-tenant-delete", 16);
+
+    await expect(
+      prisma.organization.delete({ where: { id: paired.organization.id } }),
+    ).resolves.toMatchObject({ id: paired.organization.id });
+    expect(await prisma.pairingAttempt.count()).toBe(0);
+    expect(await prisma.deviceCredential.count()).toBe(0);
   });
 
   it("surfaces database uniqueness conflicts and scopes playlist names per tenant", async () => {

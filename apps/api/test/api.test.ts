@@ -35,6 +35,7 @@ beforeEach(async () => {
     jwtSecret: secret,
     manifestSigningPrivateKey: signingKey,
     pairingCodePepper: secret,
+    deviceAuthMode: "development-bearer",
     mediaAllowedOrigins: ["https://media.example.test"],
   });
   token = app.jwt.sign({
@@ -151,6 +152,7 @@ describe("health and error contract", () => {
         jwtSecret: secret,
         manifestSigningPrivateKey: signingKey,
         pairingCodePepper: secret,
+        deviceAuthMode: "development-bearer",
         requireRedis: true,
       }),
     ).rejects.toThrow("Redis is required");
@@ -169,6 +171,7 @@ describe("health and error contract", () => {
       jwtSecret: secret,
       manifestSigningPrivateKey: signingKey,
       pairingCodePepper: secret,
+      deviceAuthMode: "development-bearer",
       redis: redis as never,
       rateLimitBudget: new MemoryRateLimitBudget(),
     });

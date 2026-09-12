@@ -71,6 +71,17 @@ describe("release capability policy", () => {
     expect(hasCapability(undefined, CAPABILITIES.releasePublish)).toBe(false);
   });
 
+  it.each([
+    ["OWNER", true],
+    ["ADMIN", true],
+    ["PUBLISHER", false],
+    ["VIEWER", false],
+  ] as const)("maps credential revocation for %s", (role, allowed) => {
+    expect(hasCapability(role, CAPABILITIES.screenCredentialRevoke)).toBe(
+      allowed,
+    );
+  });
+
   it.each(["VIEWER", "disabled", "missing", "cross-organization"] as const)(
     "denies direct publication for a %s actor without partial writes",
     async (scenario) => {

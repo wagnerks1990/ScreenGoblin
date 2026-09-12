@@ -1,9 +1,20 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlayerApi } from "./api";
 
+const apiBaseUrl = "http://localhost:3000/api/v1/device";
 const verificationKey = "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw";
 const validSignature =
   "9CQuvlprzcxrX1pjj9voSF6PZBPoAWp15OKhnVQyweAgr7oQ7sxdOSu_6UcDAVMe_DO28hi0pjuQVqb1KqsGBA";
+
+const credentials = {
+  authMode: "development-bearer" as const,
+  installationId: "installation-123",
+  screenId: "screen-1",
+  deviceToken: "device-secret",
+  apiBaseUrl,
+  heartbeatIntervalSeconds: 60,
+  manifestVerificationKey: verificationKey,
+};
 
 const signedManifest = () => {
   const unsigned = {
@@ -40,6 +51,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+beforeEach(() => vi.stubEnv("VITE_DEVICE_AUTH_DEVELOPMENT_BEARER", "true"));
+
 describe("PlayerApi wire contract", () => {
   it("uses device headers and normalizes the API playlist item shape", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
@@ -50,15 +63,10 @@ describe("PlayerApi wire contract", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await new PlayerApi(
-      "https://signage.example.test/api/v1/device",
-      "device-secret",
-      "screen-1",
-      verificationKey,
-    ).manifest();
+    const result = await new PlayerApi(apiBaseUrl, credentials).manifest();
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://signage.example.test/api/v1/device/manifest",
+      `${apiBaseUrl}/manifest`,
       expect.objectContaining({ cache: "no-store" }),
     );
     const headers = new Headers(
@@ -87,12 +95,7 @@ describe("PlayerApi wire contract", () => {
       ),
     );
     await expect(
-      new PlayerApi(
-        "https://signage.example.test/api/v1/device",
-        "device-secret",
-        "screen-1",
-        verificationKey,
-      ).manifest(),
+      new PlayerApi(apiBaseUrl, credentials).manifest(),
     ).rejects.toThrow("Manifest signature or screen binding is invalid");
   });
 
@@ -102,11 +105,7 @@ describe("PlayerApi wire contract", () => {
       .mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await new PlayerApi(
-      "https://signage.example.test/api/v1/device",
-      "device-secret",
-      "screen-1",
-    ).heartbeat({
+    await new PlayerApi(apiBaseUrl, credentials).heartbeat({
       installationId: "installation-123",
       playerVersion: "0.1.0",
       uptimeSeconds: 60,
@@ -131,13 +130,10 @@ describe("PlayerApi wire contract", () => {
         }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const pending = new PlayerApi(
-      "https://signage.example.test",
-      undefined,
-      undefined,
-      undefined,
-      { requestTimeoutMs: 250 },
-    ).pair("123456", "installation-123");
+    vi.stubEnv("VITE_DEVICE_AUTH_DEVELOPMENT_BEARER", "true");
+    const pending = new PlayerApi("http://localhost:3000", undefined, {
+      requestTimeoutMs: 250,
+    }).pair("123456", "installation-123");
 
     const rejected = expect(pending).rejects.toMatchObject({
       name: "PlayerApiFailure",
@@ -161,10 +157,8 @@ describe("PlayerApi wire contract", () => {
 
     await expect(
       new PlayerApi(
-        "https://signage.example.test/api/v1/device",
-        "expired-secret",
-        "screen-1",
-        verificationKey,
+        apiBaseUrl,
+        { ...credentials, deviceToken: "expired-secret" },
         { sleep },
       ).manifest(),
     ).rejects.toEqual(
@@ -202,13 +196,10 @@ describe("PlayerApi wire contract", () => {
     const sleep = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    await new PlayerApi(
-      "https://signage.example.test/api/v1/device",
-      "device-secret",
-      "screen-1",
-      verificationKey,
-      { sleep, retryMaxDelayMs: 5_000 },
-    ).manifest();
+    await new PlayerApi(apiBaseUrl, credentials, {
+      sleep,
+      retryMaxDelayMs: 5_000,
+    }).manifest();
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(sleep.mock.calls).toEqual([[2_000], [5_000]]);
@@ -227,13 +218,11 @@ describe("PlayerApi wire contract", () => {
     const sleep = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    await new PlayerApi(
-      "https://signage.example.test/api/v1/device",
-      "device-secret",
-      "screen-1",
-      verificationKey,
-      { sleep, random: () => 0, retryBaseDelayMs: 200 },
-    ).manifest();
+    await new PlayerApi(apiBaseUrl, credentials, {
+      sleep,
+      random: () => 0,
+      retryBaseDelayMs: 200,
+    }).manifest();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(100);
@@ -246,13 +235,30 @@ describe("PlayerApi wire contract", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      new PlayerApi(
-        "https://signage.example.test/api/v1/device",
-        "device-secret",
-        "screen-1",
-        verificationKey,
-      ).manifest({ signal: controller.signal }),
+      new PlayerApi(apiBaseUrl, credentials).manifest({
+        signal: controller.signal,
+      }),
     ).rejects.toMatchObject({ kind: "aborted", retryable: false });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never enables browser bearer authentication for a non-local server", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(
+      () =>
+        new PlayerApi("https://signage.example.test/api/v1/device", {
+          ...credentials,
+          apiBaseUrl: "https://signage.example.test/api/v1/device",
+        }),
+    ).toThrow("explicit localhost build");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires the explicit build flag even on localhost", async () => {
+    vi.stubEnv("VITE_DEVICE_AUTH_DEVELOPMENT_BEARER", "false");
+    expect(() => new PlayerApi(apiBaseUrl, credentials)).toThrow(
+      "explicit localhost build",
+    );
   });
 });

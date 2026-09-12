@@ -2,12 +2,20 @@ import type {
   AuditRecord,
   ActiveOrdinaryRelease,
   DataStore,
+  DeviceAuthChallengeRecord,
+  DeviceCredentialEnrollment,
+  DeviceCredentialRecord,
+  DeviceCredentialRevokeAuditContext,
+  DeviceProofInput,
+  DeviceProofVerifier,
   EmergencyRecord,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
   PairingCreateAuditContext,
   PairingCreateResult,
+  PairingAttemptRecord,
+  PairingProofVerifier,
   PlaylistRecord,
   PublishedReleaseRecord,
   ReleaseAssignmentRecord,
@@ -31,6 +39,7 @@ import {
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { hasCapability } from "../authorization/policy.js";
 import { CAPABILITIES } from "@screengoblin/contracts";
+import { randomToken } from "../utils/crypto.js";
 
 const id = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -46,6 +55,9 @@ export class MemoryStore implements DataStore {
   emergencies: EmergencyRecord[] = [];
   audits: AuditRecord[] = [];
   pairings: PairingRecord[] = [];
+  deviceCredentials: DeviceCredentialRecord[] = [];
+  deviceAuthChallenges: DeviceAuthChallengeRecord[] = [];
+  pairingAttempts: PairingAttemptRecord[] = [];
   async ping() {}
   protected buildAuditRecord(
     event: Omit<AuditRecord, "id" | "createdAt">,
@@ -146,6 +158,10 @@ export class MemoryStore implements DataStore {
     this.screens = this.screens.filter(
       (x) => !(x.organizationId === org && x.id === screenId),
     );
+    for (const credential of this.deviceCredentials) {
+      if (credential.organizationId === org && credential.screenId === screenId)
+        credential.detached = true;
+    }
     return n !== this.screens.length;
   }
   async createPairing(org: string, codeHash: string, expiresAt: string) {
@@ -314,6 +330,195 @@ export class MemoryStore implements DataStore {
     });
     return screen;
   }
+  async issuePairingChallenge(input: {
+    codeHash: string;
+    credential: DeviceCredentialEnrollment;
+    challengeHashSha256: string;
+    transcriptDigestSha256: string;
+    expiresAt: string;
+  }) {
+    const pairing = this.pairings.find(
+      (candidate) =>
+        candidate.codeHash === input.codeHash &&
+        candidate.status === "PENDING" &&
+        candidate.expiresAt > now(),
+    );
+    const createdAt = now();
+    const lifetime =
+      new Date(input.expiresAt).getTime() - new Date(createdAt).getTime();
+    if (
+      !pairing ||
+      lifetime <= 0 ||
+      lifetime > 45_000 ||
+      !/^[A-Za-z0-9_-]{43}$/.test(input.credential.keyId) ||
+      !/^[0-9a-f]{64}$/.test(input.challengeHashSha256) ||
+      !/^[0-9a-f]{64}$/.test(input.transcriptDigestSha256) ||
+      this.deviceCredentials.some(
+        (candidate) => candidate.keyId === input.credential.keyId,
+      ) ||
+      this.pairingAttempts.some(
+        (candidate) =>
+          candidate.challengeHashSha256 === input.challengeHashSha256,
+      ) ||
+      this.pairingAttempts.filter(
+        (candidate) =>
+          candidate.pairingCodeId === pairing.id &&
+          candidate.keyId === input.credential.keyId &&
+          !candidate.consumedAt &&
+          candidate.expiresAt > createdAt,
+      ).length >= 4
+    )
+      return null;
+    const attempt: PairingAttemptRecord = {
+      id: randomToken(),
+      organizationId: pairing.organizationId,
+      pairingCodeId: pairing.id,
+      keyId: input.credential.keyId,
+      publicKeySpki: input.credential.publicKeySpki,
+      algorithm: input.credential.algorithm,
+      securityLevel: input.credential.securityLevel,
+      ...(input.credential.expiresAt
+        ? { credentialExpiresAt: input.credential.expiresAt }
+        : {}),
+      challengeHashSha256: input.challengeHashSha256,
+      transcriptDigestSha256: input.transcriptDigestSha256,
+      expiresAt: input.expiresAt,
+      createdAt,
+    };
+    this.pairingAttempts.push(attempt);
+    return { ...attempt };
+  }
+  async claimPairingWithCredentialAndAudit(
+    input: {
+      codeHash: string;
+      pairingAttemptId: string;
+      challengeHashSha256: string;
+      transcriptDigestSha256: string;
+      keyId: string;
+      device: {
+        installationId: string;
+        model: string;
+        osVersion: string;
+        playerVersion: string;
+      };
+    },
+    verify: PairingProofVerifier,
+    audit: PairingClaimAuditContext,
+  ) {
+    const attempt = this.pairingAttempts.find(
+      (candidate) => candidate.id === input.pairingAttemptId,
+    );
+    const pairing = this.pairings.find(
+      (candidate) =>
+        candidate.id === attempt?.pairingCodeId &&
+        candidate.organizationId === attempt?.organizationId &&
+        candidate.codeHash === input.codeHash,
+    );
+    if (
+      !attempt ||
+      !pairing ||
+      attempt.challengeHashSha256 !== input.challengeHashSha256 ||
+      attempt.transcriptDigestSha256 !== input.transcriptDigestSha256 ||
+      attempt.keyId !== input.keyId ||
+      !(await verify({
+        keyId: attempt.keyId,
+        publicKeySpki: attempt.publicKeySpki,
+        algorithm: attempt.algorithm,
+        securityLevel: attempt.securityLevel,
+        ...(attempt.credentialExpiresAt
+          ? { expiresAt: attempt.credentialExpiresAt }
+          : {}),
+      }))
+    )
+      return { paired: false as const, reason: "INVALID" as const };
+    if (attempt.consumedAt && attempt.boundCredentialId) {
+      const credential = this.deviceCredentials.find(
+        (candidate) =>
+          candidate.id === attempt.boundCredentialId &&
+          !candidate.revokedAt &&
+          (!candidate.expiresAt || candidate.expiresAt > now()),
+      );
+      const screen = credential
+        ? this.screens.find(
+            (candidate) =>
+              candidate.id === credential.screenId &&
+              candidate.organizationId === credential.organizationId,
+          )
+        : undefined;
+      return credential && screen
+        ? {
+            paired: true as const,
+            credential: { ...credential },
+            screen: this.publicScreen(screen),
+          }
+        : { paired: false as const, reason: "INVALID" as const };
+    }
+    if (
+      attempt.expiresAt <= now() ||
+      pairing.expiresAt <= now() ||
+      pairing.status !== "PENDING" ||
+      this.deviceCredentials.some(
+        (candidate) => candidate.keyId === attempt.keyId,
+      )
+    )
+      return { paired: false as const, reason: "INVALID" as const };
+    const timestamp = now();
+    const screen: ScreenRecord = {
+      id: id(),
+      organizationId: pairing.organizationId,
+      name: `New screen ${input.device.installationId.slice(-6)}`,
+      location: "Unassigned",
+      status: "online",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+      ...input.device,
+      lastSeenAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const credential: DeviceCredentialRecord = {
+      id: id(),
+      organizationId: pairing.organizationId,
+      screenId: screen.id,
+      detached: false,
+      keyId: attempt.keyId,
+      publicKeySpki: attempt.publicKeySpki,
+      algorithm: attempt.algorithm,
+      securityLevel: attempt.securityLevel,
+      ...(attempt.credentialExpiresAt
+        ? { expiresAt: attempt.credentialExpiresAt }
+        : {}),
+      createdAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: pairing.organizationId,
+      actorType: "device",
+      action: "device.paired",
+      entityType: "screen",
+      entityId: screen.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        ...audit.metadata,
+        installationId: input.device.installationId,
+        credentialId: credential.id,
+        keyId: credential.keyId,
+      },
+    });
+    this.screens.push(screen);
+    this.deviceCredentials.push(credential);
+    pairing.status = "CLAIMED";
+    pairing.screenId = screen.id;
+    attempt.consumedAt = timestamp;
+    attempt.boundCredentialId = credential.id;
+    this.audits.push(auditRecord);
+    return {
+      paired: true as const,
+      screen: this.publicScreen(screen),
+      credential: { ...credential },
+    };
+  }
   async authenticateDevice(screenId: string) {
     const screen = this.screens.find(
       (x) => x.id === screenId && !x.credentialRevokedAt,
@@ -321,6 +526,200 @@ export class MemoryStore implements DataStore {
     return screen?.deviceTokenHash
       ? { ...screen, deviceTokenHash: screen.deviceTokenHash }
       : null;
+  }
+  private activeDeviceCredential(
+    credentialId: string,
+  ): { credential: DeviceCredentialRecord; screen: ScreenRecord } | null {
+    const credential = this.deviceCredentials.find(
+      (candidate) =>
+        candidate.id === credentialId &&
+        !candidate.detached &&
+        !candidate.revokedAt &&
+        (!candidate.expiresAt || candidate.expiresAt > now()),
+    );
+    if (!credential) return null;
+    const screen = this.screens.find(
+      (candidate) =>
+        candidate.id === credential.screenId &&
+        candidate.organizationId === credential.organizationId,
+    );
+    return screen ? { credential, screen } : null;
+  }
+  async authenticateDeviceCredential(screenId: string, keyId: string) {
+    const credential = this.deviceCredentials.find(
+      (candidate) =>
+        candidate.screenId === screenId && candidate.keyId === keyId,
+    );
+    const active = credential
+      ? this.activeDeviceCredential(credential.id)
+      : null;
+    return active
+      ? {
+          authenticated: true as const,
+          credential: { ...active.credential },
+          screen: this.publicScreen(active.screen),
+        }
+      : { authenticated: false as const, reason: "INVALID_PROOF" as const };
+  }
+  async issueDeviceAuthChallenge(input: {
+    screenId: string;
+    keyId: string;
+    challengeHashSha256: string;
+    operation: "heartbeat" | "manifest";
+    requestDigestSha256: string;
+    expiresAt: string;
+  }) {
+    const authenticated = await this.authenticateDeviceCredential(
+      input.screenId,
+      input.keyId,
+    );
+    const createdAt = now();
+    const lifetime =
+      new Date(input.expiresAt).getTime() - new Date(createdAt).getTime();
+    if (
+      !authenticated.authenticated ||
+      lifetime <= 0 ||
+      lifetime > 60_000 ||
+      !/^[0-9a-f]{64}$/.test(input.challengeHashSha256) ||
+      !/^[0-9a-f]{64}$/.test(input.requestDigestSha256) ||
+      this.deviceAuthChallenges.some(
+        (candidate) =>
+          candidate.challengeHashSha256 === input.challengeHashSha256,
+      ) ||
+      this.deviceAuthChallenges.filter(
+        (candidate) =>
+          candidate.credentialId === authenticated.credential.id &&
+          candidate.operation === input.operation &&
+          !candidate.consumedAt &&
+          candidate.expiresAt > createdAt,
+      ).length >= 4
+    )
+      return null;
+    const challenge: DeviceAuthChallengeRecord = {
+      id: randomToken(),
+      organizationId: authenticated.credential.organizationId,
+      credentialId: authenticated.credential.id,
+      challengeHashSha256: input.challengeHashSha256,
+      operation: input.operation,
+      requestDigestSha256: input.requestDigestSha256,
+      expiresAt: input.expiresAt,
+      createdAt,
+    };
+    this.deviceAuthChallenges.push(challenge);
+    return { ...challenge };
+  }
+  private async consumeDeviceProof(
+    input: DeviceProofInput,
+    verify: DeviceProofVerifier,
+  ) {
+    const active = this.activeDeviceCredential(input.credentialId);
+    const challenge = this.deviceAuthChallenges.find(
+      (candidate) =>
+        candidate.id === input.challengeId &&
+        candidate.credentialId === input.credentialId &&
+        candidate.organizationId === active?.credential.organizationId,
+    );
+    if (
+      !active ||
+      !challenge ||
+      challenge.consumedAt ||
+      challenge.expiresAt <= now() ||
+      challenge.challengeHashSha256 !== input.challengeHashSha256 ||
+      challenge.operation !== input.operation ||
+      challenge.requestDigestSha256 !== input.requestDigestSha256 ||
+      !(await verify({ ...active.credential })) ||
+      challenge.consumedAt
+    )
+      return null;
+    challenge.consumedAt = now();
+    return active;
+  }
+  async consumeDeviceAuthChallenge(
+    input: DeviceProofInput,
+    verify: DeviceProofVerifier,
+  ) {
+    const active = await this.consumeDeviceProof(input, verify);
+    return active
+      ? {
+          authenticated: true as const,
+          credential: { ...active.credential },
+          screen: this.publicScreen(active.screen),
+        }
+      : { authenticated: false as const, reason: "INVALID_PROOF" as const };
+  }
+  async heartbeatWithDeviceProof(
+    input: DeviceProofInput,
+    data: Partial<ScreenRecord>,
+    verify: DeviceProofVerifier,
+  ) {
+    const active = await this.consumeDeviceProof(input, verify);
+    if (!active)
+      return {
+        authenticated: false as const,
+        reason: "INVALID_PROOF" as const,
+      };
+    Object.assign(active.screen, data, {
+      status: "online",
+      lastSeenAt: now(),
+      updatedAt: now(),
+    });
+    return {
+      authenticated: true as const,
+      credential: { ...active.credential },
+      screen: this.publicScreen(active.screen),
+    };
+  }
+  async revokeDeviceCredentialAndAudit(
+    org: string,
+    screenId: string,
+    audit: DeviceCredentialRevokeAuditContext,
+  ) {
+    const actor = this.users.find(
+      (candidate) =>
+        candidate.id === audit.actorUserId &&
+        candidate.organizationId === org &&
+        !candidate.disabledAt,
+    );
+    if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+      return { revoked: false as const, reason: "FORBIDDEN" as const };
+    const credential = this.deviceCredentials.find(
+      (candidate) =>
+        candidate.screenId === screenId &&
+        candidate.organizationId === org &&
+        !candidate.detached,
+    );
+    if (!credential)
+      return { revoked: false as const, reason: "NOT_FOUND" as const };
+    if (credential.revokedAt)
+      return { revoked: false as const, reason: "ALREADY_REVOKED" as const };
+    const revokedAt = now();
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "device.credential.revoked",
+      entityType: "device_credential",
+      entityId: credential.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { screenId: credential.screenId, keyId: credential.keyId },
+    });
+    credential.revokedAt = revokedAt;
+    const screen = this.screens.find(
+      (candidate) =>
+        candidate.id === screenId && candidate.organizationId === org,
+    );
+    if (screen) screen.credentialRevokedAt = revokedAt;
+    for (const challenge of this.deviceAuthChallenges) {
+      if (
+        challenge.credentialId === credential.id &&
+        !challenge.consumedAt &&
+        challenge.expiresAt > revokedAt
+      )
+        challenge.consumedAt = revokedAt;
+    }
+    this.audits.push(auditRecord);
+    return { revoked: true as const, credential: { ...credential } };
   }
   async heartbeat(screenId: string, data: Partial<ScreenRecord>) {
     const x = this.screens.find((s) => s.id === screenId);

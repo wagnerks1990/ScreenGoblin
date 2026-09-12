@@ -52,22 +52,30 @@ enum ReleaseAssignmentState {
   WITHDRAWN
 }
 
+enum DeviceAuthOperation {
+  HEARTBEAT
+  MANIFEST
+}
+
 model Organization {
-  id                 String              @id @default(cuid())
-  name               String
-  slug               String              @unique
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  memberships        Membership[]
-  screens            Screen[]
-  media              MediaAsset[]
-  playlists          Playlist[]
-  schedules          Schedule[]
-  pairings           PairingCode[]
-  emergencies        EmergencyOverride[]
-  audits             AuditEvent[]
-  publishedReleases  PublishedRelease[]
-  releaseAssignments ReleaseAssignment[]
+  id                   String                @id @default(cuid())
+  name                 String
+  slug                 String                @unique
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  memberships          Membership[]
+  screens              Screen[]
+  media                MediaAsset[]
+  playlists            Playlist[]
+  schedules            Schedule[]
+  pairings             PairingCode[]
+  emergencies          EmergencyOverride[]
+  audits               AuditEvent[]
+  publishedReleases    PublishedRelease[]
+  releaseAssignments   ReleaseAssignment[]
+  deviceCredentials    DeviceCredential[]
+  deviceAuthChallenges DeviceAuthChallenge[]
+  pairingAttempts      PairingAttempt[]
 }
 
 model User {
@@ -125,26 +133,95 @@ model Screen {
   schedules                ScheduleTarget[]
   pairingCodes             PairingCode[]
   releaseAssignmentTargets ReleaseAssignmentTarget[]
+  deviceCredentials        DeviceCredential[]
 
   @@unique([id, organizationId])
   @@index([organizationId, status])
 }
 
 model PairingCode {
-  id                   String        @id @default(cuid())
+  id                   String           @id @default(cuid())
   organizationId       String
   screenId             String?
   screenOrganizationId String?
   codeHash             String
-  status               PairingStatus @default(PENDING)
+  status               PairingStatus    @default(PENDING)
   expiresAt            DateTime
   claimedAt            DateTime?
-  createdAt            DateTime      @default(now())
-  organization         Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  screen               Screen?       @relation(fields: [screenId, screenOrganizationId], references: [id, organizationId], onDelete: SetNull)
+  createdAt            DateTime         @default(now())
+  organization         Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  screen               Screen?          @relation(fields: [screenId, screenOrganizationId], references: [id, organizationId], onDelete: SetNull)
+  attempts             PairingAttempt[]
 
+  @@unique([id, organizationId])
   @@index([organizationId, status, expiresAt])
   @@index([codeHash])
+}
+
+model DeviceCredential {
+  id                       String                @id @default(cuid())
+  organizationId           String
+  screenId                 String
+  liveScreenId             String?
+  liveScreenOrganizationId String?
+  keyId                    String                @unique
+  publicKeySpki            Bytes
+  algorithm                String                @default("ES256")
+  securityLevel            String
+  expiresAt                DateTime?
+  revokedAt                DateTime?
+  createdAt                DateTime              @default(now())
+  organization             Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  liveScreen               Screen?               @relation(fields: [liveScreenId, liveScreenOrganizationId], references: [id, organizationId], onDelete: SetNull)
+  challenges               DeviceAuthChallenge[]
+  pairingAttempt           PairingAttempt?
+
+  @@unique([id, organizationId])
+  @@unique([liveScreenId, liveScreenOrganizationId])
+  @@index([organizationId, liveScreenId, revokedAt, expiresAt])
+  @@index([organizationId, screenId, createdAt])
+}
+
+model PairingAttempt {
+  id                     String            @id
+  organizationId         String
+  pairingCodeId          String
+  keyId                  String
+  publicKeySpki          Bytes
+  algorithm              String            @default("ES256")
+  securityLevel          String
+  credentialExpiresAt    DateTime?
+  challengeHashSha256    String            @unique
+  /// Domain-separated HMAC-SHA256 using PAIRING_CODE_PEPPER; never a plain code digest.
+  transcriptDigestSha256 String
+  expiresAt              DateTime
+  consumedAt             DateTime?
+  boundCredentialId      String?
+  createdAt              DateTime          @default(now())
+  organization           Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pairingCode            PairingCode       @relation(fields: [pairingCodeId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  boundCredential        DeviceCredential? @relation(fields: [boundCredentialId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([boundCredentialId, organizationId])
+  @@index([organizationId, pairingCodeId, expiresAt, consumedAt])
+  @@index([expiresAt])
+}
+
+model DeviceAuthChallenge {
+  id                  String              @id
+  organizationId      String
+  credentialId        String
+  challengeHashSha256 String              @unique
+  operation           DeviceAuthOperation
+  requestDigestSha256 String
+  expiresAt           DateTime
+  consumedAt          DateTime?
+  createdAt           DateTime            @default(now())
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credential          DeviceCredential    @relation(fields: [credentialId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@index([organizationId, credentialId, expiresAt, consumedAt])
+  @@index([expiresAt])
 }
 
 model MediaAsset {

@@ -1,12 +1,14 @@
 # Player protocol
 
-Initial pairing is relative to the configured server URL. The pairing response returns the device API base URL. Authenticated calls send `X-Screen-Id` and `X-Device-Token`; neither value belongs in a URL or log.
+Initial pairing is relative to the configured server URL. The pairing response returns the device API base URL. Production Android enrollment and requests use the `proof-v1` protocol; no bearer token is issued in that mode.
 
-| Method | Endpoint                       | Purpose                                           |
-| ------ | ------------------------------ | ------------------------------------------------- |
-| POST   | `/api/v1/device/pair`          | Consume an admin-created short-lived pairing code |
-| GET    | `{deviceApiBaseUrl}/manifest`  | Fetch this screen's fully resolved manifest       |
-| POST   | `{deviceApiBaseUrl}/heartbeat` | Report actual player and playback state           |
+| Method | Endpoint                        | Purpose                                       |
+| ------ | ------------------------------- | --------------------------------------------- |
+| POST   | `/api/v1/device/pair/challenge` | Bind a pairing attempt to a device key        |
+| POST   | `/api/v1/device/pair`           | Prove the key and consume the pairing code    |
+| POST   | `{deviceApiBaseUrl}/challenges` | Issue a one-use request-bound proof challenge |
+| GET    | `{deviceApiBaseUrl}/manifest`   | Fetch this screen's resolved manifest         |
+| POST   | `{deviceApiBaseUrl}/heartbeat`  | Report actual player and playback state       |
 
 Remote device commands are intentionally not enabled in the current prototype. They require persistent command records, expiry, authorization, replay resistance, idempotent acknowledgement, and hardware capability checks before activation.
 
@@ -18,17 +20,40 @@ available, and returns the public SPKI, SHA-256 public-key fingerprint, `ES256`
 algorithm label, and detected security level. Security-level metadata is local
 diagnostic information, not remote attestation.
 
-For a new Android installation, the fingerprint is also used as the installation
-ID. An existing `sg-installation-id` value always wins for compatibility with an
-already-paired prototype. Non-Android players retain a persisted random UUID.
+The fingerprint is the Android installation ID. A legacy browser
+`sg-installation-id` is never allowed to override it. Browser development
+players retain a persisted random UUID.
 
 The plugin can sign a 16–512-byte, unpadded-base64url challenge with
 `SHA256withECDSA` after prefixing the decoded bytes with the domain
 `ScreenGoblin device proof v1` and a zero byte. It returns the signature in DER
-form encoded as unpadded base64url. The API does not yet enroll this key or
-verify these proofs. Until that server protocol, nonce replay cache, lifecycle,
-and local-erasure flow exist, the current IndexedDB bearer token remains the
-actual authentication mechanism.
+form encoded as unpadded base64url. This is the native ASN.1 ECDSA `(r,s)`
+encoding, not the fixed-width JOSE signature encoding.
+
+Pairing first sends the code, exact device metadata, and identity to the pairing
+challenge endpoint. Both stages use recursively sorted-key canonical JSON. The
+API returns an opaque challenge envelope; the player signs those exact decoded
+bytes and repeats the exact enrollment fields with `pairingProof` containing
+`challengeId`, `challenge`, `keyId`, `signatureFormat`, and `signature`. A
+successful identical final claim is idempotent, so a timeout retries the same
+serialized body and proof rather than acquiring a different challenge. The
+response has `authMode: proof-v1`, `credentialId`, and `keyId`; the player
+rejects a response or native signature whose key ID differs from the enrolled
+identity.
+
+Manifest and heartbeat access first requests a challenge with `X-Screen-Id`
+and `X-Device-Key-Id`. Its body names the operation and a lowercase hexadecimal
+SHA-256: empty bytes for manifest, or the exact canonical heartbeat JSON bytes.
+The protected call echoes the opaque challenge and sends these headers:
+`X-Device-Challenge-Id`, `X-Device-Challenge`, `X-Device-Key-Id`,
+`X-Device-Signature-Format: ES256-DER`, and `X-Device-Signature`. Manifest GET
+retries obtain a fresh challenge and signature for every attempt. Heartbeats
+are never automatically replayed.
+
+Browser bearer authentication exists only for local development. It requires
+the explicit build-time `VITE_DEVICE_AUTH_DEVELOPMENT_BEARER=true` flag and an
+API URL whose hostname is `localhost`, `127.0.0.1`, or `::1`. Android never
+uses this fallback, and no client silently downgrades after proof failure.
 
 The manifest includes `version`, `generatedAt`, `validUntil`, `screenId`, `priority`, required signed `withdrawn`, optional signed `playbackEndsAt`, and ordered playlist `items`. Each playlist item contains an `asset` plus `durationSeconds`; the player normalizes that wire shape before staging. A withdrawal is an empty normal release that intentionally clears playback. `validUntil` is the renewable envelope lease; normal last-known-good playback may continue past it during an outage. `playbackEndsAt` is a hard schedule boundary and blanks locally even offline. Image, video, and template checksums are mandatory. URLs should be immutable or short-lived signed URLs whose content bytes stay stable for the URL lifetime.
 
@@ -55,4 +80,11 @@ the expected media type, preventing an SPA HTML fallback from being stored as a
 script or style. A first-ever launch without a previously installed worker still
 requires network access; native/WebView offline behavior remains a device gate.
 
-Emergency manifests use priority `emergency`; the player visibly labels them. Normal schedules are restored by publishing a new normal manifest. Device authentication tokens should be independently revocable and rotated by the server.
+Emergency manifests use priority `emergency`; the player visibly labels them. Normal schedules are restored by publishing a new normal manifest.
+
+Device-key rotation, remote attestation, operator confirmation of a pairing-key
+fingerprint, and verified deletion of a revoked Android Keystore alias are
+explicitly outside proof-v1. `securityLevel` is self-reported diagnostic data,
+not attestation. A compromised trusted WebView can still invoke the signing
+bridge, so proof-v1 protects an exported credential from off-device use but is
+not a defense against execution inside the player origin.

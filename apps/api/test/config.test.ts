@@ -7,6 +7,7 @@ const base = {
   REDIS_URL: "redis://redis.example.test:6379/0",
   JWT_SECRET: "jwt-secret-that-is-at-least-thirty-two-characters",
   PAIRING_CODE_PEPPER: "pairing-pepper-that-is-at-least-thirty-two-characters",
+  DEVICE_AUTH_MODE: "proof-v1",
   MANIFEST_SIGNING_PRIVATE_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   PUBLIC_API_URL: "https://signage.example.test",
   MEDIA_ALLOWED_ORIGINS: "https://media.example.test",
@@ -32,6 +33,19 @@ describe("production configuration", () => {
     expect(loadConfig(base).PUBLIC_API_URL).toBe(
       "https://signage.example.test",
     );
+  });
+
+  it("requires proof-v1 device authentication in production", () => {
+    expect(() =>
+      loadConfig({ ...base, DEVICE_AUTH_MODE: "development-bearer" }),
+    ).toThrow(/DEVICE_AUTH_MODE/);
+    expect(() =>
+      loadConfig(
+        Object.fromEntries(
+          Object.entries(base).filter(([key]) => key !== "DEVICE_AUTH_MODE"),
+        ),
+      ),
+    ).toThrow(/DEVICE_AUTH_MODE/);
   });
 
   it("requires an explicit production media origin allowlist", () => {

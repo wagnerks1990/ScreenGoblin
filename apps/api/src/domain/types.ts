@@ -241,6 +241,106 @@ export interface PairingCreateAuditContext {
   requestId?: string | undefined;
 }
 
+export type DeviceSecurityLevel =
+  | "strongbox"
+  | "trusted-environment"
+  | "software"
+  | "unknown-secure"
+  | "unknown";
+
+export interface DeviceCredentialEnrollment {
+  keyId: string;
+  publicKeySpki: string;
+  algorithm: "ES256";
+  securityLevel: DeviceSecurityLevel;
+  expiresAt?: string | undefined;
+}
+
+export interface DeviceCredentialRecord extends DeviceCredentialEnrollment {
+  id: string;
+  organizationId: string;
+  screenId: string;
+  detached: boolean;
+  revokedAt?: string | undefined;
+  createdAt: string;
+}
+
+export interface PairingAttemptRecord {
+  id: string;
+  organizationId: string;
+  pairingCodeId: string;
+  keyId: string;
+  publicKeySpki: string;
+  algorithm: "ES256";
+  securityLevel: DeviceSecurityLevel;
+  credentialExpiresAt?: string | undefined;
+  challengeHashSha256: string;
+  transcriptDigestSha256: string;
+  expiresAt: string;
+  consumedAt?: string | undefined;
+  boundCredentialId?: string | undefined;
+  createdAt: string;
+}
+
+export type PairingProofVerifier = (
+  credential: DeviceCredentialEnrollment,
+) => boolean | Promise<boolean>;
+
+export type PairingProofClaimResult =
+  | {
+      paired: true;
+      screen: ScreenRecord;
+      credential: DeviceCredentialRecord;
+    }
+  | { paired: false; reason: "INVALID" };
+
+export type DeviceAuthOperation = "heartbeat" | "manifest";
+
+export interface DeviceAuthChallengeRecord {
+  id: string;
+  organizationId: string;
+  credentialId: string;
+  challengeHashSha256: string;
+  operation: DeviceAuthOperation;
+  requestDigestSha256: string;
+  expiresAt: string;
+  consumedAt?: string | undefined;
+  createdAt: string;
+}
+
+export interface DeviceProofInput {
+  credentialId: string;
+  challengeId: string;
+  challengeHashSha256: string;
+  operation: DeviceAuthOperation;
+  requestDigestSha256: string;
+}
+
+export type DeviceProofVerifier = (
+  credential: DeviceCredentialRecord,
+) => boolean | Promise<boolean>;
+
+export type DeviceProofResult =
+  | {
+      authenticated: true;
+      credential: DeviceCredentialRecord;
+      screen: ScreenRecord;
+    }
+  | { authenticated: false; reason: "INVALID_PROOF" };
+
+export interface DeviceCredentialRevokeAuditContext {
+  actorUserId: string;
+  ipAddress?: string | undefined;
+  requestId?: string | undefined;
+}
+
+export type DeviceCredentialRevokeResult =
+  | { revoked: true; credential: DeviceCredentialRecord }
+  | {
+      revoked: false;
+      reason: "NOT_FOUND" | "ALREADY_REVOKED" | "FORBIDDEN";
+    };
+
 export type DeleteResult = "DELETED" | "NOT_FOUND" | "IN_USE";
 
 export interface DataStore {
@@ -308,7 +408,57 @@ export interface DataStore {
     tokenHash: string,
     audit: PairingClaimAuditContext,
   ): Promise<ScreenRecord | null>;
+  issuePairingChallenge(input: {
+    codeHash: string;
+    credential: DeviceCredentialEnrollment;
+    challengeHashSha256: string;
+    transcriptDigestSha256: string;
+    expiresAt: string;
+  }): Promise<PairingAttemptRecord | null>;
+  claimPairingWithCredentialAndAudit(
+    input: {
+      codeHash: string;
+      pairingAttemptId: string;
+      challengeHashSha256: string;
+      transcriptDigestSha256: string;
+      keyId: string;
+      device: {
+        installationId: string;
+        model: string;
+        osVersion: string;
+        playerVersion: string;
+      };
+    },
+    verify: PairingProofVerifier,
+    audit: PairingClaimAuditContext,
+  ): Promise<PairingProofClaimResult>;
   authenticateDevice(screenId: string): Promise<ScreenRecord | null>;
+  authenticateDeviceCredential(
+    screenId: string,
+    keyId: string,
+  ): Promise<DeviceProofResult>;
+  issueDeviceAuthChallenge(input: {
+    screenId: string;
+    keyId: string;
+    challengeHashSha256: string;
+    operation: DeviceAuthOperation;
+    requestDigestSha256: string;
+    expiresAt: string;
+  }): Promise<DeviceAuthChallengeRecord | null>;
+  consumeDeviceAuthChallenge(
+    input: DeviceProofInput,
+    verify: DeviceProofVerifier,
+  ): Promise<DeviceProofResult>;
+  heartbeatWithDeviceProof(
+    input: DeviceProofInput,
+    data: Partial<ScreenRecord>,
+    verify: DeviceProofVerifier,
+  ): Promise<DeviceProofResult>;
+  revokeDeviceCredentialAndAudit(
+    orgId: string,
+    screenId: string,
+    audit: DeviceCredentialRevokeAuditContext,
+  ): Promise<DeviceCredentialRevokeResult>;
   heartbeat(
     screenId: string,
     data: Partial<ScreenRecord>,

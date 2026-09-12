@@ -41,12 +41,12 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("device identity", () => {
-  it("preserves an existing installation ID without creating a native key", async () => {
+  it("replaces a legacy Android installation ID with the current key fingerprint", async () => {
     native.platform = "android";
     localStorage.setItem("sg-installation-id", "legacy-installation-id");
 
-    await expect(installationId()).resolves.toBe("legacy-installation-id");
-    expect(native.getIdentity).not.toHaveBeenCalled();
+    await expect(installationId()).resolves.toBe(identity.keyId);
+    expect(native.getIdentity).toHaveBeenCalledOnce();
   });
 
   it("uses the hardware key fingerprint for a new Android installation", async () => {
@@ -71,6 +71,12 @@ describe("device identity", () => {
     expect(crypto.randomUUID).toHaveBeenCalledOnce();
   });
 
+  it("preserves a legacy installation ID only in the browser", async () => {
+    localStorage.setItem("sg-installation-id", "legacy-installation-id");
+    await expect(installationId()).resolves.toBe("legacy-installation-id");
+    expect(native.getIdentity).not.toHaveBeenCalled();
+  });
+
   it("returns native identity metadata only on Android", async () => {
     await expect(getDeviceIdentity()).resolves.toBeUndefined();
     native.platform = "android";
@@ -90,5 +96,29 @@ describe("device identity", () => {
     expect(native.signChallenge).toHaveBeenCalledWith({
       challenge: "valid-challenge",
     });
+  });
+
+  it("fails closed when Android signs with a different key", async () => {
+    native.platform = "android";
+    native.signChallenge.mockResolvedValueOnce({
+      signature: "der-signature",
+      signatureFormat: "ES256-DER",
+      keyId: "replacement-key",
+    });
+
+    await expect(
+      signDeviceChallenge("valid-challenge", identity.keyId),
+    ).rejects.toThrow("identity key changed");
+  });
+
+  it("fails closed when Android returns incomplete identity metadata", async () => {
+    native.platform = "android";
+    native.getIdentity.mockResolvedValueOnce({
+      ...identity,
+      publicKeySpki: "",
+    });
+    await expect(getDeviceIdentity()).rejects.toThrow(
+      "invalid device identity",
+    );
   });
 });

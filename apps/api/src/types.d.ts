@@ -14,6 +14,7 @@ declare module "fastify" {
     config: {
       manifestSigningPrivateKey: string;
       pairingCodePepper: string;
+      deviceAuthMode: "proof-v1" | "development-bearer";
       emergencyPublishingEnabled: boolean;
       mediaAllowedOrigins: string[];
       publicApiUrl?: string;

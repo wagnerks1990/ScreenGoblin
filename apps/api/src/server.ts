@@ -27,6 +27,7 @@ const app = await buildApp({
   jwtSecret: config.JWT_SECRET,
   manifestSigningPrivateKey: config.MANIFEST_SIGNING_PRIVATE_KEY,
   pairingCodePepper: config.PAIRING_CODE_PEPPER,
+  deviceAuthMode: config.DEVICE_AUTH_MODE,
   emergencyPublishingEnabled: config.EMERGENCY_FEATURE_ENABLED,
   corsOrigins: config.CORS_ORIGINS.split(",")
     .map((x) => x.trim())

@@ -5,12 +5,20 @@ import type {
   AuditRecord,
   DataStore,
   DeleteResult,
+  DeviceAuthChallengeRecord,
+  DeviceCredentialEnrollment,
+  DeviceCredentialRecord,
+  DeviceCredentialRevokeAuditContext,
+  DeviceProofInput,
+  DeviceProofVerifier,
   EmergencyRecord,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
   PairingCreateAuditContext,
   PairingCreateResult,
+  PairingAttemptRecord,
+  PairingProofVerifier,
   PlaylistRecord,
   PublishedReleaseRecord,
   ReleaseAssignmentRecord,
@@ -33,6 +41,7 @@ import {
 import { hasCapability } from "../authorization/policy.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
+import { randomToken } from "../utils/crypto.js";
 
 const iso = (v: Date | null | undefined) => v?.toISOString();
 const enumLower = <T extends string>(v: string) => v.toLowerCase() as T;
@@ -236,6 +245,88 @@ const pairingDto = (x: {
   expiresAt: iso(x.expiresAt)!,
   status: x.status,
   ...(x.screenId ? { screenId: x.screenId } : {}),
+});
+
+const deviceCredentialDto = (x: {
+  id: string;
+  organizationId: string;
+  screenId: string;
+  liveScreenId: string | null;
+  keyId: string;
+  publicKeySpki: Uint8Array;
+  algorithm: string;
+  securityLevel: string;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+  createdAt: Date;
+}): DeviceCredentialRecord => ({
+  id: x.id,
+  organizationId: x.organizationId,
+  screenId: x.screenId,
+  detached: x.liveScreenId === null,
+  keyId: x.keyId,
+  publicKeySpki: Buffer.from(x.publicKeySpki).toString("base64url"),
+  algorithm: "ES256",
+  securityLevel: x.securityLevel as DeviceCredentialRecord["securityLevel"],
+  ...(x.expiresAt ? { expiresAt: iso(x.expiresAt) } : {}),
+  ...(x.revokedAt ? { revokedAt: iso(x.revokedAt) } : {}),
+  createdAt: iso(x.createdAt)!,
+});
+
+const deviceChallengeDto = (x: {
+  id: string;
+  organizationId: string;
+  credentialId: string;
+  challengeHashSha256: string;
+  operation: "HEARTBEAT" | "MANIFEST";
+  requestDigestSha256: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+}): DeviceAuthChallengeRecord => ({
+  id: x.id,
+  organizationId: x.organizationId,
+  credentialId: x.credentialId,
+  challengeHashSha256: x.challengeHashSha256,
+  operation: enumLower(x.operation),
+  requestDigestSha256: x.requestDigestSha256,
+  expiresAt: iso(x.expiresAt)!,
+  ...(x.consumedAt ? { consumedAt: iso(x.consumedAt) } : {}),
+  createdAt: iso(x.createdAt)!,
+});
+
+const pairingAttemptDto = (x: {
+  id: string;
+  organizationId: string;
+  pairingCodeId: string;
+  keyId: string;
+  publicKeySpki: Uint8Array;
+  algorithm: string;
+  securityLevel: string;
+  credentialExpiresAt: Date | null;
+  challengeHashSha256: string;
+  transcriptDigestSha256: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  boundCredentialId: string | null;
+  createdAt: Date;
+}): PairingAttemptRecord => ({
+  id: x.id,
+  organizationId: x.organizationId,
+  pairingCodeId: x.pairingCodeId,
+  keyId: x.keyId,
+  publicKeySpki: Buffer.from(x.publicKeySpki).toString("base64url"),
+  algorithm: "ES256",
+  securityLevel: x.securityLevel as PairingAttemptRecord["securityLevel"],
+  ...(x.credentialExpiresAt
+    ? { credentialExpiresAt: iso(x.credentialExpiresAt) }
+    : {}),
+  challengeHashSha256: x.challengeHashSha256,
+  transcriptDigestSha256: x.transcriptDigestSha256,
+  expiresAt: iso(x.expiresAt)!,
+  ...(x.consumedAt ? { consumedAt: iso(x.consumedAt) } : {}),
+  ...(x.boundCredentialId ? { boundCredentialId: x.boundCredentialId } : {}),
+  createdAt: iso(x.createdAt)!,
 });
 
 const isUniqueConstraintError = (error: unknown) =>
@@ -562,11 +653,540 @@ export class PrismaStore implements DataStore {
       return screenDto(screen);
     });
   }
+  async issuePairingChallenge(input: {
+    codeHash: string;
+    credential: DeviceCredentialEnrollment;
+    challengeHashSha256: string;
+    transcriptDigestSha256: string;
+    expiresAt: string;
+  }) {
+    const expiresAt = new Date(input.expiresAt);
+    if (!Number.isFinite(expiresAt.getTime())) return null;
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const [locked] = await tx.$queryRaw<
+          Array<{ id: string; databaseNow: Date }>
+        >`
+          SELECT pairing."id", CURRENT_TIMESTAMP AS "databaseNow"
+          FROM "PairingCode" AS pairing
+          WHERE pairing."codeHash" = ${input.codeHash}
+            AND pairing."status" = 'PENDING'::"PairingStatus"
+            AND pairing."expiresAt" > CURRENT_TIMESTAMP
+          ORDER BY pairing."createdAt" DESC
+          LIMIT 1
+          FOR UPDATE OF pairing`;
+        const pairing = locked
+          ? await tx.pairingCode.findUnique({ where: { id: locked.id } })
+          : null;
+        if (!pairing) return null;
+        if (
+          expiresAt <= locked!.databaseNow ||
+          expiresAt.getTime() - locked!.databaseNow.getTime() > 45_000
+        )
+          return null;
+        if (
+          await tx.deviceCredential.findUnique({
+            where: { keyId: input.credential.keyId },
+            select: { id: true },
+          })
+        )
+          return null;
+        if (
+          (await tx.pairingAttempt.count({
+            where: {
+              pairingCodeId: pairing.id,
+              keyId: input.credential.keyId,
+              consumedAt: null,
+              expiresAt: { gt: locked!.databaseNow },
+            },
+          })) >= 4
+        )
+          return null;
+        const attempt = await tx.pairingAttempt.create({
+          data: {
+            id: randomToken(),
+            organizationId: pairing.organizationId,
+            pairingCodeId: pairing.id,
+            keyId: input.credential.keyId,
+            publicKeySpki: Buffer.from(
+              input.credential.publicKeySpki,
+              "base64url",
+            ),
+            algorithm: input.credential.algorithm,
+            securityLevel: input.credential.securityLevel,
+            credentialExpiresAt: input.credential.expiresAt
+              ? new Date(input.credential.expiresAt)
+              : null,
+            challengeHashSha256: input.challengeHashSha256,
+            transcriptDigestSha256: input.transcriptDigestSha256,
+            expiresAt,
+            createdAt: locked!.databaseNow,
+          },
+        });
+        return pairingAttemptDto(attempt);
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error)) return null;
+      throw error;
+    }
+  }
+  async claimPairingWithCredentialAndAudit(
+    input: {
+      codeHash: string;
+      pairingAttemptId: string;
+      challengeHashSha256: string;
+      transcriptDigestSha256: string;
+      keyId: string;
+      device: {
+        installationId: string;
+        model: string;
+        osVersion: string;
+        playerVersion: string;
+      };
+    },
+    verify: PairingProofVerifier,
+    audit: PairingClaimAuditContext,
+  ) {
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const [locked] = await tx.$queryRaw<
+            Array<{ id: string; databaseNow: Date }>
+          >`
+            SELECT attempt."id", CURRENT_TIMESTAMP AS "databaseNow"
+            FROM "PairingAttempt" AS attempt
+            INNER JOIN "PairingCode" AS pairing
+              ON pairing."id" = attempt."pairingCodeId"
+              AND pairing."organizationId" = attempt."organizationId"
+            WHERE attempt."id" = ${input.pairingAttemptId}
+              AND pairing."codeHash" = ${input.codeHash}
+            FOR UPDATE OF attempt, pairing`;
+          if (!locked)
+            return { paired: false as const, reason: "INVALID" as const };
+          const attempt = await tx.pairingAttempt.findUnique({
+            where: { id: locked.id },
+            include: {
+              pairingCode: true,
+              boundCredential: { include: { liveScreen: true } },
+            },
+          });
+          if (
+            !attempt ||
+            attempt.challengeHashSha256 !== input.challengeHashSha256 ||
+            attempt.transcriptDigestSha256 !== input.transcriptDigestSha256 ||
+            attempt.keyId !== input.keyId
+          )
+            return { paired: false as const, reason: "INVALID" as const };
+          const enrollment: DeviceCredentialEnrollment = {
+            keyId: attempt.keyId,
+            publicKeySpki: Buffer.from(attempt.publicKeySpki).toString(
+              "base64url",
+            ),
+            algorithm: "ES256",
+            securityLevel:
+              attempt.securityLevel as DeviceCredentialEnrollment["securityLevel"],
+            ...(attempt.credentialExpiresAt
+              ? { expiresAt: iso(attempt.credentialExpiresAt) }
+              : {}),
+          };
+          if (!(await verify(enrollment)))
+            return { paired: false as const, reason: "INVALID" as const };
+
+          if (
+            attempt.consumedAt &&
+            attempt.boundCredential &&
+            !attempt.boundCredential.revokedAt &&
+            (!attempt.boundCredential.expiresAt ||
+              attempt.boundCredential.expiresAt > locked.databaseNow)
+          ) {
+            const screen = attempt.boundCredential.liveScreen;
+            return screen
+              ? {
+                  paired: true as const,
+                  screen: screenDto(screen),
+                  credential: deviceCredentialDto(attempt.boundCredential),
+                }
+              : { paired: false as const, reason: "INVALID" as const };
+          }
+          const currentTime = locked.databaseNow;
+          if (
+            attempt.consumedAt ||
+            attempt.expiresAt <= currentTime ||
+            attempt.pairingCode.status !== "PENDING" ||
+            attempt.pairingCode.expiresAt <= currentTime
+          )
+            return { paired: false as const, reason: "INVALID" as const };
+          const claimed = await tx.pairingCode.updateMany({
+            where: {
+              id: attempt.pairingCodeId,
+              organizationId: attempt.organizationId,
+              status: "PENDING",
+              expiresAt: { gt: currentTime },
+            },
+            data: { status: "CLAIMED", claimedAt: currentTime },
+          });
+          if (claimed.count !== 1)
+            return { paired: false as const, reason: "INVALID" as const };
+          const screen = await tx.screen.create({
+            data: {
+              organizationId: attempt.organizationId,
+              name: `New screen ${input.device.installationId.slice(-6)}`,
+              location: "Unassigned",
+              installationId: input.device.installationId,
+              model: input.device.model,
+              osVersion: input.device.osVersion,
+              playerVersion: input.device.playerVersion,
+              status: "ONLINE",
+              lastSeenAt: currentTime,
+            },
+          });
+          const credential = await tx.deviceCredential.create({
+            data: {
+              organizationId: attempt.organizationId,
+              screenId: screen.id,
+              liveScreenId: screen.id,
+              liveScreenOrganizationId: attempt.organizationId,
+              keyId: attempt.keyId,
+              publicKeySpki: attempt.publicKeySpki,
+              algorithm: "ES256",
+              securityLevel: attempt.securityLevel,
+              expiresAt: attempt.credentialExpiresAt,
+            },
+          });
+          await tx.pairingCode.update({
+            where: { id: attempt.pairingCodeId },
+            data: {
+              screenId: screen.id,
+              screenOrganizationId: attempt.organizationId,
+            },
+          });
+          await tx.pairingAttempt.update({
+            where: { id: attempt.id },
+            data: {
+              consumedAt: currentTime,
+              boundCredentialId: credential.id,
+            },
+          });
+          await tx.auditEvent.create({
+            data: {
+              organizationId: attempt.organizationId,
+              actorType: "device",
+              action: "device.paired",
+              entityType: "screen",
+              entityId: screen.id,
+              ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+              ...(audit.requestId ? { requestId: audit.requestId } : {}),
+              metadata: {
+                ...audit.metadata,
+                installationId: input.device.installationId,
+                credentialId: credential.id,
+                keyId: credential.keyId,
+                pairingAttemptId: attempt.id,
+              },
+            },
+          });
+          return {
+            paired: true as const,
+            screen: screenDto(screen),
+            credential: deviceCredentialDto(credential),
+          };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      );
+    } catch (error) {
+      if (isUniqueConstraintError(error) || isRetryableWriteConflict(error))
+        return { paired: false as const, reason: "INVALID" as const };
+      throw error;
+    }
+  }
   async authenticateDevice(id: string) {
     const x = await this.prisma.screen.findFirst({
       where: { id, credentialRevokedAt: null },
     });
     return x?.deviceTokenHash ? screenDto(x, true) : null;
+  }
+  async authenticateDeviceCredential(screenId: string, keyId: string) {
+    const currentTime = new Date();
+    const credential = await this.prisma.deviceCredential.findFirst({
+      where: {
+        screenId,
+        liveScreenId: screenId,
+        keyId,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: currentTime } }],
+      },
+      include: { liveScreen: true },
+    });
+    return credential?.liveScreen
+      ? {
+          authenticated: true as const,
+          credential: deviceCredentialDto(credential),
+          screen: screenDto(credential.liveScreen),
+        }
+      : { authenticated: false as const, reason: "INVALID_PROOF" as const };
+  }
+  async issueDeviceAuthChallenge(input: {
+    screenId: string;
+    keyId: string;
+    challengeHashSha256: string;
+    operation: "heartbeat" | "manifest";
+    requestDigestSha256: string;
+    expiresAt: string;
+  }) {
+    const expiresAt = new Date(input.expiresAt);
+    if (!Number.isFinite(expiresAt.getTime())) return null;
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const [locked] = await tx.$queryRaw<
+          Array<{ id: string; organizationId: string; databaseNow: Date }>
+        >`
+          SELECT credential."id", credential."organizationId",
+            CURRENT_TIMESTAMP AS "databaseNow"
+          FROM "DeviceCredential" AS credential
+          INNER JOIN "Screen" AS screen
+            ON screen."id" = credential."liveScreenId"
+            AND screen."organizationId" = credential."liveScreenOrganizationId"
+          WHERE credential."screenId" = ${input.screenId}
+            AND credential."liveScreenId" = ${input.screenId}
+            AND credential."keyId" = ${input.keyId}
+            AND credential."revokedAt" IS NULL
+            AND (credential."expiresAt" IS NULL OR credential."expiresAt" > CURRENT_TIMESTAMP)
+          FOR UPDATE OF credential, screen`;
+        if (!locked) return null;
+        if (
+          expiresAt <= locked.databaseNow ||
+          expiresAt.getTime() - locked.databaseNow.getTime() > 60_000
+        )
+          return null;
+        const operation = input.operation.toUpperCase() as
+          "HEARTBEAT" | "MANIFEST";
+        if (
+          (await tx.deviceAuthChallenge.count({
+            where: {
+              credentialId: locked.id,
+              operation,
+              consumedAt: null,
+              expiresAt: { gt: locked.databaseNow },
+            },
+          })) >= 4
+        )
+          return null;
+        const challenge = await tx.deviceAuthChallenge.create({
+          data: {
+            id: randomToken(),
+            organizationId: locked.organizationId,
+            credentialId: locked.id,
+            challengeHashSha256: input.challengeHashSha256,
+            operation,
+            requestDigestSha256: input.requestDigestSha256,
+            expiresAt,
+            createdAt: locked.databaseNow,
+          },
+        });
+        return deviceChallengeDto(challenge);
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error)) return null;
+      throw error;
+    }
+  }
+  private async consumeDeviceProofInTransaction(
+    tx: Prisma.TransactionClient,
+    input: DeviceProofInput,
+    verify: DeviceProofVerifier,
+  ) {
+    const [lockedCredential] = await tx.$queryRaw<
+      Array<{ id: string; databaseNow: Date }>
+    >`
+      SELECT credential."id", CURRENT_TIMESTAMP AS "databaseNow"
+      FROM "DeviceCredential" AS credential
+      INNER JOIN "Screen" AS screen
+        ON screen."id" = credential."liveScreenId"
+        AND screen."organizationId" = credential."liveScreenOrganizationId"
+      WHERE credential."id" = ${input.credentialId}
+        AND credential."revokedAt" IS NULL
+        AND (credential."expiresAt" IS NULL OR credential."expiresAt" > CURRENT_TIMESTAMP)
+      FOR UPDATE OF credential, screen`;
+    if (!lockedCredential) return null;
+    const [lockedChallenge] = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT challenge."id"
+      FROM "DeviceAuthChallenge" AS challenge
+      WHERE challenge."id" = ${input.challengeId}
+        AND challenge."credentialId" = ${input.credentialId}
+      FOR UPDATE OF challenge`;
+    if (!lockedChallenge) return null;
+    const [credential, challenge] = await Promise.all([
+      tx.deviceCredential.findUnique({
+        where: { id: lockedCredential.id },
+        include: { liveScreen: true },
+      }),
+      tx.deviceAuthChallenge.findUnique({
+        where: { id: lockedChallenge.id },
+      }),
+    ]);
+    const currentTime = lockedCredential.databaseNow;
+    if (
+      !credential?.liveScreen ||
+      !challenge ||
+      challenge.organizationId !== credential.organizationId ||
+      challenge.consumedAt ||
+      challenge.expiresAt <= currentTime ||
+      challenge.challengeHashSha256 !== input.challengeHashSha256 ||
+      enumLower(challenge.operation) !== input.operation ||
+      challenge.requestDigestSha256 !== input.requestDigestSha256 ||
+      !(await verify(deviceCredentialDto(credential)))
+    )
+      return null;
+    const consumed = await tx.deviceAuthChallenge.updateMany({
+      where: {
+        id: challenge.id,
+        credentialId: credential.id,
+        consumedAt: null,
+        expiresAt: { gt: currentTime },
+      },
+      data: { consumedAt: currentTime },
+    });
+    return consumed.count === 1
+      ? { credential, screen: credential.liveScreen }
+      : null;
+  }
+  async consumeDeviceAuthChallenge(
+    input: DeviceProofInput,
+    verify: DeviceProofVerifier,
+  ) {
+    const consumed = await this.prisma.$transaction((tx) =>
+      this.consumeDeviceProofInTransaction(tx, input, verify),
+    );
+    return consumed
+      ? {
+          authenticated: true as const,
+          credential: deviceCredentialDto(consumed.credential),
+          screen: screenDto(consumed.screen),
+        }
+      : { authenticated: false as const, reason: "INVALID_PROOF" as const };
+  }
+  async heartbeatWithDeviceProof(
+    input: DeviceProofInput,
+    data: Partial<ScreenRecord>,
+    verify: DeviceProofVerifier,
+  ) {
+    const consumed = await this.prisma.$transaction(async (tx) => {
+      const authenticated = await this.consumeDeviceProofInTransaction(
+        tx,
+        input,
+        verify,
+      );
+      if (!authenticated) return null;
+      const allowed = {
+        ...(data.playerVersion !== undefined
+          ? { playerVersion: data.playerVersion }
+          : {}),
+        ...(data.manifestVersion !== undefined
+          ? { manifestVersion: data.manifestVersion }
+          : {}),
+        ...(data.nowPlayingAssetId !== undefined
+          ? { nowPlayingAssetId: data.nowPlayingAssetId }
+          : {}),
+        ...(data.uptimeSeconds !== undefined
+          ? { uptimeSeconds: BigInt(data.uptimeSeconds) }
+          : {}),
+        ...(data.freeStorageBytes !== undefined
+          ? { freeStorageBytes: BigInt(data.freeStorageBytes) }
+          : {}),
+        ...(data.networkType !== undefined
+          ? { networkType: data.networkType }
+          : {}),
+        lastSeenAt: new Date(),
+        status: "ONLINE" as const,
+      };
+      const screen = await tx.screen.update({
+        where: { id: authenticated.screen.id },
+        data: allowed,
+      });
+      return { credential: authenticated.credential, screen };
+    });
+    return consumed
+      ? {
+          authenticated: true as const,
+          credential: deviceCredentialDto(consumed.credential),
+          screen: screenDto(consumed.screen),
+        }
+      : { authenticated: false as const, reason: "INVALID_PROOF" as const };
+  }
+  async revokeDeviceCredentialAndAudit(
+    org: string,
+    screenId: string,
+    audit: DeviceCredentialRevokeAuditContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const [actor] = await tx.$queryRaw<Array<{ role: string }>>`
+        SELECT membership."role"::text AS "role"
+        FROM "Membership" AS membership
+        INNER JOIN "User" AS actor ON actor."id" = membership."userId"
+        WHERE membership."organizationId" = ${org}
+          AND membership."userId" = ${audit.actorUserId}
+          AND actor."disabledAt" IS NULL
+        FOR UPDATE OF membership, actor`;
+      if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+        return { revoked: false as const, reason: "FORBIDDEN" as const };
+      const [locked] = await tx.$queryRaw<
+        Array<{ id: string; databaseNow: Date }>
+      >`
+        SELECT credential."id", CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "DeviceCredential" AS credential
+        INNER JOIN "Screen" AS screen
+          ON screen."id" = credential."liveScreenId"
+          AND screen."organizationId" = credential."liveScreenOrganizationId"
+        WHERE credential."organizationId" = ${org}
+          AND credential."screenId" = ${screenId}
+          AND credential."revokedAt" IS NULL
+        ORDER BY credential."createdAt" DESC
+        LIMIT 1
+        FOR UPDATE OF credential, screen`;
+      if (!locked) {
+        const existing = await tx.deviceCredential.findFirst({
+          where: { organizationId: org, screenId, revokedAt: { not: null } },
+          select: { id: true },
+        });
+        return existing
+          ? { revoked: false as const, reason: "ALREADY_REVOKED" as const }
+          : { revoked: false as const, reason: "NOT_FOUND" as const };
+      }
+      const revokedAt = locked.databaseNow;
+      const credential = await tx.deviceCredential.update({
+        where: { id: locked.id },
+        data: { revokedAt },
+      });
+      await tx.screen.update({
+        where: { id: screenId },
+        data: { credentialRevokedAt: revokedAt },
+      });
+      await tx.deviceAuthChallenge.updateMany({
+        where: {
+          credentialId: credential.id,
+          consumedAt: null,
+          expiresAt: { gt: revokedAt },
+        },
+        data: { consumedAt: revokedAt },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "device.credential.revoked",
+          entityType: "device_credential",
+          entityId: credential.id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: { screenId, keyId: credential.keyId },
+        },
+      });
+      return {
+        revoked: true as const,
+        credential: deviceCredentialDto(credential),
+      };
+    });
   }
   async heartbeat(id: string, data: Partial<ScreenRecord>) {
     const x = await this.prisma.screen.findUnique({ where: { id } });

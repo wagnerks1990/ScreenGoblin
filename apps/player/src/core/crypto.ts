@@ -7,6 +7,9 @@ export async function sha256Hex(data: ArrayBuffer): Promise<string> {
     .join("");
 }
 
+export const utf8 = (value: string): ArrayBuffer =>
+  new TextEncoder().encode(value).buffer;
+
 export async function verifySha256(
   data: ArrayBuffer,
   expected: string,

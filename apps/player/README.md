@@ -15,11 +15,12 @@ Offline-first signage runtime for Android TV, HDMI dongles, Chromium kiosks, and
 The current API/player integration supports admin-created pairing codes,
 authenticated heartbeats, and signed schedule manifests. The Android wrapper now
 creates a non-exportable P-256 identity key in Android Keystore and exposes only
-its public key and challenge-signing operation to the WebView. The current
-server does not enroll that public key or verify proof of possession, so the
-bearer credential remains authoritative and this is not yet production device
-authentication. Remote device commands remain disabled until their server-side
-authorization, persistence, expiry, and replay controls are implemented.
+its public key and challenge-signing operation to the WebView. The server enrolls
+that public key through a two-stage transcript-bound exchange and requires a
+fresh, one-use, operation- and body-bound proof for each heartbeat and manifest.
+Production proof mode issues no bearer token. Remote device commands remain
+disabled until their server-side authorization, persistence, expiry, and replay
+controls are implemented.
 
 ## Local development
 
@@ -45,11 +46,13 @@ cd android
 
 `MainActivity` requests immersive mode and lock-task mode when the app is allowlisted by a device owner. `BootReceiver` asks Android to reopen the player after boot. Android 10+ can restrict background activity launches; production hardware should additionally configure ScreenGoblin as the device-owner kiosk/home application using its EMM, OEMConfig, or provisioning API. The receiver is a recovery aid, not a substitute for managed-device policy.
 
-New Android installations use the SHA-256 fingerprint of the Keystore public
-key as their installation ID. Existing locally stored installation IDs are
-preserved to avoid breaking already-paired prototypes. Browser/PWA installations
-continue using a persisted random UUID. A production enrollment flow must bind
-the public key to the screen, verify fresh server challenges, support rotation
-and revocation, and verify local erasure during decommissioning.
+Android installations use the SHA-256 fingerprint of the Keystore public key as
+their installation ID; a legacy browser UUID cannot override it. Browser/PWA
+installations continue using a persisted random UUID and may use bearer
+authentication only in an explicit localhost development build. Proof-v1 binds
+the public key to the screen, verifies fresh server challenges, and supports
+transactional OWNER/ADMIN revocation. Server-verified attestation, credential/key
+rotation, targeted re-enrollment, offline recall, and verified local erasure
+during decommissioning remain release gates.
 
 Release APKs must use a protected signing key in CI. Never commit signing credentials. Production API URLs must use HTTPS; cleartext traffic is disabled.
