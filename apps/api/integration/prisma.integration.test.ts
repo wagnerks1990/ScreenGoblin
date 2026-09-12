@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaStore } from "../src/store/prisma.js";
 
@@ -187,6 +188,180 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(store.deletePlaylist(alpha.id, betaPlaylist.id)).resolves.toBe(
       false,
     );
+  });
+
+  it("enforces composite tenant ownership for nested relations and preserves safe delete semantics", async () => {
+    const [alpha, beta] = await Promise.all([
+      createOrganization("constraints-alpha"),
+      createOrganization("constraints-beta"),
+    ]);
+    const [alphaMedia, betaMedia] = await Promise.all([
+      prisma.mediaAsset.create({
+        data: {
+          organizationId: alpha.id,
+          name: "Alpha asset",
+          kind: "IMAGE",
+          mimeType: "image/png",
+          url: "https://media.example.test/constraint-alpha.png",
+          checksumSha256: "d".repeat(64),
+          sizeBytes: 100n,
+        },
+      }),
+      prisma.mediaAsset.create({
+        data: {
+          organizationId: beta.id,
+          name: "Beta asset",
+          kind: "IMAGE",
+          mimeType: "image/png",
+          url: "https://media.example.test/constraint-beta.png",
+          checksumSha256: "e".repeat(64),
+          sizeBytes: 200n,
+        },
+      }),
+    ]);
+    const [alphaPlaylist, betaPlaylist] = await Promise.all([
+      prisma.playlist.create({
+        data: { organizationId: alpha.id, name: "Constraint alpha" },
+      }),
+      prisma.playlist.create({
+        data: { organizationId: beta.id, name: "Constraint beta" },
+      }),
+    ]);
+    const [alphaScreen, betaScreen] = await Promise.all([
+      prisma.screen.create({
+        data: { organizationId: alpha.id, name: "Constraint alpha screen" },
+      }),
+      prisma.screen.create({
+        data: { organizationId: beta.id, name: "Constraint beta screen" },
+      }),
+    ]);
+
+    const alphaItem = await prisma.playlistItem.create({
+      data: {
+        organizationId: alpha.id,
+        playlistId: alphaPlaylist.id,
+        assetId: alphaMedia.id,
+        position: 0,
+        durationSeconds: 10,
+      },
+    });
+    const alphaSchedule = await prisma.schedule.create({
+      data: {
+        organizationId: alpha.id,
+        playlistId: alphaPlaylist.id,
+        name: "Constraint schedule",
+        startsAt: new Date(),
+      },
+    });
+    await prisma.scheduleTarget.create({
+      data: {
+        organizationId: alpha.id,
+        scheduleId: alphaSchedule.id,
+        screenId: alphaScreen.id,
+      },
+    });
+    const pairing = await prisma.pairingCode.create({
+      data: {
+        organizationId: alpha.id,
+        codeHash: `constraint-${randomUUID()}`,
+        expiresAt: new Date(Date.now() + 60_000),
+        screenId: alphaScreen.id,
+        screenOrganizationId: alpha.id,
+      },
+    });
+
+    await expect(
+      prisma.playlistItem.create({
+        data: {
+          organizationId: alpha.id,
+          playlistId: alphaPlaylist.id,
+          assetId: betaMedia.id,
+          position: 1,
+          durationSeconds: 10,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+    await expect(
+      prisma.schedule.create({
+        data: {
+          organizationId: alpha.id,
+          playlistId: betaPlaylist.id,
+          name: "Cross-tenant playlist",
+          startsAt: new Date(),
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+    await expect(
+      prisma.scheduleTarget.create({
+        data: {
+          organizationId: alpha.id,
+          scheduleId: alphaSchedule.id,
+          screenId: betaScreen.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+    await expect(
+      prisma.pairingCode.update({
+        where: { id: pairing.id },
+        data: {
+          screenId: betaScreen.id,
+          screenOrganizationId: alpha.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+    await expect(
+      prisma.pairingCode.update({
+        where: { id: pairing.id },
+        data: {
+          screenId: betaScreen.id,
+          screenOrganizationId: beta.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2004" });
+
+    await prisma.screen.delete({ where: { id: alphaScreen.id } });
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: pairing.id } }),
+    ).resolves.toMatchObject({
+      screenId: null,
+      screenOrganizationId: null,
+    });
+    expect(
+      await prisma.scheduleTarget.count({
+        where: { scheduleId: alphaSchedule.id },
+      }),
+    ).toBe(0);
+
+    await prisma.playlist.delete({ where: { id: alphaPlaylist.id } });
+    expect(
+      await prisma.playlistItem.count({ where: { id: alphaItem.id } }),
+    ).toBe(0);
+    expect(
+      await prisma.schedule.count({ where: { id: alphaSchedule.id } }),
+    ).toBe(0);
+    await expect(
+      prisma.mediaAsset.delete({ where: { id: alphaMedia.id } }),
+    ).resolves.toMatchObject({ id: alphaMedia.id });
+  });
+
+  it("rolls back pairing creation when its required audit actor is invalid", async () => {
+    const organization = await createOrganization("pairing-create-rollback");
+    const codeHash = `failed-audit-${randomUUID()}`;
+
+    await expect(
+      store.tryCreatePairingAndAudit(
+        organization.id,
+        codeHash,
+        new Date(Date.now() + 60_000).toISOString(),
+        { actorUserId: `missing-user-${randomUUID()}` },
+      ),
+    ).rejects.toMatchObject({ code: "P2003" });
+    expect(await prisma.pairingCode.count({ where: { codeHash } })).toBe(0);
+    expect(
+      await prisma.auditEvent.count({
+        where: { organizationId: organization.id, action: "pairing.created" },
+      }),
+    ).toBe(0);
   });
 
   it("claims a pairing code and records its audit exactly once under concurrent requests", async () => {
@@ -411,5 +586,51 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(
       store.findSessionUser(user.id, beta.id),
     ).resolves.toMatchObject({ organizationId: beta.id, role: "VIEWER" });
+  });
+
+  it("enforces case-insensitive email uniqueness in PostgreSQL", async () => {
+    await createUser("Owner@Example.Test");
+
+    await expect(createUser("owner@example.test")).rejects.toMatchObject({
+      code: "P2002",
+    });
+    expect(await prisma.user.count()).toBe(1);
+  });
+
+  it("migration preflight aborts on legacy case variants without choosing an account", async () => {
+    const migrationUrl = new URL(
+      "../prisma/migrations/20260912021000_case_insensitive_user_email/migration.sql",
+      import.meta.url,
+    );
+    const migration = await readFile(migrationUrl, "utf8");
+    const preflight = migration.match(
+      /DO \$identity_preflight\$[\s\S]*?\$identity_preflight\$;/,
+    )?.[0];
+    expect(preflight).toBeTruthy();
+
+    await prisma.$executeRawUnsafe('DROP INDEX "User_email_lower_key"');
+    try {
+      await Promise.all([
+        createUser("Legacy@Example.Test"),
+        createUser("legacy@example.test"),
+      ]);
+
+      await expect(prisma.$executeRawUnsafe(preflight!)).rejects.toThrow(
+        /duplicate normalized emails exist/,
+      );
+      const indexes = await prisma.$queryRaw<Array<{ count: number }>>`
+        SELECT COUNT(*)::int AS count
+        FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND indexname = 'User_email_lower_key'
+      `;
+      expect(indexes[0]?.count).toBe(0);
+      expect(await prisma.user.count()).toBe(2);
+    } finally {
+      await prisma.user.deleteMany();
+      await prisma.$executeRawUnsafe(
+        'CREATE UNIQUE INDEX "User_email_lower_key" ON "User" (LOWER("email"))',
+      );
+    }
   });
 });

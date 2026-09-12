@@ -170,6 +170,7 @@ export class CacheAssetRepository implements AssetRepository {
       try {
         const response = await fetch(asset.url, {
           cache: "no-store",
+          redirect: "error",
           signal: controller.signal,
         });
         if (!response.ok)

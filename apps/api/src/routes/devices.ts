@@ -10,92 +10,17 @@ import {
   signManifest,
 } from "../utils/crypto.js";
 import { opaqueId } from "../utils/validation.js";
-import { compareSchedulePrecedence } from "../utils/schedule.js";
+import {
+  compareSchedulePrecedence,
+  schedulePlaybackEndsAt,
+} from "../utils/schedule.js";
 import {
   enforceRateLimitBudget,
   opaqueRateLimitKey,
 } from "../utils/rate-limit.js";
-import type { ScheduleRecord } from "../domain/types.js";
+import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 
 const MANIFEST_LEASE_MS = 5 * 60_000;
-
-type ZonedParts = {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-};
-
-const zonedParts = (instant: Date, timeZone: string): ZonedParts => {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(instant);
-  const numberPart = (type: Intl.DateTimeFormatPartTypes) =>
-    Number(parts.find((candidate) => candidate.type === type)?.value);
-  return {
-    year: numberPart("year"),
-    month: numberPart("month"),
-    day: numberPart("day"),
-    hour: numberPart("hour"),
-    minute: numberPart("minute"),
-  };
-};
-
-/** Resolve a wall-clock time in an IANA zone without assuming a fixed UTC offset. */
-const zonedInstant = (parts: ZonedParts, timeZone: string): Date => {
-  const desired = Date.UTC(
-    parts.year,
-    parts.month - 1,
-    parts.day,
-    parts.hour,
-    parts.minute,
-  );
-  let candidate = desired;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const actual = zonedParts(new Date(candidate), timeZone);
-    const represented = Date.UTC(
-      actual.year,
-      actual.month - 1,
-      actual.day,
-      actual.hour,
-      actual.minute,
-    );
-    const correction = desired - represented;
-    if (correction === 0) break;
-    candidate += correction;
-  }
-  return new Date(candidate);
-};
-
-const selectedSchedulePlaybackEndsAt = (
-  schedule: ScheduleRecord,
-  generatedAt: Date,
-): string | undefined => {
-  const candidates: number[] = [];
-  if (schedule.endsAt) candidates.push(Date.parse(schedule.endsAt));
-  if (schedule.dailyEndMinutes !== undefined) {
-    const local = zonedParts(generatedAt, schedule.timezone);
-    const dailyBoundary = zonedInstant(
-      {
-        ...local,
-        hour: Math.floor(schedule.dailyEndMinutes / 60),
-        minute: schedule.dailyEndMinutes % 60,
-      },
-      schedule.timezone,
-    ).getTime();
-    if (dailyBoundary > generatedAt.getTime()) candidates.push(dailyBoundary);
-  }
-  return candidates.length
-    ? new Date(Math.min(...candidates)).toISOString()
-    : undefined;
-};
 
 const claim = z
   .object({
@@ -419,6 +344,10 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                   asset: NonNullable<typeof x.asset>;
                 } =>
                   Boolean(x.asset) &&
+                  mediaUrlMatchesAllowedOrigin(
+                    x.asset!.url,
+                    app.config.mediaAllowedOrigins,
+                  ) &&
                   (!x.asset?.expiresAt || x.asset.expiresAt > generatedAt),
               )
               .map(({ item, asset }) => ({
@@ -444,10 +373,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
             priority = selected.priority;
             withdrawn = false;
             releaseIdentity = `schedule:${selected.id}:${selected.updatedAt}`;
-            playbackEndsAt = selectedSchedulePlaybackEndsAt(
-              selected,
-              generatedDate,
-            );
+            playbackEndsAt = schedulePlaybackEndsAt(selected, generatedDate);
           }
         }
       }

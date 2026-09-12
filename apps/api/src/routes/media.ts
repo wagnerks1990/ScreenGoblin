@@ -2,6 +2,11 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { ApiError, requireRole, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
+import {
+  hasMediaUrlCredentials,
+  mediaUrlMatchesAllowedOrigin,
+  usesAllowedMediaScheme,
+} from "../utils/media-url.js";
 const body = z
   .object({
     name: z.string().trim().min(1).max(180),
@@ -24,18 +29,20 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
     const input = body.parse(request.body);
     const mediaUrl = new URL(input.url);
-    const isLocalDevelopmentUrl =
-      mediaUrl.protocol === "http:" &&
-      ["localhost", "127.0.0.1", "::1"].includes(mediaUrl.hostname);
-    if (mediaUrl.protocol !== "https:" && !isLocalDevelopmentUrl)
+    if (hasMediaUrlCredentials(mediaUrl))
+      throw new ApiError(
+        422,
+        "MEDIA_URL_CREDENTIALS_NOT_ALLOWED",
+        "Media URLs must not contain credentials",
+      );
+    if (!usesAllowedMediaScheme(mediaUrl))
       throw new ApiError(
         422,
         "MEDIA_URL_NOT_ALLOWED",
         "Media must use HTTPS or a loopback development URL",
       );
     if (
-      app.config.mediaAllowedOrigins.length > 0 &&
-      !app.config.mediaAllowedOrigins.includes(mediaUrl.origin)
+      !mediaUrlMatchesAllowedOrigin(input.url, app.config.mediaAllowedOrigins)
     )
       throw new ApiError(
         422,

@@ -28,6 +28,15 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Bound Player requests, retries, download concurrency, verification memory, and
   retained CacheStorage generations; reject oversized or streaming-overflow
   assets before activation.
+- Enforce organization identity through composite PostgreSQL foreign keys for
+  playlist assets, schedule playlists/targets, and paired screens, with
+  migration preflights that refuse existing cross-tenant relationships.
+- Enforce case-insensitive email uniqueness without rewriting conflicting
+  accounts, and fail authentication closed if a pre-migration database is
+  ambiguous.
+- Require an explicit canonical HTTPS media-origin allowlist in production,
+  revalidate legacy media before manifest publication, and reject binary asset
+  redirects in the Player.
 
 ### Fixed
 
@@ -43,6 +52,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Serialize Player synchronization and make IndexedDB rollback version-conditional
   so stale polls, expiry callbacks, and playback failures cannot overwrite a
   newer release or withdrawal.
+- Resolve schedule boundaries deterministically across daylight-saving gaps and
+  repeated hours: nonexistent boundaries advance to the first valid instant,
+  repeated starts use the later occurrence, and repeated ends use the earlier
+  occurrence so ended content cannot reactivate.
 - Stop authenticated Console failures from silently displaying demo fleet data.
 - Load the Fleet page from the live API and visibly disable unimplemented device commands.
 - Clear passwords from Console state after close and every login attempt.

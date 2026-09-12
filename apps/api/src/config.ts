@@ -1,4 +1,73 @@
 import { z } from "zod";
+import { isIP } from "node:net";
+
+const loopbackHostname = (hostname: string) =>
+  hostname === "localhost" ||
+  hostname.endsWith(".localhost") ||
+  hostname === "127.0.0.1" ||
+  hostname === "[::1]";
+
+const obviouslyPrivateDnsName = (hostname: string) => {
+  const normalized = hostname.toLowerCase();
+  return (
+    !normalized.includes(".") ||
+    [".local", ".internal", ".lan", ".home.arpa"].some(
+      (suffix) => normalized === suffix.slice(1) || normalized.endsWith(suffix),
+    )
+  );
+};
+
+export function parseMediaAllowedOrigins(
+  raw: string,
+  environment: "development" | "test" | "production",
+): string[] {
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (environment === "production" && entries.length === 0)
+    throw new Error("must contain at least one explicit HTTPS origin");
+
+  const origins = entries.map((entry) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(entry);
+    } catch {
+      throw new Error(`${JSON.stringify(entry)} is not a valid origin`);
+    }
+    if (
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    )
+      throw new Error(
+        `${JSON.stringify(entry)} must be an origin without credentials, path, query, or fragment`,
+      );
+    const localHttp =
+      environment !== "production" &&
+      parsed.protocol === "http:" &&
+      loopbackHostname(parsed.hostname);
+    if (parsed.protocol !== "https:" && !localHttp)
+      throw new Error(
+        `${JSON.stringify(entry)} must use HTTPS (HTTP is limited to loopback development)`,
+      );
+    const ipHostname = parsed.hostname.replace(/^\[|\]$/g, "");
+    if (
+      environment === "production" &&
+      (loopbackHostname(parsed.hostname) ||
+        obviouslyPrivateDnsName(parsed.hostname) ||
+        parsed.hostname.endsWith(".") ||
+        isIP(ipHostname) !== 0)
+    )
+      throw new Error(
+        `${JSON.stringify(entry)} must use a non-local DNS hostname in production`,
+      );
+    return parsed.origin;
+  });
+  return [...new Set(origins)];
+}
 
 const schema = z
   .object({
@@ -25,6 +94,15 @@ const schema = z
       .transform((v) => v === "true"),
   })
   .superRefine((value, context) => {
+    try {
+      parseMediaAllowedOrigins(value.MEDIA_ALLOWED_ORIGINS, value.NODE_ENV);
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        path: ["MEDIA_ALLOWED_ORIGINS"],
+        message: error instanceof Error ? error.message : "is invalid",
+      });
+    }
     if (value.NODE_ENV !== "production") return;
     if (!/^rediss?:\/\//.test(value.REDIS_URL))
       context.addIssue({

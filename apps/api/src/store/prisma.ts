@@ -166,8 +166,18 @@ export class PrismaStore implements DataStore {
     await this.prisma.$disconnect();
   }
   async findUserByEmail(email: string) {
-    const x = await this.prisma.user.findFirst({
-      where: { email: { equals: email, mode: "insensitive" } },
+    // Use equality on the same LOWER(email) expression enforced and indexed by
+    // the custom migration. LIMIT 2 keeps pre-migration ambiguity fail-closed.
+    const matches = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "User"
+      WHERE LOWER("email") = ${email.toLowerCase()}
+      ORDER BY "id" ASC
+      LIMIT 2
+    `;
+    if (matches.length !== 1) return null;
+    const x = await this.prisma.user.findUnique({
+      where: { id: matches[0]!.id },
       include: {
         // Login does not yet accept an organization selector. Make the
         // compatibility default stable rather than relying on database order.
@@ -395,7 +405,7 @@ export class PrismaStore implements DataStore {
       });
       await tx.pairingCode.update({
         where: { id: p.id },
-        data: { screenId: x.id },
+        data: { screenId: x.id, screenOrganizationId: p.organizationId },
       });
       return screenDto(x);
     });
@@ -438,7 +448,10 @@ export class PrismaStore implements DataStore {
       });
       await tx.pairingCode.update({
         where: { id: p.id },
-        data: { screenId: screen.id },
+        data: {
+          screenId: screen.id,
+          screenOrganizationId: p.organizationId,
+        },
       });
       await tx.auditEvent.create({
         data: {
@@ -557,6 +570,7 @@ export class PrismaStore implements DataStore {
           description: data.description,
           items: {
             create: data.items.map((i) => ({
+              organizationId: org,
               assetId: i.assetId,
               position: i.position,
               durationSeconds: i.durationSeconds,
@@ -610,7 +624,12 @@ export class PrismaStore implements DataStore {
           dailyStartMinutes: data.dailyStartMinutes ?? null,
           dailyEndMinutes: data.dailyEndMinutes ?? null,
           enabled: data.enabled,
-          targets: { create: data.screenIds.map((screenId) => ({ screenId })) },
+          targets: {
+            create: data.screenIds.map((screenId) => ({
+              organizationId: org,
+              screenId,
+            })),
+          },
         },
         include: { targets: true },
       }),

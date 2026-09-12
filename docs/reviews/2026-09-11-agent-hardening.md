@@ -47,6 +47,16 @@ Independent passes covered backend/application security, Console UX/accessibilit
 - CI now exercises PrismaStore against migrated PostgreSQL for tenant-scoped
   access, pairing races and rollback, uniqueness, BIGINT safety, and
   deterministic multi-organization identity behavior.
+- Composite database constraints now bind playlist assets, schedules, targets,
+  and paired screens to one organization; migration preflights refuse dirty
+  cross-tenant rows. Case-insensitive email identity is unique and ambiguous
+  legacy authentication fails closed.
+- Production media origins are explicit and fail closed, legacy records are
+  filtered during manifest generation, and binary redirects are rejected.
+  Direct DNS rebinding/egress and sandboxed web navigation remain deployment
+  gates.
+- Schedule activation and signed playback boundaries now cover DST gaps,
+  repeated hours, fractional offsets, and next-day midnight deterministically.
 
 ## Remaining blocking work
 
@@ -57,7 +67,7 @@ Independent passes covered backend/application security, Console UX/accessibilit
 5. Server-owned upload, type detection, malware scanning/transcoding, private media delivery, signed URL expiry, and tenant/object-storage isolation.
 6. Emergency step-up MFA, independent approval, idempotent signed activation/clear, per-device received/verified/rendered/restored acknowledgements, partial-delivery escalation, and tabletop/physical-device evidence.
 7. Durable native stream-to-disk content cache with decode probes, quota/free-space telemetry, crash/power-loss tests, bundled neutral fallback, proof of play, screenshots, watchdog, commands, and update rings. The web cache now bounds verification memory and retains active/rollback generations but is not physical-device evidence.
-8. Database-enforced composite tenant foreign keys and broader PostgreSQL integrity/concurrency coverage, browser E2E/accessibility/visual tests, Android emulator tests, supported physical-device matrix, load/soak/offline-window evidence, and measurable release thresholds.
+8. Broader PostgreSQL integrity/concurrency and migration-upgrade coverage, browser E2E/accessibility/visual tests, Android emulator tests, supported physical-device matrix, load/soak/offline-window evidence, and measurable release thresholds.
 9. Registry promotion, immutable image/APK artifacts, digest pinning, provenance/signing, protected release environments, migration compatibility, off-host encrypted restoration, and measured RPO/RTO. CI image scans, SBOM generation, and disposable rollback drills are implemented but are not production evidence.
 10. Approval of the draft data-flow, retention, no-student-PII, incident, SLO, supported-device, and go/no-go records, plus privacy/content policy, subprocessor review, counsel review, and named operational ownership.
 

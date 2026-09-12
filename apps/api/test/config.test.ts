@@ -9,6 +9,7 @@ const base = {
   PAIRING_CODE_PEPPER: "pairing-pepper-that-is-at-least-thirty-two-characters",
   MANIFEST_SIGNING_PRIVATE_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   PUBLIC_API_URL: "https://signage.example.test",
+  MEDIA_ALLOWED_ORIGINS: "https://media.example.test",
 };
 
 describe("production configuration", () => {
@@ -31,6 +32,37 @@ describe("production configuration", () => {
     expect(loadConfig(base).PUBLIC_API_URL).toBe(
       "https://signage.example.test",
     );
+  });
+
+  it("requires an explicit production media origin allowlist", () => {
+    expect(() => loadConfig({ ...base, MEDIA_ALLOWED_ORIGINS: "" })).toThrow(
+      /MEDIA_ALLOWED_ORIGINS/,
+    );
+    expect(() =>
+      loadConfig({
+        ...base,
+        MEDIA_ALLOWED_ORIGINS: "http://media.example.test",
+      }),
+    ).toThrow(/MEDIA_ALLOWED_ORIGINS/);
+  });
+
+  it.each([
+    "https://127.0.0.1",
+    "https://[::1]",
+    "https://localhost",
+    "https://localhost.",
+    "https://intranet",
+    "https://storage.local",
+    "https://storage.internal",
+    "https://storage.lan",
+    "https://storage.home.arpa",
+    "https://user:password@media.example.test",
+    "https://media.example.test/assets",
+    "https://media.example.test?bucket=school",
+  ])("rejects unsafe production media origin %s", (origin) => {
+    expect(() =>
+      loadConfig({ ...base, MEDIA_ALLOWED_ORIGINS: origin }),
+    ).toThrow(/MEDIA_ALLOWED_ORIGINS/);
   });
 
   it("requires a Redis request-protection backend in production", () => {

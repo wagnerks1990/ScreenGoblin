@@ -35,6 +35,7 @@ beforeEach(async () => {
     jwtSecret: secret,
     manifestSigningPrivateKey: signingKey,
     pairingCodePepper: secret,
+    mediaAllowedOrigins: ["https://media.example.test"],
   });
   token = app.jwt.sign({
     sub: store.users[0]!.id,
@@ -656,6 +657,64 @@ describe("device lifecycle", () => {
     expect(manifest.playbackEndsAt).toBe("2026-09-14T14:00:00.000Z");
     expect(manifest.validUntil).toBe("2026-09-14T14:03:00.000Z");
   });
+
+  it("signs the first valid post-gap instant for a nonexistent daily end", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-08T06:30:00.000Z"));
+    const device = await pairDevice("spring-forward-device");
+    await scheduledPlaylist(device.screenId, {
+      startsAt: "2026-03-08T00:00:00.000Z",
+      endsAt: "2026-03-09T00:00:00.000Z",
+      daysOfWeek: [0],
+      dailyStartMinutes: 60,
+      dailyEndMinutes: 2 * 60 + 30,
+    });
+
+    const manifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(manifest).toMatchObject({
+      withdrawn: false,
+      playbackEndsAt: "2026-03-08T07:00:00.000Z",
+      signatureAlgorithm: "Ed25519",
+    });
+  });
+
+  it("does not reactivate a schedule in the repeated fall-back hour", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T05:15:00.000Z"));
+    const device = await pairDevice("fall-back-device");
+    await scheduledPlaylist(device.screenId, {
+      startsAt: "2026-11-01T00:00:00.000Z",
+      endsAt: "2026-11-02T00:00:00.000Z",
+      daysOfWeek: [0],
+      dailyStartMinutes: 30,
+      dailyEndMinutes: 90,
+    });
+
+    const firstOccurrence = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(firstOccurrence).toMatchObject({
+      withdrawn: false,
+      playbackEndsAt: "2026-11-01T05:30:00.000Z",
+    });
+
+    vi.setSystemTime(new Date("2026-11-01T06:15:00.000Z"));
+    const repeatedHour = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(repeatedHour).toMatchObject({ withdrawn: true, items: [] });
+  });
   it("rejects bad device credentials", async () => {
     const r = await app.inject({
       url: "/api/v1/device/manifest",
@@ -685,6 +744,125 @@ describe("media trust boundary", () => {
     });
     expect(response.statusCode).toBe(422);
     expect(response.json().error.code).toBe("MEDIA_URL_NOT_ALLOWED");
+  });
+
+  it("rejects HTTPS media when no origin has been explicitly allowed", async () => {
+    app.config.mediaAllowedOrigins.length = 0;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Unlisted image",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/image.png",
+        checksumSha256: "0".repeat(64),
+        sizeBytes: 1,
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.code).toBe("MEDIA_ORIGIN_NOT_ALLOWED");
+  });
+
+  it("accepts only an exact allowed origin", async () => {
+    const allowed = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Approved image",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/assets/image.png?version=1",
+        checksumSha256: "1".repeat(64),
+        sizeBytes: 1,
+      },
+    });
+    expect(allowed.statusCode).toBe(201);
+
+    const sibling = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Sibling image",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://sub.media.example.test/image.png",
+        checksumSha256: "2".repeat(64),
+        sizeBytes: 1,
+      },
+    });
+    expect(sibling.statusCode).toBe(422);
+    expect(sibling.json().error.code).toBe("MEDIA_ORIGIN_NOT_ALLOWED");
+  });
+
+  it("rejects embedded credentials even on an allowed origin", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Credentialed image",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://user:password@media.example.test/image.png",
+        checksumSha256: "3".repeat(64),
+        sizeBytes: 1,
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.code).toBe(
+      "MEDIA_URL_CREDENTIALS_NOT_ALLOWED",
+    );
+  });
+
+  it("withdraws a schedule containing only legacy off-allowlist media", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("legacy-origin-device");
+    const asset = await store.createMedia("org-a", {
+      name: "Legacy external image",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://legacy.example.test/image.png",
+      checksumSha256: "4".repeat(64),
+      sizeBytes: 1,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Legacy external playlist",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    await store.createSchedule("org-a", {
+      playlistId: playlist.id,
+      name: "Legacy external schedule",
+      priority: "normal",
+      startsAt: "2026-09-14T00:00:00.000Z",
+      endsAt: "2026-09-15T00:00:00.000Z",
+      timezone: "America/New_York",
+      daysOfWeek: [1],
+      dailyStartMinutes: 9 * 60,
+      dailyEndMinutes: 17 * 60,
+      enabled: true,
+      screenIds: [device.screenId],
+    });
+
+    const manifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(manifest).toMatchObject({
+      priority: "normal",
+      withdrawn: true,
+      items: [],
+      signatureAlgorithm: "Ed25519",
+    });
   });
 });
 

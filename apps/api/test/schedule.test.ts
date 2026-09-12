@@ -3,6 +3,8 @@ import type { ScheduleRecord } from "../src/domain/types.js";
 import {
   compareSchedulePrecedence,
   matchesScheduleWindow,
+  resolveZonedWallMinute,
+  schedulePlaybackEndsAt,
   validTimeZone,
 } from "../src/utils/schedule.js";
 
@@ -37,6 +39,107 @@ describe("schedule time zone window", () => {
     expect(
       matchesScheduleWindow(schedule, new Date("2026-01-12T14:30:00.000Z")),
     ).toBe(true);
+  });
+
+  it("advances nonexistent spring-forward boundaries to the gap end", () => {
+    const spring = {
+      ...schedule,
+      daysOfWeek: [0],
+      dailyStartMinutes: 2 * 60 + 30,
+      dailyEndMinutes: 4 * 60,
+    };
+    expect(
+      resolveZonedWallMinute(
+        { year: 2026, month: 3, day: 8 },
+        2 * 60 + 30,
+        "America/New_York",
+        "start",
+      ).toISOString(),
+    ).toBe("2026-03-08T07:00:00.000Z");
+    expect(
+      matchesScheduleWindow(spring, new Date("2026-03-08T06:59:00.000Z")),
+    ).toBe(false);
+    expect(
+      matchesScheduleWindow(spring, new Date("2026-03-08T07:00:00.000Z")),
+    ).toBe(true);
+
+    const endingInGap = {
+      ...spring,
+      dailyStartMinutes: 60,
+      dailyEndMinutes: 2 * 60 + 30,
+    };
+    const beforeGap = new Date("2026-03-08T06:30:00.000Z");
+    expect(schedulePlaybackEndsAt(endingInGap, beforeGap)).toBe(
+      "2026-03-08T07:00:00.000Z",
+    );
+    expect(matchesScheduleWindow(endingInGap, beforeGap)).toBe(true);
+    expect(
+      matchesScheduleWindow(endingInGap, new Date("2026-03-08T07:00:00.000Z")),
+    ).toBe(false);
+  });
+
+  it("uses the later repeated start and earlier repeated end at fall-back", () => {
+    const repeatedStart = {
+      ...schedule,
+      daysOfWeek: [0],
+      dailyStartMinutes: 90,
+      dailyEndMinutes: 3 * 60,
+    };
+    expect(
+      resolveZonedWallMinute(
+        { year: 2026, month: 11, day: 1 },
+        90,
+        "America/New_York",
+        "start",
+      ).toISOString(),
+    ).toBe("2026-11-01T06:30:00.000Z");
+    expect(
+      matchesScheduleWindow(
+        repeatedStart,
+        new Date("2026-11-01T05:45:00.000Z"),
+      ),
+    ).toBe(false);
+    expect(
+      matchesScheduleWindow(
+        repeatedStart,
+        new Date("2026-11-01T06:30:00.000Z"),
+      ),
+    ).toBe(true);
+
+    const repeatedEnd = {
+      ...repeatedStart,
+      dailyStartMinutes: 30,
+      dailyEndMinutes: 90,
+    };
+    const beforeFirstEnd = new Date("2026-11-01T05:15:00.000Z");
+    expect(schedulePlaybackEndsAt(repeatedEnd, beforeFirstEnd)).toBe(
+      "2026-11-01T05:30:00.000Z",
+    );
+    expect(matchesScheduleWindow(repeatedEnd, beforeFirstEnd)).toBe(true);
+    expect(
+      matchesScheduleWindow(repeatedEnd, new Date("2026-11-01T06:15:00.000Z")),
+    ).toBe(false);
+  });
+
+  it("resolves ordinary fractional-offset zones and next-day midnight", () => {
+    const kolkata = {
+      ...schedule,
+      timezone: "Asia/Kolkata",
+      daysOfWeek: [],
+      dailyStartMinutes: 9 * 60,
+      dailyEndMinutes: 10 * 60,
+    };
+    expect(
+      schedulePlaybackEndsAt(kolkata, new Date("2026-09-14T04:00:00.000Z")),
+    ).toBe("2026-09-14T04:30:00.000Z");
+    expect(
+      resolveZonedWallMinute(
+        { year: 2026, month: 9, day: 14 },
+        1440,
+        "Asia/Kolkata",
+        "end",
+      ).toISOString(),
+    ).toBe("2026-09-14T18:30:00.000Z");
   });
 
   it("rejects unknown time zones", () => {

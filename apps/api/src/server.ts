@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { buildApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, parseMediaAllowedOrigins } from "./config.js";
 import { Redis } from "ioredis";
 const config = loadConfig();
 const redis = config.REDIS_URL
@@ -31,9 +31,10 @@ const app = await buildApp({
   corsOrigins: config.CORS_ORIGINS.split(",")
     .map((x) => x.trim())
     .filter(Boolean),
-  mediaAllowedOrigins: config.MEDIA_ALLOWED_ORIGINS.split(",")
-    .map((x) => x.trim())
-    .filter(Boolean),
+  mediaAllowedOrigins: parseMediaAllowedOrigins(
+    config.MEDIA_ALLOWED_ORIGINS,
+    config.NODE_ENV,
+  ),
   publicApiUrl: config.PUBLIC_API_URL,
   logger: config.LOG_LEVEL,
   trustProxy:

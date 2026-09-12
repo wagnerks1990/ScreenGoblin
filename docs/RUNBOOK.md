@@ -17,6 +17,8 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 7. On a new installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Confirm the owner can sign in, then remove all `SEED_*` values from the host environment.
 8. Verify readiness, login, publish, atomic pairing/audit, Ed25519 manifest verification, media checksum, heartbeat, signed withdrawal, schedule-boundary blanking, and last-known-good playback.
 
+Tenant-integrity and normalized-email migrations deliberately abort if they find cross-organization relationships or case-colliding accounts. Before applying them, stop writers, take a verified backup, run the documented preflight queries in a restored staging copy, and investigate every conflict; do not bypass the checks or relabel records automatically.
+
 Do not run the bootstrap profile as part of normal startup. It refuses to reset an existing owner password or grant owner to an existing unrelated user. Remove bootstrap credentials after the first successful login.
 
 ## Observe
