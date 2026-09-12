@@ -2914,36 +2914,99 @@ export class PrismaStore implements DataStore {
     });
     return x ? emergencyDto(x) : null;
   }
-  async createEmergency(
+  async activateEmergencyAndAudit(
     org: string,
-    userId: string,
     data: Pick<
       EmergencyRecord,
       "title" | "message" | "backgroundColor" | "targetScreenIds" | "expiresAt"
     >,
+    audit: UserMutationAuditContext,
   ) {
-    return emergencyDto(
-      await this.prisma.emergencyOverride.create({
+    return this.prisma.$transaction(async (tx) => {
+      const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+      if (!hasCapability(role, CAPABILITIES.emergencyActivate))
+        return { activated: false as const, reason: "FORBIDDEN" as const };
+      const targetScreenIds = [...new Set(data.targetScreenIds)].sort();
+      if (targetScreenIds.length === 0)
+        return { activated: false as const, reason: "INVALID_SCREEN" as const };
+      const targets = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT screen."id"
+        FROM "Screen" screen
+        WHERE screen."organizationId" = ${org}
+          AND screen."id" IN (${Prisma.join(targetScreenIds)})
+        ORDER BY screen."id" ASC
+        FOR KEY SHARE OF screen`;
+      if (targets.length !== targetScreenIds.length)
+        return { activated: false as const, reason: "INVALID_SCREEN" as const };
+      const emergency = await tx.emergencyOverride.create({
         data: {
           organizationId: org,
-          createdById: userId,
+          createdById: audit.actorUserId,
           ...data,
+          targetScreenIds,
           expiresAt: new Date(data.expiresAt),
         },
-      }),
-    );
-  }
-  async clearEmergency(org: string, id: string) {
-    const x = await this.prisma.emergencyOverride.findFirst({
-      where: { id, organizationId: org },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "emergency.activated",
+          entityType: "emergency",
+          entityId: emergency.id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: {
+            targetCount: targetScreenIds.length,
+            expiresAt: data.expiresAt,
+          },
+        },
+      });
+      return {
+        activated: true as const,
+        emergency: emergencyDto(emergency),
+      };
     });
-    if (!x) return null;
-    return emergencyDto(
-      await this.prisma.emergencyOverride.update({
+  }
+  async clearEmergencyAndAudit(
+    org: string,
+    id: string,
+    audit: UserMutationAuditContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+      if (!hasCapability(role, CAPABILITIES.emergencyClear))
+        return { cleared: false as const, reason: "FORBIDDEN" as const };
+      const [locked] = await tx.$queryRaw<
+        Array<{ id: string; databaseNow: Date }>
+      >`
+        SELECT emergency."id", CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "EmergencyOverride" emergency
+        WHERE emergency."id" = ${id}
+          AND emergency."organizationId" = ${org}
+        FOR UPDATE OF emergency`;
+      if (!locked)
+        return { cleared: false as const, reason: "NOT_FOUND" as const };
+      const emergency = await tx.emergencyOverride.update({
         where: { id },
-        data: { clearedAt: new Date() },
-      }),
-    );
+        data: { clearedAt: locked.databaseNow },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "emergency.cleared",
+          entityType: "emergency",
+          entityId: id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: {},
+        },
+      });
+      return { cleared: true as const, emergency: emergencyDto(emergency) };
+    });
   }
   async listAudits(org: string, limit: number) {
     return (

@@ -6,6 +6,14 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Make isolated-fixture emergency activation and clear atomic with their
+  immutable audit events. Revalidate the actor's current capability and lock
+  every organization-scoped target inside the same transaction so demotion,
+  cross-tenant targets, and audit-write failures fail without partial state.
+  Production emergency publishing remains hard-disabled; two-person approval,
+  step-up MFA, delivery acknowledgement, recovery, and tabletop gates remain
+  incomplete.
+
 - Package release evidence with normalized tar metadata and a verified checksum.
   For protected `v*` tag events only, bind that archive digest to GitHub OIDC
   build provenance and verify the attestation before publishing the retained

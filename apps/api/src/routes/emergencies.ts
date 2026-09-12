@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
+import { CAPABILITIES } from "@screengoblin/contracts";
 import { z } from "zod";
-import { ApiError, requireRole, sendNotFound } from "../utils/http.js";
+import { ApiError, requireCapability, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
 const body = z
   .object({
@@ -29,7 +30,7 @@ const params = z.object({ id: opaqueId });
 export const emergencyRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
   app.post("/emergencies", async (request, reply) => {
-    requireRole(request, ["OWNER", "ADMIN"]);
+    requireCapability(request, CAPABILITIES.emergencyActivate);
     if (!app.config.emergencyPublishingEnabled)
       throw new ApiError(
         503,
@@ -37,36 +38,31 @@ export const emergencyRoutes: FastifyPluginAsync = async (app) => {
         "Emergency publishing is disabled on this deployment",
       );
     const input = body.parse(request.body);
-    for (const id of input.targetScreenIds)
-      if (!(await app.store.getScreen(request.user.organizationId, id)))
-        throw new ApiError(
-          422,
-          "INVALID_SCREEN",
-          "A target screen is not in this organization",
-        );
-    const x = await app.store.createEmergency(
+    const result = await app.store.activateEmergencyAndAudit(
       request.user.organizationId,
-      request.user.sub,
       input,
-    );
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "emergency.activated",
-      entityType: "emergency",
-      entityId: x.id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: {
-        targetCount: x.targetScreenIds.length,
-        expiresAt: x.expiresAt,
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
       },
-    });
-    return reply.code(201).send(x);
+    );
+    if (!result.activated && result.reason === "FORBIDDEN")
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to perform this action",
+      );
+    if (!result.activated)
+      throw new ApiError(
+        422,
+        "INVALID_SCREEN",
+        "A target screen is not in this organization",
+      );
+    return reply.code(201).send(result.emergency);
   });
   app.post("/emergencies/:id/clear", async (request, reply) => {
-    requireRole(request, ["OWNER", "ADMIN"]);
+    requireCapability(request, CAPABILITIES.emergencyClear);
     if (!app.config.emergencyPublishingEnabled)
       throw new ApiError(
         503,
@@ -74,19 +70,22 @@ export const emergencyRoutes: FastifyPluginAsync = async (app) => {
         "Emergency publishing is disabled on this deployment",
       );
     const { id } = params.parse(request.params);
-    const x = await app.store.clearEmergency(request.user.organizationId, id);
-    if (!x) return sendNotFound(reply);
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "emergency.cleared",
-      entityType: "emergency",
-      entityId: id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: {},
-    });
-    return x;
+    const result = await app.store.clearEmergencyAndAudit(
+      request.user.organizationId,
+      id,
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
+    );
+    if (!result.cleared && result.reason === "FORBIDDEN")
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to perform this action",
+      );
+    if (!result.cleared) return sendNotFound(reply);
+    return result.emergency;
   });
 };
