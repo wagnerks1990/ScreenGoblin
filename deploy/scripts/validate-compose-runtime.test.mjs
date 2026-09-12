@@ -83,6 +83,7 @@ case "$url" in
   *capability=valid-capabilityx|*capability=expired-capability) status=404 ;;
   *) body='<div id="root"></div>' ;;
 esac
+if [[ "$output" == *private-media-withdrawn.body ]]; then status=404; body=''; fi
 printf 'HTTP/2 %s\\r\\nContent-Security-Policy: default-src '\''self'\''\\r\\nX-Frame-Options: DENY\\r\\nStrict-Transport-Security: max-age=31536000\\r\\nX-Content-Type-Options: nosniff\\r\\n\\r\\n' "$status" > "$headers"
 if [[ -n "$body" ]]; then printf '%s\\n' "$body" > "$output"; else : > "$output"; fi
 printf '%s' "$status"
@@ -138,6 +139,7 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.match(scriptSource, /\/media\/runtime-smoke\.txt" 404/);
     assert.match(scriptSource, /Anonymous MinIO object GET returned/);
     assert.match(scriptSource, /private-media-valid/);
+    assert.match(scriptSource, /private-media-withdrawn/);
     assert.match(scriptSource, /private-media-tampered/);
     assert.match(scriptSource, /private-media-expired/);
     const commands = readFileSync(f.commandLog, "utf8");

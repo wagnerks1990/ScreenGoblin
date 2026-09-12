@@ -53,6 +53,19 @@ Pairing and request proofs use the Android Keystore P-256 identity, short-lived 
 
 The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing pins the deployment public key; players verify the signed envelope and expected screen ID before downloading assets and atomically activating a manifest. Emergency overlays never replace the normal last-known-good rollback baseline.
 
+Ordinary media capabilities expire at the earliest manifest lease, frozen
+schedule boundary, or frozen asset expiry. Each capability binds the immutable
+assignment ID and digest; delivery rechecks the current credential and that the
+assignment is still the latest active assignment for that tenant, screen, and
+asset. Withdrawal therefore denies subsequent online reads immediately. A
+player that already downloaded verified bytes remains governed by the signed
+local playback boundaries and offline-recall limitations.
+
+The withdrawal guarantee applies to reads authorized after the database commit.
+A stream that completed its authorization recheck before the commit may finish;
+stopping such an in-flight object response would require coordinated stream
+revocation across PostgreSQL and object storage.
+
 ## Security and scope
 
 - OWNER/ADMIN control screens; PUBLISHER may manage ordinary content and

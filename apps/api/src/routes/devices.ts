@@ -734,6 +734,10 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         );
         const selected = releases[0];
         if (selected) {
+          const selectedPlaybackEndsAt = schedulePlaybackEndsAt(
+            selected.assignment.schedule,
+            generatedDate,
+          );
           const releaseAssets = selected.release.items.map(
             (item) => item.asset,
           );
@@ -755,7 +759,10 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           const entireReleasePlayable =
             selected.release.items.length > 0 &&
             everyUrlAllowed &&
-            mediaPublicationFailure(releaseAssets, generatedDate) === undefined;
+            mediaPublicationFailure(releaseAssets, generatedDate) ===
+              undefined &&
+            (!selectedPlaybackEndsAt ||
+              Date.parse(selectedPlaybackEndsAt) > generatedDate.getTime());
           items = entireReleasePlayable
             ? selected.release.items.map((item) => ({
                 id: item.id,
@@ -777,12 +784,25 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                         screenId: screen.id,
                         organizationId: screen.organizationId,
                         ...(credentialKeyId ? { credentialKeyId } : {}),
+                        assignmentId: selected.assignment.id,
+                        assignmentDigestSha256:
+                          selected.assignment.digestSha256,
                         assetId: item.asset.id,
                         storageKey,
                         mimeType: item.asset.mimeType,
                         checksumSha256: item.asset.checksumSha256,
                         sizeBytes: item.asset.sizeBytes,
-                        expiresAt: validUntil,
+                        expiresAt: new Date(
+                          Math.min(
+                            Date.parse(validUntil),
+                            ...(selectedPlaybackEndsAt
+                              ? [Date.parse(selectedPlaybackEndsAt)]
+                              : []),
+                            ...(item.asset.expiresAt
+                              ? [Date.parse(item.asset.expiresAt)]
+                              : []),
+                          ),
+                        ).toISOString(),
                       },
                       app.config.mediaDeliverySecret,
                     );
@@ -808,10 +828,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
             priority = selected.assignment.schedule.priority;
             withdrawn = false;
             releaseIdentity = `assignment:${selected.assignment.digestSha256}`;
-            playbackEndsAt = schedulePlaybackEndsAt(
-              selected.assignment.schedule,
-              generatedDate,
-            );
+            playbackEndsAt = selectedPlaybackEndsAt;
           }
         }
       }

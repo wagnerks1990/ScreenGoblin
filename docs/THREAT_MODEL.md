@@ -108,12 +108,20 @@ owner and review date.
 The object bucket is private, and the public proxy never routes directly to
 MinIO. Proof-authenticated manifests carry short-lived bearer GET capabilities
 bound to the active credential key ID, device, tenant, immutable asset,
-server-derived storage key, digest, size, and manifest lease. On each delivery,
-the API rechecks that exact credential key remains active and reads only the
-signed key from its fixed S3 endpoint; it never fetches a stored arbitrary URL.
+immutable assignment ID/digest, server-derived storage key, digest, size, and
+the earliest manifest, schedule, or frozen-asset deadline. On each delivery,
+the API rechecks that exact credential key and the tenant/screen-specific latest
+assignment remain active before reading only the signed key from its fixed S3
+endpoint; withdrawal, replacement, asset expiry, or a schedule boundary denies
+the old capability without disclosing which condition failed. It never fetches
+a stored arbitrary URL.
 Media delivery does not require another per-media proof signature: a captured
-capability is replayable until its bounded lease expires. Capability query
-values are redacted from structured request logs.
+capability is replayable only while its bound credential and assignment remain
+active and until its earliest signed deadline. Withdrawal blocks new reads once
+the database change commits; a request that passed the authorization recheck
+before that commit may finish streaming, and already-downloaded offline bytes
+remain governed by the signed playback and asset-expiry boundaries. Capability
+query values are redacted from structured request logs.
 
 The schema upgrade deliberately aborts when legacy media or frozen release rows
 exist: their public URL metadata cannot prove that bytes are present at the new

@@ -235,6 +235,13 @@ readonly media_body="ScreenGoblin private media runtime smoke"
 readonly media_org_id="compose-media-org"
 readonly media_screen_id="compose-media-screen"
 readonly media_credential_id="compose-media-credential"
+readonly media_user_id="compose-media-user"
+readonly media_membership_id="compose-media-membership"
+readonly media_playlist_id="compose-media-playlist"
+readonly media_playlist_item_id="compose-media-playlist-item"
+readonly media_schedule_id="compose-media-schedule"
+readonly media_release_id="compose-media-release"
+readonly media_assignment_id="compose-media-assignment"
 media_key_id="$(printf 'K%.0s' {1..43})"
 readonly media_key_id
 readonly media_asset_id="compose-media-asset"
@@ -270,6 +277,28 @@ INSERT INTO "DeviceCredential" (
   '$media_org_id', '$media_key_id', decode(repeat('00', 80), 'hex'), 'ES256',
   'software', CURRENT_TIMESTAMP
 );
+INSERT INTO "User" ("id", "email", "name", "passwordHash", "createdAt", "updatedAt")
+VALUES ('$media_user_id', 'compose-media@example.test', 'Compose media operator', 'fixture-not-a-credential', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
+VALUES ('$media_membership_id', '$media_org_id', '$media_user_id', 'OWNER');
+INSERT INTO "MediaAsset" ("id", "organizationId", "storageKey", "name", "kind", "mimeType", "url", "checksumSha256", "sizeBytes", "durationSeconds", "createdAt", "updatedAt")
+VALUES ('$media_asset_id', '$media_org_id', '$media_storage_key', 'Compose media', 'IMAGE', 'image/png', 'https://signage.example.test/media/compose.png', '$media_checksum', '$media_size'::bigint, 15, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "Playlist" ("id", "organizationId", "name", "description", "createdAt", "updatedAt")
+VALUES ('$media_playlist_id', '$media_org_id', 'Compose playlist', 'Capability authorization fixture', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "PlaylistItem" ("id", "organizationId", "playlistId", "assetId", "position", "durationSeconds")
+VALUES ('$media_playlist_item_id', '$media_org_id', '$media_playlist_id', '$media_asset_id', 0, 15);
+INSERT INTO "Schedule" ("id", "organizationId", "playlistId", "name", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt", "updatedAt")
+VALUES ('$media_schedule_id', '$media_org_id', '$media_playlist_id', 'Compose schedule', 'NORMAL', CURRENT_TIMESTAMP - INTERVAL '1 hour', CURRENT_TIMESTAMP + INTERVAL '1 hour', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "ScheduleTarget" ("organizationId", "scheduleId", "screenId")
+VALUES ('$media_org_id', '$media_schedule_id', '$media_screen_id');
+INSERT INTO "PublishedRelease" ("id", "organizationId", "sourcePlaylistId", "sourcePlaylistName", "sourcePlaylistDescription", "sourcePlaylistUpdatedAt", "digestSha256", "createdById", "createdAt")
+VALUES ('$media_release_id', '$media_org_id', '$media_playlist_id', 'Compose playlist', 'Capability authorization fixture', CURRENT_TIMESTAMP, repeat('a', 64), '$media_user_id', CURRENT_TIMESTAMP);
+INSERT INTO "FrozenReleaseItem" ("id", "organizationId", "releaseId", "sourcePlaylistItemId", "sourceAssetId", "assetName", "assetKind", "assetMimeType", "assetUrl", "assetStorageKey", "assetChecksumSha256", "assetSizeBytes", "assetCreatedAt", "position", "durationSeconds", "createdAt")
+VALUES ('compose-media-frozen-item', '$media_org_id', '$media_release_id', '$media_playlist_item_id', '$media_asset_id', 'Compose media', 'IMAGE', 'image/png', 'https://signage.example.test/media/compose.png', '$media_storage_key', '$media_checksum', '$media_size'::bigint, CURRENT_TIMESTAMP, 0, 15, CURRENT_TIMESTAMP);
+INSERT INTO "ReleaseAssignment" ("id", "organizationId", "releaseId", "scheduleId", "state", "digestSha256", "createdById", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt")
+VALUES ('$media_assignment_id', '$media_org_id', '$media_release_id', '$media_schedule_id', 'ASSIGNED', repeat('b', 64), '$media_user_id', 'Compose schedule', 'NORMAL', CURRENT_TIMESTAMP - INTERVAL '1 hour', CURRENT_TIMESTAMP + INTERVAL '1 hour', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP);
+INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screenId", "liveScreenId", "liveScreenOrganizationId")
+VALUES ('$media_org_id', '$media_assignment_id', '$media_screen_id', '$media_screen_id', '$media_org_id');
 SQL
 
 anonymous_status="$("${compose[@]}" exec -T minio curl --silent \
@@ -282,7 +311,7 @@ anonymous_status="$("${compose[@]}" exec -T minio curl --silent \
 
 mapfile -t media_capabilities < <(
   "${compose[@]}" exec -T api node --input-type=module -e '
-    const [screenId, organizationId, keyId, assetId, storageKey, checksum, size] =
+    const [screenId, organizationId, keyId, assignmentId, assetId, storageKey, checksum, size] =
       process.argv.slice(1);
     const { issueMediaCapability } =
       await import("./apps/api/dist/media/delivery.js");
@@ -290,6 +319,8 @@ mapfile -t media_capabilities < <(
       screenId,
       organizationId,
       credentialKeyId: keyId,
+      assignmentId,
+      assignmentDigestSha256: "b".repeat(64),
       assetId,
       storageKey,
       mimeType: "text/plain",
@@ -304,7 +335,7 @@ mapfile -t media_capabilities < <(
       { ...base, expiresAt: new Date(Date.now() - 60_000).toISOString() },
       process.env.MEDIA_DELIVERY_SECRET,
     ));
-  ' "$media_screen_id" "$media_org_id" "$media_key_id" "$media_asset_id" \
+  ' "$media_screen_id" "$media_org_id" "$media_key_id" "$media_assignment_id" "$media_asset_id" \
     "$media_storage_key" "$media_checksum" "$media_size"
 )
 (( ${#media_capabilities[@]} == 2 )) || {
@@ -326,6 +357,17 @@ assert_status "$SCREEN_GOBLIN_HOST" \
   echo "Private media API returned unexpected bytes" >&2
   exit 1
 }
+"${compose[@]}" exec -T postgres psql \
+  --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+  --set ON_ERROR_STOP=1 <<SQL >/dev/null
+INSERT INTO "ReleaseAssignment" ("id", "organizationId", "releaseId", "scheduleId", "state", "digestSha256", "previousAssignmentId", "createdById", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt")
+VALUES ('compose-media-withdrawal', '$media_org_id', '$media_release_id', '$media_schedule_id', 'WITHDRAWN', repeat('c', 64), '$media_assignment_id', '$media_user_id', 'Compose schedule', 'NORMAL', CURRENT_TIMESTAMP - INTERVAL '1 hour', CURRENT_TIMESTAMP + INTERVAL '1 hour', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP);
+INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screenId", "liveScreenId", "liveScreenOrganizationId")
+VALUES ('$media_org_id', 'compose-media-withdrawal', '$media_screen_id', '$media_screen_id', '$media_org_id');
+SQL
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id?capability=$valid_media_capability" \
+  404 "private-media-withdrawn"
 assert_status "$SCREEN_GOBLIN_HOST" \
   "/api/v1/device/media/$media_asset_id?capability=${valid_media_capability}x" \
   404 "private-media-tampered"
@@ -346,7 +388,7 @@ done
 cat >"$EVIDENCE_DIR/result.txt" <<EOF
 Compose production-mode startup and health: passed
 Caddy API, readiness isolation, Console, Player, headers, and legacy media denial: passed
-Private MinIO anonymous denial and valid/tampered/expired API capability delivery: passed
+Private MinIO denial and valid/withdrawn/tampered/expired API capability delivery: passed
 Published-port and internal-backend-network assertions: passed
 EOF
 

@@ -11,9 +11,17 @@ import { MEDIA_MAX_ASSET_BYTES } from "@screengoblin/contracts";
 import { randomToken, sha256 } from "../src/utils/crypto.js";
 import { LOGIN_FAILURE_MAX_RECORDS } from "../src/domain/types.js";
 import type { SessionUser } from "../src/domain/types.js";
+import { verifyMediaCapability } from "../src/media/delivery.js";
 
 const secret = "test-secret-that-is-longer-than-thirty-two-characters";
 const signingKey = Buffer.alloc(32, 7).toString("base64url");
+const capabilityClaims = (url: string) => {
+  const capability = new URL(url).searchParams.get("capability");
+  if (!capability) throw new Error("Manifest item has no media capability");
+  const claims = verifyMediaCapability(capability, secret);
+  if (!claims) throw new Error("Manifest media capability is invalid");
+  return claims;
+};
 let app: FastifyInstance;
 let store: MemoryStore;
 let token: string;
@@ -1343,6 +1351,9 @@ describe("device lifecycle", () => {
     expect(second.version).toBe(first.version);
     expect(second.generatedAt).not.toBe(first.generatedAt);
     expect(second.validUntil).not.toBe(first.validUntil);
+    expect(capabilityClaims(first.items[0].asset.url).expiresAt).toBe(
+      first.validUntil,
+    );
   });
 
   it("publishes a signed withdrawal when a schedule no longer applies", async () => {
@@ -1362,12 +1373,21 @@ describe("device lifecycle", () => {
         headers: device.headers,
       })
     ).json();
+    const scheduledMedia = new URL(scheduled.items[0].asset.url);
+    const beforeWithdrawal = await app.inject({
+      url: `${scheduledMedia.pathname}${scheduledMedia.search}`,
+    });
+    expect(beforeWithdrawal.statusCode).toBe(503);
     const deletion = await app.inject({
       method: "DELETE",
       url: `/api/v1/schedules/${schedule.id}`,
       headers: { authorization: `Bearer ${token}` },
     });
     expect(deletion.statusCode).toBe(204);
+    const afterWithdrawal = await app.inject({
+      url: `${scheduledMedia.pathname}${scheduledMedia.search}`,
+    });
+    expect(afterWithdrawal.statusCode).toBe(404);
     const withdrawn = (
       await app.inject({
         url: "/api/v1/device/manifest",
@@ -1573,7 +1593,7 @@ describe("device lifecycle", () => {
     vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
     const device = await pairDevice("expiring-release-device");
     await scheduledPlaylist(device.screenId);
-    const expiresAt = "2026-09-14T13:45:00.000Z";
+    const expiresAt = "2026-09-14T13:32:00.000Z";
     store.releases[0]!.items[0]!.asset.expiresAt = expiresAt;
 
     const manifest = (
@@ -1583,6 +1603,11 @@ describe("device lifecycle", () => {
       })
     ).json();
     expect(manifest.items[0].asset.expiresAt).toBe(expiresAt);
+    expect(capabilityClaims(manifest.items[0].asset.url)).toMatchObject({
+      assignmentId: store.releaseAssignments[0]!.id,
+      assignmentDigestSha256: store.releaseAssignments[0]!.digestSha256,
+      expiresAt,
+    });
   });
 
   it("ignores legacy schedules that have no immutable release", async () => {
@@ -1690,6 +1715,9 @@ describe("device lifecycle", () => {
     ).json();
     expect(manifest.playbackEndsAt).toBe("2026-09-14T13:59:00.000Z");
     expect(manifest.validUntil).toBe("2026-09-14T14:03:00.000Z");
+    expect(capabilityClaims(manifest.items[0].asset.url).expiresAt).toBe(
+      manifest.playbackEndsAt,
+    );
   });
 
   it("publishes the next daily playback boundary in its time zone", async () => {
@@ -1709,6 +1737,9 @@ describe("device lifecycle", () => {
     ).json();
     expect(manifest.playbackEndsAt).toBe("2026-09-14T14:00:00.000Z");
     expect(manifest.validUntil).toBe("2026-09-14T14:03:00.000Z");
+    expect(capabilityClaims(manifest.items[0].asset.url).expiresAt).toBe(
+      manifest.playbackEndsAt,
+    );
   });
 
   it("signs the first valid post-gap instant for a nonexistent daily end", async () => {

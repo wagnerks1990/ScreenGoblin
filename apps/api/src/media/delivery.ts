@@ -17,6 +17,8 @@ export interface MediaDeliveryClaims {
   screenId: string;
   organizationId: string;
   credentialKeyId?: string;
+  assignmentId: string;
+  assignmentDigestSha256: string;
   assetId: string;
   storageKey: string;
   mimeType: string;
@@ -91,6 +93,9 @@ export const verifyMediaCapability = (
       typeof claims.organizationId !== "string" ||
       (claims.credentialKeyId !== undefined &&
         typeof claims.credentialKeyId !== "string") ||
+      typeof claims.assignmentId !== "string" ||
+      typeof claims.assignmentDigestSha256 !== "string" ||
+      !SHA256.test(claims.assignmentDigestSha256) ||
       typeof claims.assetId !== "string" ||
       typeof claims.storageKey !== "string" ||
       typeof claims.mimeType !== "string" ||
