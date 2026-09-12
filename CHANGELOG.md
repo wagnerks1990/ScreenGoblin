@@ -6,6 +6,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Bound local `AuditEvent` scalar and structured metadata fields, reject
+  ordinary PostgreSQL row updates and direct deletes while preserving existing
+  user-attribution nulling and tenant deletion cascades, and make in-memory and
+  PostgreSQL latest-event ordering deterministic. These database-owner-bypassable
+  guardrails are not tamper evidence, WORM storage, an export pipeline, or a
+  retention/legal-hold implementation.
+
 - Recompute immutable published-release and latest-assignment digests from their
   complete frozen snapshots before manifest selection or private media
   authorization. Drift now fails closed without re-signing the altered state or

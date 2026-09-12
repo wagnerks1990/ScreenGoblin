@@ -37,6 +37,10 @@ test("recovery drill migrates and restores representative application relations"
     assert.match(script, new RegExp(`"${table}"`));
   }
   assert.match(script, /NOT convalidated/);
+  assert.match(script, /AuditEvent_reject_mutation/);
+  assert.match(script, /audit_event_metadata_shape_valid/);
+  assert.match(script, /Restored AuditEvent mutation guard allowed/);
+  assert.match(script, /restoredAuditGuardCount/);
   assert.match(script, /restored_relation_count/);
 });
 

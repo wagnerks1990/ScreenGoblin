@@ -66,6 +66,7 @@ import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { mediaPublicationFailure } from "../utils/media-policy.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
 import { randomToken } from "../utils/crypto.js";
+import { assertAuditEventIntegrity } from "../audit/integrity.js";
 
 const iso = (v: Date | null | undefined) => v?.toISOString();
 const lowercaseSha256 = /^[0-9a-f]{64}$/;
@@ -2009,7 +2010,7 @@ export class PrismaStore implements DataStore {
     return this.prisma.$transaction(async (tx) => {
       const p = await tx.pairingCode.findFirst({
         where: { codeHash, status: "PENDING", purpose: "NEW_SCREEN" },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       });
       if (!p || p.status !== "PENDING" || p.expiresAt <= new Date())
         return null;
@@ -3894,7 +3895,7 @@ export class PrismaStore implements DataStore {
     return (
       await this.prisma.auditEvent.findMany({
         where: { organizationId: org },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: limit,
       })
     ).map((x) => ({
@@ -3912,6 +3913,7 @@ export class PrismaStore implements DataStore {
     }));
   }
   async audit(event: Omit<AuditRecord, "id" | "createdAt">) {
+    assertAuditEventIntegrity(event);
     await this.prisma.auditEvent.create({
       data: {
         organizationId: event.organizationId,

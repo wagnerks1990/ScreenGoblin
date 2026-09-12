@@ -64,6 +64,7 @@ import { hasCapability } from "../authorization/policy.js";
 import { CAPABILITIES } from "@screengoblin/contracts";
 import { isApprovedPasswordHash, randomToken } from "../utils/crypto.js";
 import { mediaStorageKey } from "../media/delivery.js";
+import { immutableAuditRecord } from "../audit/integrity.js";
 
 const id = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -81,17 +82,20 @@ export class MemoryStore implements DataStore {
   releaseAssignments: ReleaseAssignmentRecord[] = [];
   idempotencyRecords: SchedulePublicationIdempotencyRecord[] = [];
   emergencies: EmergencyRecord[] = [];
-  audits: AuditRecord[] = [];
+  private readonly auditRecords: AuditRecord[] = [];
   pairings: PairingRecord[] = [];
   deviceCredentials: DeviceCredentialRecord[] = [];
   deviceAuthChallenges: DeviceAuthChallengeRecord[] = [];
   pairingAttempts: PairingAttemptRecord[] = [];
   usedDeviceKeyIds = new Set<string>();
+  get audits(): readonly AuditRecord[] {
+    return Object.freeze([...this.auditRecords]);
+  }
   async ping() {}
   protected buildAuditRecord(
     event: Omit<AuditRecord, "id" | "createdAt">,
   ): AuditRecord {
-    return { id: id(), ...event, createdAt: now() };
+    return immutableAuditRecord(event, id(), now());
   }
   async findUserByEmail(email: string) {
     const normalizedEmail = email.toLowerCase();
@@ -193,7 +197,7 @@ export class MemoryStore implements DataStore {
       ),
       session,
     ];
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { created: true, session } as const;
   }
   async findActiveUserSession(
@@ -249,7 +253,7 @@ export class MemoryStore implements DataStore {
       metadata: {},
     });
     session.revokedAt = timestamp;
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { revoked: true } as const;
   }
   private identityAudit(
@@ -310,7 +314,7 @@ export class MemoryStore implements DataStore {
         ? { ...session, revokedAt: timestamp }
         : session,
     );
-    this.audits.push(...auditRecords);
+    this.auditRecords.push(...auditRecords);
     return { updated: true, affectedOrganizationIds: organizationIds } as const;
   }
   async disableUserAndAudit(
@@ -349,7 +353,7 @@ export class MemoryStore implements DataStore {
         ? { ...session, revokedAt: timestamp }
         : session,
     );
-    this.audits.push(...auditRecords);
+    this.auditRecords.push(...auditRecords);
     return { updated: true, affectedOrganizationIds: organizationIds } as const;
   }
   async changeMembershipRoleAndAudit(
@@ -387,7 +391,7 @@ export class MemoryStore implements DataStore {
         ? { ...session, revokedAt: timestamp }
         : session,
     );
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { updated: true } as const;
   }
   async removeMembershipAndAudit(
@@ -418,7 +422,7 @@ export class MemoryStore implements DataStore {
     this.users = this.users.filter(
       (user) => user.id !== userId || user.organizationId !== organizationId,
     );
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { updated: true } as const;
   }
   private publicScreen(screen: ScreenRecord): ScreenRecord {
@@ -487,7 +491,7 @@ export class MemoryStore implements DataStore {
       metadata: { name },
     });
     this.locations.push(location);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { created: true, value: { ...location } } as const;
   }
   async updateLocationAndAudit(
@@ -526,7 +530,7 @@ export class MemoryStore implements DataStore {
     });
     location.name = name;
     location.updatedAt = updatedAt;
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { updated: true, value: { ...location } } as const;
   }
   async deleteLocationAndAudit(
@@ -560,7 +564,7 @@ export class MemoryStore implements DataStore {
       metadata: { name: this.locations[index]!.name },
     });
     this.locations.splice(index, 1);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { deleted: true } as const;
   }
   async listScreens(org: string) {
@@ -629,7 +633,7 @@ export class MemoryStore implements DataStore {
       metadata: { name: screen.name },
     });
     this.screens.push(screen);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { created: true, value: this.publicScreen(screen) } as const;
   }
   async updateScreen(org: string, screenId: string, data: ScreenMutationPatch) {
@@ -684,7 +688,7 @@ export class MemoryStore implements DataStore {
     );
     if (locationId === null) delete screen.locationId;
     else if (locationId !== undefined) screen.locationId = locationId;
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { updated: true, value: this.publicScreen(screen) } as const;
   }
   async deleteScreen(org: string, screenId: string) {
@@ -713,6 +717,17 @@ export class MemoryStore implements DataStore {
       (x) => x.id === screenId && x.organizationId === org,
     );
     if (!screen) return "NOT_FOUND" as const;
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "screen.decommissioned",
+      entityType: "screen",
+      entityId: screenId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {},
+    });
     const timestamp = now();
     for (const credential of this.deviceCredentials) {
       if (
@@ -734,19 +749,7 @@ export class MemoryStore implements DataStore {
       if (grant.targetScreenId === screenId && grant.status === "PENDING")
         grant.status = "REVOKED";
     this.screens = this.screens.filter((x) => x !== screen);
-    this.audits.push(
-      this.buildAuditRecord({
-        organizationId: org,
-        actorUserId: audit.actorUserId,
-        actorType: "user",
-        action: "screen.decommissioned",
-        entityType: "screen",
-        entityId: screenId,
-        ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-        ...(audit.requestId ? { requestId: audit.requestId } : {}),
-        metadata: {},
-      }),
-    );
+    this.auditRecords.push(auditRecord);
     return "DELETED" as const;
   }
   async createPairing(org: string, codeHash: string, expiresAt: string) {
@@ -834,7 +837,7 @@ export class MemoryStore implements DataStore {
     });
     for (const existing of expired) existing.status = "EXPIRED";
     this.pairings.push(pairing);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { created: true, pairing };
   }
   async requestScreenReenrollmentAndAudit(
@@ -938,7 +941,7 @@ export class MemoryStore implements DataStore {
     delete screen.freeStorageBytes;
     delete screen.networkType;
     this.pairings.push(pairing);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { created: true as const, pairing };
   }
   async getReenrollmentStatus(
@@ -1119,7 +1122,7 @@ export class MemoryStore implements DataStore {
     for (const p of this.pairings)
       if (p.targetScreenId === screenId && p.status === "PENDING")
         p.status = "REVOKED";
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { activated: true, screen: this.publicScreen(screen), credential };
   }
   async cancelScreenReenrollmentAndAudit(
@@ -1143,22 +1146,21 @@ export class MemoryStore implements DataStore {
     );
     if (!grant)
       return { cancelled: false as const, reason: "NOT_FOUND" as const };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "device.reenrollment.cancelled",
+      entityType: "screen",
+      entityId: screenId,
+      metadata: { grantId: grant.id },
+    });
     const timestamp = now();
     grant.status = "REVOKED";
     for (const a of this.pairingAttempts)
       if (a.pairingCodeId === grant.id && !a.consumedAt)
         a.cancelledAt = timestamp;
-    this.audits.push(
-      this.buildAuditRecord({
-        organizationId: org,
-        actorUserId: audit.actorUserId,
-        actorType: "user",
-        action: "device.reenrollment.cancelled",
-        entityType: "screen",
-        entityId: screenId,
-        metadata: { grantId: grant.id },
-      }),
-    );
+    this.auditRecords.push(auditRecord);
     return { cancelled: true as const };
   }
   private claimPairingRecord(
@@ -1170,18 +1172,13 @@ export class MemoryStore implements DataStore {
       playerVersion: string;
     },
     tokenHash: string,
+    prepared?: { screenId: string; timestamp: string },
   ): ScreenRecord | null {
-    const p = this.pairings.find(
-      (x) =>
-        x.codeHash === codeHash &&
-        (x.purpose ?? "NEW_SCREEN") === "NEW_SCREEN" &&
-        x.status === "PENDING" &&
-        x.expiresAt > now(),
-    );
+    const p = this.claimablePairing(codeHash);
     if (!p) return null;
-    const t = now();
+    const t = prepared?.timestamp ?? now();
     const x: ScreenRecord = {
-      id: id(),
+      id: prepared?.screenId ?? id(),
       organizationId: p.organizationId,
       name: `New screen ${device.installationId.slice(-6)}`,
       location: "Unassigned",
@@ -1199,6 +1196,15 @@ export class MemoryStore implements DataStore {
     p.status = "CLAIMED";
     p.screenId = x.id;
     return x;
+  }
+  private claimablePairing(codeHash: string) {
+    return this.pairings.find(
+      (x) =>
+        x.codeHash === codeHash &&
+        (x.purpose ?? "NEW_SCREEN") === "NEW_SCREEN" &&
+        x.status === "PENDING" &&
+        x.expiresAt > now(),
+    );
   }
   async claimPairing(
     codeHash: string,
@@ -1223,23 +1229,31 @@ export class MemoryStore implements DataStore {
     tokenHash: string,
     audit: PairingClaimAuditContext,
   ) {
-    const screen = this.claimPairingRecord(codeHash, device, tokenHash);
-    if (!screen) return null;
-    this.audits.push({
-      id: id(),
-      organizationId: screen.organizationId,
+    const pairing = this.claimablePairing(codeHash);
+    if (!pairing) return null;
+    const metadata = {
+      ...audit.metadata,
+      installationId: device.installationId,
+    };
+    const prepared = { screenId: id(), timestamp: now() };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: pairing.organizationId,
       actorType: "device",
       action: "device.paired",
       entityType: "screen",
-      entityId: screen.id,
+      entityId: prepared.screenId,
       ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
       ...(audit.requestId ? { requestId: audit.requestId } : {}),
-      metadata: {
-        ...audit.metadata,
-        installationId: device.installationId,
-      },
-      createdAt: now(),
+      metadata,
     });
+    const screen = this.claimPairingRecord(
+      codeHash,
+      device,
+      tokenHash,
+      prepared,
+    );
+    if (!screen) return null;
+    this.auditRecords.push(auditRecord);
     return screen;
   }
   async issuePairingChallenge(input: {
@@ -1413,6 +1427,21 @@ export class MemoryStore implements DataStore {
       )
         return { paired: false as const, reason: "INVALID" as const };
       const provedAt = now();
+      const auditRecord = this.buildAuditRecord({
+        organizationId: pairing.organizationId,
+        actorType: "device",
+        action: "device.reenrollment.candidate_proved",
+        entityType: "screen",
+        entityId: pairing.targetScreenId,
+        ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+        ...(audit.requestId ? { requestId: audit.requestId } : {}),
+        metadata: {
+          grantId: pairing.id,
+          candidateId: attempt.id,
+          keyId: attempt.keyId,
+          installationId: input.device.installationId,
+        },
+      });
       Object.assign(attempt, {
         provedAt,
         installationId: input.device.installationId,
@@ -1420,23 +1449,7 @@ export class MemoryStore implements DataStore {
         osVersion: input.device.osVersion,
         playerVersion: input.device.playerVersion,
       });
-      this.audits.push(
-        this.buildAuditRecord({
-          organizationId: pairing.organizationId,
-          actorType: "device",
-          action: "device.reenrollment.candidate_proved",
-          entityType: "screen",
-          entityId: pairing.targetScreenId,
-          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-          ...(audit.requestId ? { requestId: audit.requestId } : {}),
-          metadata: {
-            grantId: pairing.id,
-            candidateId: attempt.id,
-            keyId: attempt.keyId,
-            installationId: input.device.installationId,
-          },
-        }),
-      );
+      this.auditRecords.push(auditRecord);
       return {
         paired: false as const,
         reason: "PENDING_APPROVAL" as const,
@@ -1497,7 +1510,7 @@ export class MemoryStore implements DataStore {
     pairing.screenId = screen.id;
     attempt.consumedAt = timestamp;
     attempt.boundCredentialId = credential.id;
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return {
       paired: true as const,
       screen: this.publicScreen(screen),
@@ -1756,7 +1769,7 @@ export class MemoryStore implements DataStore {
       delete screen.uptimeSeconds;
       delete screen.freeStorageBytes;
       delete screen.networkType;
-      this.audits.push(auditRecord);
+      this.auditRecords.push(auditRecord);
       return {
         revoked: true as const,
         ...(credential ? { credential: { ...credential } } : {}),
@@ -1802,7 +1815,7 @@ export class MemoryStore implements DataStore {
             attempt.cancelledAt = revokedAt;
       }
     }
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { revoked: true as const, credential: { ...credential } };
   }
   async heartbeat(screenId: string, data: HeartbeatUpdateInput) {
@@ -1880,7 +1893,7 @@ export class MemoryStore implements DataStore {
       metadata: { name: media.name },
     });
     this.media.push(media);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { created: true, value: media } as const;
   }
   async getMedia(org: string, assetId: string) {
@@ -1956,7 +1969,7 @@ export class MemoryStore implements DataStore {
     this.media = this.media.filter(
       (asset) => !(asset.organizationId === org && asset.id === assetId),
     );
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { deleted: true } as const;
   }
   async listPlaylists(org: string) {
@@ -2018,7 +2031,7 @@ export class MemoryStore implements DataStore {
       metadata: { itemCount: playlist.items.length },
     });
     this.playlists.push(playlist);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { created: true, value: playlist } as const;
   }
   async getPlaylist(org: string, playlistId: string) {
@@ -2096,7 +2109,7 @@ export class MemoryStore implements DataStore {
       (playlist) =>
         !(playlist.organizationId === org && playlist.id === playlistId),
     );
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { deleted: true } as const;
   }
   async listSchedules(org: string) {
@@ -2349,7 +2362,7 @@ export class MemoryStore implements DataStore {
     if (!existingRelease) this.releases.push(release);
     this.schedules.push(schedule);
     this.releaseAssignments.push(assignment);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     const result = { published: true, schedule, release, assignment } as const;
     this.rememberSchedulePublication(
       org,
@@ -2452,7 +2465,7 @@ export class MemoryStore implements DataStore {
       },
     });
     this.releaseAssignments.push(assignment);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { withdrawn: true, assignment };
   }
 
@@ -2608,7 +2621,7 @@ export class MemoryStore implements DataStore {
       },
     });
     this.emergencies.push(emergency);
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { activated: true, emergency } as const;
   }
   async clearEmergencyAndAudit(
@@ -2636,16 +2649,19 @@ export class MemoryStore implements DataStore {
       metadata: {},
     });
     emergency.clearedAt = now();
-    this.audits.push(auditRecord);
+    this.auditRecords.push(auditRecord);
     return { cleared: true, emergency } as const;
   }
   async listAudits(org: string, limit: number) {
-    return this.audits
+    return this.auditRecords
       .filter((x) => x.organizationId === org)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .sort(
+        (a, b) =>
+          b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+      )
       .slice(0, limit);
   }
   async audit(event: Omit<AuditRecord, "id" | "createdAt">) {
-    this.audits.push(this.buildAuditRecord(event));
+    this.auditRecords.push(this.buildAuditRecord(event));
   }
 }

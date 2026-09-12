@@ -182,6 +182,31 @@ invalid_constraint_count="$(
     "SELECT count(*) FROM pg_constraint WHERE connamespace = 'public'::regnamespace AND NOT convalidated"
 )"
 [[ "$invalid_constraint_count" == 0 ]]
+restored_audit_guard_count="$(
+  docker exec "$pg_container" psql -U screengoblin \
+    -d screengoblin_restore_validation -Atc "
+SELECT
+  (EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'public.\"AuditEvent\"'::regclass
+      AND tgname = 'AuditEvent_reject_mutation'
+      AND NOT tgisinternal
+  ))::int
+  + (EXISTS (
+    SELECT 1 FROM pg_proc
+    WHERE pronamespace = 'public'::regnamespace
+      AND proname = 'audit_event_metadata_shape_valid'
+  ))::int;"
+)"
+[[ "$restored_audit_guard_count" == 2 ]]
+
+if docker exec "$pg_container" psql -v ON_ERROR_STOP=1 -U screengoblin \
+  -d screengoblin_restore_validation -c \
+  "UPDATE \"AuditEvent\" SET action = 'recovery.changed' WHERE id = 'recovery-audit'" \
+  >/dev/null 2>&1; then
+  echo "Restored AuditEvent mutation guard allowed an ordinary update" >&2
+  exit 1
+fi
 restored_relation_count="$(
   docker exec "$pg_container" psql -U screengoblin \
     -d screengoblin_restore_validation -Atc "
@@ -276,6 +301,7 @@ cat > "$EVIDENCE_DIR/result.txt" <<EOF
 Disposable CI Prisma migration chain: passed ($applied_migration_count migrations)
 Disposable CI PostgreSQL application-graph dump/restore: passed
 Restored PostgreSQL constraints and representative references: passed
+Restored local AuditEvent bounds and ordinary-mutation trigger: passed
 Referenced MinIO object metadata and restored bytes: passed
 Retained Docker image rollback: passed
 Source commit: $SOURCE_COMMIT
@@ -296,6 +322,7 @@ cat > "$EVIDENCE_DIR/measurements.json" <<EOF
   "appliedMigrationCount": $applied_migration_count,
   "restoredMigrationCount": $restored_migration_count,
   "invalidConstraintCount": $invalid_constraint_count,
+  "restoredAuditGuardCount": $restored_audit_guard_count,
   "restoredRepresentativeGraphCount": $restored_relation_count,
   "postgresDumpBytes": $postgres_dump_bytes,
   "postgresDumpSha256": "$postgres_dump_sha256",

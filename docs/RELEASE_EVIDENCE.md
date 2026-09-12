@@ -92,7 +92,11 @@ release/assignment, and audit relation graph. The registered live and frozen med
 the exact size and SHA-256 of an object that is independently mirrored, deleted,
 restored, and byte-compared in disposable MinIO. After restore, the drill checks
 the applied migration count, validated constraints, composite references, audit
-link, and both copies of the referenced object metadata.
+link, restored local audit-shape function and mutation trigger, rejection of an
+ordinary audit update, and both copies of the referenced object metadata. The
+audit check is recovery evidence for a database-owner-bypassable local
+guardrail, not evidence of WORM storage, tamper detection, export delivery,
+retention, or legal holds.
 
 The retained artifact includes fixture image digests, checksums, source commit,
 schema/reference results, dump and object hashes/sizes, and elapsed migration,
