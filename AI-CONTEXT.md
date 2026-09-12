@@ -53,6 +53,9 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - A selected frozen release is emitted only as a complete playlist. If any item
   fails manifest-time policy, sign a withdrawal with no items; never omit the
   failing item and revive the remaining sequence as an unapproved subset.
+- Signed playback deadlines must be rechecked on a short wall-clock cadence and
+  WebView resume, with an independent original-lifetime countdown; emergency
+  expiry blanks synchronously before rollback work. This is not trusted time.
 - Screen creation/update and media/playlist creation/deletion revalidate the
   actor's active organization role and commit the resource mutation with its
   audit event in one transaction. Authorization, reference conflicts, and audit

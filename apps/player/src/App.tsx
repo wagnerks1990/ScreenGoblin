@@ -15,6 +15,7 @@ import {
   networkType,
 } from "./core/device";
 import { ManifestManager, manifestPlaybackEndsAt } from "./core/manifest";
+import { watchSignedDeadline } from "./core/signed-deadline";
 import { SingleFlight } from "./core/single-flight";
 import { IndexedDbPlayerStore } from "./core/storage";
 import type {
@@ -28,7 +29,6 @@ const store = new IndexedDbPlayerStore();
 const assetRepository = createAssetRepository();
 const manager = new ManifestManager(store, assetRepository);
 const startedAt = Date.now();
-const MAX_BOUNDARY_TIMER_MS = 24 * 60 * 60_000;
 
 export default function App() {
   const [installationId, setInstallationId] = useState("");
@@ -233,26 +233,13 @@ export default function App() {
       setManifest(undefined);
       setFallback(false);
     };
-    let timer: number | undefined;
-    const checkBoundary = () => {
-      const remaining = boundary - Date.now();
-      if (remaining <= 0) stop();
-      else
-        timer = window.setTimeout(
-          checkBoundary,
-          Math.min(remaining, MAX_BOUNDARY_TIMER_MS),
-        );
-    };
-    checkBoundary();
-    return () => {
-      if (timer !== undefined) clearTimeout(timer);
-    };
+    return watchSignedDeadline(boundary, stop);
   }, [manifest]);
 
   useEffect(() => {
     if (!manifest || manifest.priority !== "emergency") return;
     const expectedVersion = manifest.version;
-    const remaining = Date.parse(manifest.validUntil) - Date.now();
+    const boundary = Date.parse(manifest.validUntil);
     const restore = async () => {
       if (!credentials) return;
       const credentialEpoch = credentialEpochRef.current;
@@ -278,12 +265,7 @@ export default function App() {
         setFallback(Boolean(prior));
       }
     };
-    if (remaining <= 0) {
-      void restore();
-      return;
-    }
-    const timer = window.setTimeout(() => void restore(), remaining);
-    return () => clearTimeout(timer);
+    return watchSignedDeadline(boundary, () => void restore());
   }, [credentials, manifest]);
 
   useEffect(() => {

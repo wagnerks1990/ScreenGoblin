@@ -14,7 +14,7 @@ Offline-first signage runtime for Android TV, HDMI dongles, Chromium kiosks, and
 - The prior signed manifest remains available for explicit playback rollback;
   a missing or corrupt active marker never promotes it implicitly.
 - Existing content continues when the API is unavailable. Connectivity status stays unobtrusive in the lower corner.
-- Signed withdrawals and signed schedule boundaries blank content without reviving an older schedule; stale poll and rollback callbacks cannot overwrite a newer version.
+- Signed withdrawals and signed schedule boundaries blank content without reviving an older schedule; stale poll and rollback callbacks cannot overwrite a newer version. A bounded wall-clock watcher rechecks hard boundaries at least every 30 seconds and when the WebView resumes, while an independent countdown prevents a backward clock correction from extending the lifetime calculated when playback began.
 - Android streams binary cache misses into app-private staging files, verifies
   the signed byte length and SHA-256 while writing, then atomically publishes
   the completed file. Partial or mismatched files are removed and cannot become
@@ -76,6 +76,11 @@ representative low-space/full-disk operation, process death or power loss during
 download and rename, storage accounting across supported Android versions, or
 verified media erasure after revocation. Capture that evidence on production
 hardware before fleet rollout.
+
+Deterministic clock-jump tests cover local forward and backward corrections for
+signed playback deadlines. They do not provide a trusted time source, prove
+behavior across device sleep/firmware combinations, or close the physical-device
+clock-drift gate.
 
 Manual targeted re-enrollment requires an explicit local action before the
 Player replaces its prior Keystore identity with a fresh P-256 key. Fresh-key
