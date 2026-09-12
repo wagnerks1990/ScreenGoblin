@@ -17,6 +17,21 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 7. On a new installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Confirm the owner can sign in, then remove all `SEED_*` values from the host environment.
 8. Verify readiness, login, two-stage Android Keystore pairing, proof-authorized heartbeat and manifest delivery, atomic pairing/audit, Ed25519 manifest verification, media checksum, signed withdrawal, schedule-boundary blanking, last-known-good playback, and OWNER/ADMIN credential revocation. Confirm replayed proofs fail. Do not claim that a revoked online player erased managed media until verified native erasure is implemented and evidenced.
 
+On a disposable host with ports 80 and 443 free, exercise the assembled stack
+before staging promotion:
+
+```bash
+COMPOSE_SMOKE_EVIDENCE_DIR=compose-smoke-evidence \
+deploy/scripts/validate-compose-runtime.sh
+```
+
+The smoke uses a unique Compose project, ephemeral non-placeholder secrets,
+Caddy local test TLS, and disposable volumes. It waits for production-mode
+health, tests ingress and media delivery, checks browser security headers and
+private-service isolation, writes redacted diagnostics on failure, and always
+removes its containers and volumes. It is not a production-host probe and does
+not replace staging, external TLS/DNS/firewall, load, backup, or device tests.
+
 Tenant-integrity and normalized-email migrations deliberately abort if they find cross-organization relationships or case-colliding accounts. Before applying them, stop writers, take a verified backup, run the documented preflight queries in a restored staging copy, and investigate every conflict; do not bypass the checks or relabel records automatically.
 
 Do not run the bootstrap profile as part of normal startup. It refuses to reset an existing owner password or grant owner to an existing unrelated user. Remove bootstrap credentials after the first successful login.

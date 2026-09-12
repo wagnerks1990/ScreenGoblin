@@ -146,11 +146,12 @@ jobs:
 
   containers:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     needs: web-api
     env:
       SCREEN_GOBLIN_HOST: signage.example.test
       PLAYER_HOST: player.example.test
+      ACME_EMAIL: ops@example.test
       POSTGRES_DB: screengoblin
       POSTGRES_USER: screengoblin
       POSTGRES_PASSWORD: ci-compose-password
@@ -172,3 +173,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: docker compose config --quiet
       - run: docker compose build api console player-web
+      - name: Exercise the production-mode Compose runtime
+        env:
+          COMPOSE_SMOKE_EVIDENCE_DIR: compose-smoke-evidence
+        run: deploy/scripts/validate-compose-runtime.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && hashFiles('compose-smoke-evidence/**') != ''
+        with:
+          name: compose-smoke-evidence-${{ github.sha }}
+          path: compose-smoke-evidence
+          if-no-files-found: error
+          retention-days: 7

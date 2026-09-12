@@ -229,7 +229,7 @@ services:
     environment:
       SCREEN_GOBLIN_HOST: ${SCREEN_GOBLIN_HOST:-localhost}
       PLAYER_HOST: ${PLAYER_HOST:-player.localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
       S3_BUCKET: ${S3_BUCKET:-screengoblin-media}
     ports:
       - "80:80"
