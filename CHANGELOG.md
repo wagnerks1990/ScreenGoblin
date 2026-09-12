@@ -223,6 +223,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Changed
 
+- Require tenant-bound UUIDv4 idempotency keys for ordinary schedule
+  publication. A lost successful response now replays the original schedule
+  without reactivating content after withdrawal; actor or payload reuse
+  conflicts, fresh keys preserve deliberate republication, and 30-day response
+  records compact to permanent command tombstones.
+
 - Upgrade the API's direct `fastify-plugin` dependency to 6.0.0. The existing
   default-import registration contract remains covered by API type, unit,
   integration, and production-build gates.

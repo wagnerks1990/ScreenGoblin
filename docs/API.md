@@ -90,6 +90,24 @@ or target is missing, the playlist is empty, an asset is expired, unsupported,
 malformed, larger than 128 MiB, outside the exact-origin policy, or the release
 would exceed 512 MiB.
 
+Publication requires an `Idempotency-Key` containing a canonical lowercase
+UUIDv4. The server stores only a domain- and organization-bound SHA-256
+fingerprint, never the raw header. A committed retry by the same currently
+authorized actor with the same canonical request returns the original `201`
+schedule body, including after that schedule has been withdrawn; replay never
+creates an assignment or audit event. Reusing the key for another payload or
+actor returns `409 IDEMPOTENCY_KEY_REUSED`. A fresh key represents a deliberate
+new publication intent and may reactivate unchanged content after withdrawal.
+Validation and authorization failures do not consume a key.
+
+Response bodies remain replayable for 30 days. Presenting that key after expiry
+compacts its body to a permanent tenant-bound command tombstone; an
+expired key returns `409 IDEMPOTENCY_KEY_EXPIRED` and is never reusable. A
+dormant key can retain an expired response body until it is presented again,
+but tenant deletion removes both ledger and content. A replayed `201` describes
+the historical command result, not current assignment state; clients must read
+current schedule or manifest state after recovery.
+
 `DELETE /schedules/:id` appends an immutable withdrawal assignment and its audit event instead of deleting release history. It is idempotent after the first withdrawal. Ordinary device manifests are selected exclusively from frozen release and assignment snapshots; later source edits or deletion attempts cannot rewrite an already published release.
 
 ## Device proof protocol

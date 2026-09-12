@@ -67,6 +67,10 @@ enum LoginFailureReason {
   RATE_LIMITED
 }
 
+enum IdempotencyOperation {
+  SCHEDULE_PUBLISH
+}
+
 model Organization {
   id                   String                @id @default(cuid())
   name                 String
@@ -87,6 +91,24 @@ model Organization {
   deviceCredentials    DeviceCredential[]
   deviceAuthChallenges DeviceAuthChallenge[]
   pairingAttempts      PairingAttempt[]
+  idempotencyRecords   IdempotencyRecord[]
+}
+
+model IdempotencyRecord {
+  id                  String               @id @default(cuid())
+  organizationId      String
+  operation           IdempotencyOperation
+  keyHash             String
+  actorUserId         String
+  requestDigestSha256 String
+  statusCode          Int
+  responseBody        Json?
+  expiresAt           DateTime
+  createdAt           DateTime             @default(now())
+  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, operation, keyHash])
+  @@index([expiresAt])
 }
 
 model Location {

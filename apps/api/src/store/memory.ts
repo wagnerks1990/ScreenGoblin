@@ -30,6 +30,8 @@ import type {
   ReleasePublicationPolicy,
   ScheduleRecord,
   SchedulePublicationInput,
+  SchedulePublicationIdempotencyInput,
+  SchedulePublicationIdempotencyRecord,
   SchedulePublicationResult,
   ScheduleWithdrawalResult,
   ScreenMutationInput,
@@ -42,6 +44,8 @@ import type {
   UserSessionRecord,
 } from "../domain/types.js";
 import {
+  SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION,
+  SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
   LOGIN_FAILURE_RETENTION_MS,
 } from "../domain/types.js";
@@ -75,6 +79,7 @@ export class MemoryStore implements DataStore {
   schedules: ScheduleRecord[] = [];
   releases: PublishedReleaseRecord[] = [];
   releaseAssignments: ReleaseAssignmentRecord[] = [];
+  idempotencyRecords: SchedulePublicationIdempotencyRecord[] = [];
   emergencies: EmergencyRecord[] = [];
   audits: AuditRecord[] = [];
   pairings: PairingRecord[] = [];
@@ -2084,7 +2089,13 @@ export class MemoryStore implements DataStore {
     data: SchedulePublicationInput,
     audit: ReleaseAuditContext,
     policy: ReleasePublicationPolicy,
+    idempotency: SchedulePublicationIdempotencyInput,
   ): Promise<SchedulePublicationResult> {
+    if (
+      !/^[0-9a-f]{64}$/.test(idempotency.keyHash) ||
+      !/^[0-9a-f]{64}$/.test(idempotency.requestDigestSha256)
+    )
+      throw new Error("Canonical publication idempotency hashes are required");
     const actor = this.users.find(
       (candidate) =>
         candidate.id === audit.actorUserId &&
@@ -2093,6 +2104,42 @@ export class MemoryStore implements DataStore {
     );
     if (!hasCapability(actor?.role, CAPABILITIES.releasePublish))
       return { published: false, reason: "FORBIDDEN" };
+    const timestamp = now();
+    const existingIdempotency = this.idempotencyRecords.find(
+      (candidate) =>
+        candidate.organizationId === org &&
+        candidate.operation === SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION &&
+        candidate.keyHash === idempotency.keyHash,
+    );
+    if (existingIdempotency) {
+      if (
+        existingIdempotency.actorUserId !== audit.actorUserId ||
+        existingIdempotency.requestDigestSha256 !==
+          idempotency.requestDigestSha256
+      )
+        return { published: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+      if (
+        existingIdempotency.expiresAt <= timestamp ||
+        !existingIdempotency.response
+      ) {
+        delete existingIdempotency.response;
+        return { published: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
+      }
+      const schedule = structuredClone(existingIdempotency.response);
+      const release = this.releases.find(
+        (candidate) =>
+          candidate.organizationId === org &&
+          candidate.id === schedule.releaseId,
+      );
+      const assignment = this.releaseAssignments.find(
+        (candidate) =>
+          candidate.organizationId === org &&
+          candidate.id === schedule.assignmentId,
+      );
+      if (!release || !assignment)
+        throw new Error("Idempotent publication references are missing");
+      return { published: true, schedule, release, assignment, replayed: true };
+    }
     const screenIds = [...new Set(data.screenIds)].sort();
     const playlist = this.playlists.find(
       (candidate) =>
@@ -2135,7 +2182,6 @@ export class MemoryStore implements DataStore {
     }
 
     const digestSha256 = releaseSnapshotDigest(snapshot);
-    const timestamp = now();
     const existingRelease = this.releases.find(
       (release) =>
         release.organizationId === org && release.digestSha256 === digestSha256,
@@ -2197,12 +2243,20 @@ export class MemoryStore implements DataStore {
       );
       if (!duplicateSchedule || !duplicateRelease)
         throw new Error("Immutable release assignment references are missing");
-      return {
+      const result = {
         published: true,
         schedule: duplicateSchedule,
         release: duplicateRelease,
         assignment: duplicateAssignment,
-      };
+      } as const;
+      this.rememberSchedulePublication(
+        org,
+        audit,
+        idempotency,
+        result,
+        timestamp,
+      );
+      return result;
     }
     const schedule: ScheduleRecord = {
       id: scheduleId,
@@ -2248,7 +2302,37 @@ export class MemoryStore implements DataStore {
     this.schedules.push(schedule);
     this.releaseAssignments.push(assignment);
     this.audits.push(auditRecord);
-    return { published: true, schedule, release, assignment };
+    const result = { published: true, schedule, release, assignment } as const;
+    this.rememberSchedulePublication(
+      org,
+      audit,
+      idempotency,
+      result,
+      timestamp,
+    );
+    return result;
+  }
+
+  private rememberSchedulePublication(
+    org: string,
+    audit: ReleaseAuditContext,
+    idempotency: SchedulePublicationIdempotencyInput,
+    response: Extract<SchedulePublicationResult, { published: true }>,
+    createdAt: string,
+  ) {
+    this.idempotencyRecords.push({
+      organizationId: org,
+      operation: SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION,
+      keyHash: idempotency.keyHash,
+      actorUserId: audit.actorUserId,
+      requestDigestSha256: idempotency.requestDigestSha256,
+      response: structuredClone(response.schedule),
+      createdAt,
+      expiresAt: new Date(
+        new Date(createdAt).getTime() +
+          SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS,
+      ).toISOString(),
+    });
   }
 
   async withdrawScheduleAndAudit(

@@ -80,6 +80,11 @@ revocation across PostgreSQL and object storage.
   isolated non-production fixtures. Their activation and clear writes recheck
   current capabilities, lock organization-scoped targets, and commit audit and
   state atomically, but they are not a complete approval or authorization model.
+- `POST /schedules` requires a canonical UUIDv4 `Idempotency-Key`. Its raw
+  value is neither logged nor stored. The transaction revalidates the active
+  membership, tenant-binds the key fingerprint, and commits the publication,
+  audit, and replay response together. Same-command retries cannot reactivate a
+  withdrawn assignment; a new key is required for intentional republication.
 - Emergency publishing is supplemental—not a life-safety or mass-notification
   system—and production startup rejects `EMERGENCY_FEATURE_ENABLED=true` while
   the required authorization, two-person approval, MFA, acknowledgement,

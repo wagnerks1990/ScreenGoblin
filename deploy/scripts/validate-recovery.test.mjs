@@ -31,6 +31,7 @@ test("recovery drill migrates and restores representative application relations"
     "FrozenReleaseItem",
     "ReleaseAssignment",
     "ReleaseAssignmentTarget",
+    "IdempotencyRecord",
     "AuditEvent",
   ]) {
     assert.match(script, new RegExp(`"${table}"`));

@@ -149,6 +149,8 @@ INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screen
 VALUES ('recovery-org', 'recovery-assignment', 'recovery-screen', 'recovery-screen', 'recovery-org');
 INSERT INTO "AuditEvent" ("id", "organizationId", "actorUserId", "actorType", "action", "entityType", "entityId", "requestId", "metadata", "createdAt")
 VALUES ('recovery-audit', 'recovery-org', 'recovery-user', 'user', 'release.published', 'published_release', 'recovery-release', 'recovery-drill', '{"fixture":true}', CURRENT_TIMESTAMP);
+INSERT INTO "IdempotencyRecord" ("id", "organizationId", "operation", "keyHash", "actorUserId", "requestDigestSha256", "statusCode", "responseBody", "expiresAt", "createdAt")
+VALUES ('recovery-idempotency', 'recovery-org', 'SCHEDULE_PUBLISH', repeat('d', 64), 'recovery-user', repeat('e', 64), 201, '{"published":true,"fixture":true}', CURRENT_TIMESTAMP + INTERVAL '30 days', CURRENT_TIMESTAMP);
 COMMIT;
 SQL
 
@@ -200,11 +202,14 @@ JOIN \"FrozenReleaseItem\" fri ON fri.\"releaseId\" = pr.id AND fri.\"sourcePlay
 JOIN \"ReleaseAssignment\" ra ON ra.\"releaseId\" = pr.id AND ra.\"scheduleId\" = sc.id AND ra.\"organizationId\" = o.id
 JOIN \"ReleaseAssignmentTarget\" rat ON rat.\"assignmentId\" = ra.id AND rat.\"liveScreenId\" = s.id AND rat.\"liveScreenOrganizationId\" = o.id AND rat.\"organizationId\" = o.id
 JOIN \"AuditEvent\" ae ON ae.\"organizationId\" = o.id AND ae.\"actorUserId\" = u.id AND ae.\"entityId\" = pr.id
+JOIN \"IdempotencyRecord\" ir ON ir.\"organizationId\" = o.id AND ir.\"actorUserId\" = u.id
 WHERE o.id = 'recovery-org'
   AND us.\"tokenHash\" = repeat('c', 64)
   AND s.\"locationId\" = l.id
   AND l.name = 'Recovery location'
-  AND ae.action = 'release.published';"
+  AND ae.action = 'release.published'
+  AND ir.operation = 'SCHEDULE_PUBLISH'
+  AND ir.\"keyHash\" = repeat('d', 64);"
 )"
 [[ "$restored_relation_count" == 1 ]]
 restored_object_metadata="$(

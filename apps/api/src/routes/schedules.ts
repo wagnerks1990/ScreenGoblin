@@ -4,6 +4,10 @@ import { z } from "zod";
 import { ApiError, requireCapability, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
 import { validTimeZone } from "../utils/schedule.js";
+import {
+  schedulePublicationKeyHash,
+  schedulePublicationRequestDigest,
+} from "../releases/canonical.js";
 const body = z
   .object({
     playlistId: opaqueId,
@@ -39,6 +43,12 @@ const body = z
     },
   );
 const params = z.object({ id: opaqueId });
+const idempotencyKey = z
+  .string()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    "Idempotency-Key must be a canonical UUIDv4",
+  );
 export const scheduleRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
   app.get("/schedules", async (request) => ({
@@ -47,6 +57,7 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
   app.post("/schedules", async (request, reply) => {
     requireCapability(request, CAPABILITIES.releasePublish);
     const input = body.parse(request.body);
+    const key = idempotencyKey.parse(request.headers["idempotency-key"]);
     const result = await app.store.publishScheduleAndAudit(
       request.user.organizationId,
       input,
@@ -56,6 +67,10 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
         requestId: request.id,
       },
       { mediaAllowedOrigins: app.config.mediaAllowedOrigins },
+      {
+        keyHash: schedulePublicationKeyHash(request.user.organizationId, key),
+        requestDigestSha256: schedulePublicationRequestDigest(input),
+      },
     );
     if (!result.published) {
       if (result.reason === "FORBIDDEN")
@@ -63,6 +78,17 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
           403,
           "FORBIDDEN",
           "You do not have permission to perform this action",
+        );
+      if (
+        result.reason === "IDEMPOTENCY_KEY_REUSED" ||
+        result.reason === "IDEMPOTENCY_KEY_EXPIRED"
+      )
+        throw new ApiError(
+          409,
+          result.reason,
+          result.reason === "IDEMPOTENCY_KEY_REUSED"
+            ? "Idempotency key was already used for another request"
+            : "Idempotency key replay window has expired",
         );
       const errors = {
         PLAYLIST_NOT_FOUND: [

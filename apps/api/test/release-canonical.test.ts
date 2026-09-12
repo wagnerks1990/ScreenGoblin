@@ -13,6 +13,8 @@ import {
   hasValidStoredReleaseDigest,
   ReleaseSnapshotError,
   releaseSnapshotDigest,
+  schedulePublicationKeyHash,
+  schedulePublicationRequestDigest,
 } from "../src/releases/canonical.js";
 
 const timestamp = "2026-09-12T00:00:00.000Z";
@@ -39,6 +41,38 @@ const playlist = (items: PlaylistRecord["items"]): PlaylistRecord => ({
 });
 
 describe("canonical release snapshots", () => {
+  it("canonicalizes publication set fields and tenant-binds opaque keys", () => {
+    const request = {
+      playlistId: "playlist-a",
+      name: "School day",
+      priority: "normal" as const,
+      startsAt: "2026-09-12T12:00:00.000Z",
+      endsAt: "2026-09-12T20:00:00.000Z",
+      timezone: "UTC",
+      daysOfWeek: [5, 1],
+      dailyStartMinutes: 480,
+      dailyEndMinutes: 1020,
+      enabled: true,
+      screenIds: ["screen-b", "screen-a"],
+    };
+    expect(schedulePublicationRequestDigest(request)).toBe(
+      schedulePublicationRequestDigest({
+        ...request,
+        startsAt: "2026-09-12T12:00:00Z",
+        screenIds: ["screen-a", "screen-b", "screen-a"],
+        daysOfWeek: [1, 5, 1],
+      }),
+    );
+    expect(
+      schedulePublicationRequestDigest({ ...request, name: "Changed" }),
+    ).not.toBe(schedulePublicationRequestDigest(request));
+    const key = "123e4567-e89b-42d3-a456-426614174000";
+    expect(schedulePublicationKeyHash("org-a", key)).toMatch(/^[0-9a-f]{64}$/);
+    expect(schedulePublicationKeyHash("org-b", key)).not.toBe(
+      schedulePublicationKeyHash("org-a", key),
+    );
+  });
+
   it("sorts items and produces a stable golden digest", () => {
     const snapshot = canonicalReleaseSnapshot(
       playlist([
