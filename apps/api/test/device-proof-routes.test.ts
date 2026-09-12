@@ -208,8 +208,7 @@ describe("proof-v1 device routes", () => {
     const fixture = await pairingFixture();
     const { credentials } = await pair(fixture);
     const screenId = credentials.screenId as string;
-    const sendHeartbeat = async (
-      payload: {
+    const sendHeartbeat = async (payload: {
         installationId: string;
         playerVersion: string;
         manifestVersion?: string;
@@ -217,9 +216,8 @@ describe("proof-v1 device routes", () => {
         uptimeSeconds: number;
         freeStorageBytes: number;
         networkType: string;
-        occurredAt: string;
-      },
-    ) => {
+      occurredAt: string;
+    }) => {
       const challenge = await issueChallenge(
         screenId,
         fixture.identity.keyId,
