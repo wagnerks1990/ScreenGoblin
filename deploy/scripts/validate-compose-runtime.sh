@@ -162,6 +162,8 @@ cleanup() {
     collect_failure_evidence
     printf 'Compose runtime smoke: failed (exit %s)\n' "$status" \
       >"$EVIDENCE_DIR/result.txt"
+    printf '%s\n' '--- sanitized Compose diagnostics (last 200 lines) ---' >&2
+    tail -n 200 "$EVIDENCE_DIR/compose-logs.txt" >&2 || true
   fi
   if [[ "$attempted_start" == true ]]; then
     "${compose[@]}" down --volumes --remove-orphans --timeout 20 >/dev/null 2>&1

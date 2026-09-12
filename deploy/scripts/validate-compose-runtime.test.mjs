@@ -139,6 +139,8 @@ test("propagates failures, redacts diagnostics, and still cleans up", () => {
     assert.ok(!diagnostics.includes(leakedSecret));
     assert.match(diagnostics, /JWT_SECRET=\[REDACTED\]/);
     assert.ok(!`${result.stdout}\n${result.stderr}`.includes(leakedSecret));
+    assert.match(result.stderr, /sanitized Compose diagnostics/);
+    assert.match(result.stderr, /JWT_SECRET=\[REDACTED\]/);
     assert.match(
       readFileSync(f.commandLog, "utf8"),
       /down --volumes --remove-orphans --timeout 20/,
