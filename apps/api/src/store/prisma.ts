@@ -32,6 +32,7 @@ import type {
   ScheduleWithdrawalResult,
   ScreenRecord,
   SessionUser,
+  UserMutationAuditContext,
 } from "../domain/types.js";
 import {
   assignmentSnapshotDigest,
@@ -381,6 +382,21 @@ const isRetryableWriteConflict = (error: unknown) =>
 
 export class PrismaStore implements DataStore {
   constructor(readonly prisma = new PrismaClient()) {}
+  private async lockActiveActorRole(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    actorUserId: string,
+  ) {
+    const [actor] = await tx.$queryRaw<Array<{ role: string }>>`
+      SELECT membership."role"::text AS "role"
+      FROM "Membership" membership
+      INNER JOIN "User" actor ON actor."id" = membership."userId"
+      WHERE membership."organizationId" = ${organizationId}
+        AND membership."userId" = ${actorUserId}
+        AND actor."disabledAt" IS NULL
+      FOR UPDATE OF membership, actor`;
+    return actor?.role;
+  }
   async ping() {
     await this.prisma.$queryRaw`SELECT 1`;
   }
@@ -473,6 +489,42 @@ export class PrismaStore implements DataStore {
       }),
     );
   }
+  async createScreenAndAudit(
+    org: string,
+    data: Pick<
+      ScreenRecord,
+      "name" | "location" | "orientation" | "resolution" | "tags"
+    >,
+    audit: UserMutationAuditContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+      if (role !== "OWNER" && role !== "ADMIN")
+        return { created: false as const, reason: "FORBIDDEN" as const };
+      const screen = await tx.screen.create({
+        data: {
+          organizationId: org,
+          ...data,
+          orientation: data.orientation.toUpperCase() as
+            "LANDSCAPE" | "PORTRAIT",
+        },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "screen.created",
+          entityType: "screen",
+          entityId: screen.id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: { name: screen.name },
+        },
+      });
+      return { created: true as const, value: screenDto(screen) };
+    });
+  }
   async updateScreen(
     org: string,
     id: string,
@@ -499,6 +551,57 @@ export class PrismaStore implements DataStore {
         },
       }),
     );
+  }
+  async updateScreenAndAudit(
+    org: string,
+    id: string,
+    data: Partial<
+      Pick<
+        ScreenRecord,
+        "name" | "location" | "orientation" | "resolution" | "tags"
+      >
+    >,
+    audit: UserMutationAuditContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+      if (role !== "OWNER" && role !== "ADMIN")
+        return { updated: false as const, reason: "FORBIDDEN" as const };
+      const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT screen."id"
+        FROM "Screen" screen
+        WHERE screen."id" = ${id} AND screen."organizationId" = ${org}
+        FOR UPDATE OF screen`;
+      if (!locked)
+        return { updated: false as const, reason: "NOT_FOUND" as const };
+      const { orientation, ...rest } = data;
+      const screen = await tx.screen.update({
+        where: { id },
+        data: {
+          ...rest,
+          ...(orientation
+            ? {
+                orientation: orientation.toUpperCase() as
+                  "LANDSCAPE" | "PORTRAIT",
+              }
+            : {}),
+        },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "screen.updated",
+          entityType: "screen",
+          entityId: id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: {},
+        },
+      });
+      return { updated: true as const, value: screenDto(screen) };
+    });
   }
   async deleteScreen(org: string, id: string) {
     const r = await this.prisma.screen.deleteMany({
@@ -2061,6 +2164,48 @@ export class PrismaStore implements DataStore {
       }),
     );
   }
+  async createMediaAndAudit(
+    org: string,
+    data: Omit<
+      MediaRecord,
+      "id" | "organizationId" | "createdAt" | "updatedAt"
+    >,
+    audit: UserMutationAuditContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+      if (role !== "OWNER" && role !== "ADMIN" && role !== "PUBLISHER")
+        return { created: false as const, reason: "FORBIDDEN" as const };
+      const media = await tx.mediaAsset.create({
+        data: {
+          organizationId: org,
+          name: data.name,
+          kind: data.kind.toUpperCase() as
+            "IMAGE" | "VIDEO" | "WEB" | "TEMPLATE",
+          mimeType: data.mimeType,
+          url: data.url,
+          checksumSha256: data.checksumSha256,
+          sizeBytes: BigInt(data.sizeBytes),
+          durationSeconds: data.durationSeconds ?? null,
+          expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+        },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "media.created",
+          entityType: "media",
+          entityId: media.id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: { name: media.name },
+        },
+      });
+      return { created: true as const, value: mediaDto(media) };
+    });
+  }
   async getMedia(org: string, id: string) {
     const x = await this.prisma.mediaAsset.findFirst({
       where: { id, organizationId: org },
@@ -2075,6 +2220,57 @@ export class PrismaStore implements DataStore {
       return r.count > 0 ? "DELETED" : "NOT_FOUND";
     } catch (error) {
       if (isForeignKeyConstraintError(error)) return "IN_USE";
+      throw error;
+    }
+  }
+  async deleteMediaAndAudit(
+    org: string,
+    id: string,
+    audit: UserMutationAuditContext,
+  ) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+        if (role !== "OWNER" && role !== "ADMIN" && role !== "PUBLISHER")
+          return { deleted: false as const, reason: "FORBIDDEN" as const };
+        const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT media."id"
+          FROM "MediaAsset" media
+          WHERE media."id" = ${id} AND media."organizationId" = ${org}
+          FOR UPDATE OF media`;
+        if (!locked)
+          return { deleted: false as const, reason: "NOT_FOUND" as const };
+        const playlistReference = await tx.playlistItem.findFirst({
+          where: { organizationId: org, assetId: id },
+          select: { id: true },
+        });
+        if (playlistReference)
+          return { deleted: false as const, reason: "IN_USE" as const };
+        const releaseReference = await tx.frozenReleaseItem.findFirst({
+          where: { organizationId: org, sourceAssetId: id },
+          select: { id: true },
+        });
+        if (releaseReference)
+          return { deleted: false as const, reason: "IN_USE" as const };
+        await tx.mediaAsset.delete({ where: { id } });
+        await tx.auditEvent.create({
+          data: {
+            organizationId: org,
+            actorUserId: audit.actorUserId,
+            actorType: "user",
+            action: "media.deleted",
+            entityType: "media",
+            entityId: id,
+            ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+            ...(audit.requestId ? { requestId: audit.requestId } : {}),
+            metadata: {},
+          },
+        });
+        return { deleted: true as const };
+      });
+    } catch (error) {
+      if (isForeignKeyConstraintError(error))
+        return { deleted: false as const, reason: "IN_USE" as const };
       throw error;
     }
   }
@@ -2108,6 +2304,60 @@ export class PrismaStore implements DataStore {
       }),
     );
   }
+  async createPlaylistAndAudit(
+    org: string,
+    data: Pick<PlaylistRecord, "name" | "description" | "items">,
+    audit: UserMutationAuditContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+      if (role !== "OWNER" && role !== "ADMIN" && role !== "PUBLISHER")
+        return { created: false as const, reason: "FORBIDDEN" as const };
+      const assetIds = [
+        ...new Set(data.items.map((item) => item.assetId)),
+      ].sort();
+      if (assetIds.length > 0) {
+        const assets = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT media."id"
+          FROM "MediaAsset" media
+          WHERE media."organizationId" = ${org}
+            AND media."id" IN (${Prisma.join(assetIds)})
+          ORDER BY media."id" ASC
+          FOR KEY SHARE OF media`;
+        if (assets.length !== assetIds.length)
+          return { created: false as const, reason: "INVALID_ASSET" as const };
+      }
+      const playlist = await tx.playlist.create({
+        data: {
+          organizationId: org,
+          name: data.name,
+          description: data.description,
+          items: {
+            create: data.items.map((item) => ({
+              assetId: item.assetId,
+              position: item.position,
+              durationSeconds: item.durationSeconds,
+            })),
+          },
+        },
+        include: { items: true },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "playlist.created",
+          entityType: "playlist",
+          entityId: playlist.id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: { itemCount: playlist.items.length },
+        },
+      });
+      return { created: true as const, value: playlistDto(playlist) };
+    });
+  }
   async getPlaylist(org: string, id: string) {
     const x = await this.prisma.playlist.findFirst({
       where: { id, organizationId: org },
@@ -2123,6 +2373,57 @@ export class PrismaStore implements DataStore {
       return r.count > 0 ? "DELETED" : "NOT_FOUND";
     } catch (error) {
       if (isForeignKeyConstraintError(error)) return "IN_USE";
+      throw error;
+    }
+  }
+  async deletePlaylistAndAudit(
+    org: string,
+    id: string,
+    audit: UserMutationAuditContext,
+  ) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+        if (role !== "OWNER" && role !== "ADMIN" && role !== "PUBLISHER")
+          return { deleted: false as const, reason: "FORBIDDEN" as const };
+        const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT playlist."id"
+          FROM "Playlist" playlist
+          WHERE playlist."id" = ${id} AND playlist."organizationId" = ${org}
+          FOR UPDATE OF playlist`;
+        if (!locked)
+          return { deleted: false as const, reason: "NOT_FOUND" as const };
+        const scheduleReference = await tx.schedule.findFirst({
+          where: { organizationId: org, playlistId: id },
+          select: { id: true },
+        });
+        if (scheduleReference)
+          return { deleted: false as const, reason: "IN_USE" as const };
+        const releaseReference = await tx.publishedRelease.findFirst({
+          where: { organizationId: org, sourcePlaylistId: id },
+          select: { id: true },
+        });
+        if (releaseReference)
+          return { deleted: false as const, reason: "IN_USE" as const };
+        await tx.playlist.delete({ where: { id } });
+        await tx.auditEvent.create({
+          data: {
+            organizationId: org,
+            actorUserId: audit.actorUserId,
+            actorType: "user",
+            action: "playlist.deleted",
+            entityType: "playlist",
+            entityId: id,
+            ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+            ...(audit.requestId ? { requestId: audit.requestId } : {}),
+            metadata: {},
+          },
+        });
+        return { deleted: true as const };
+      });
+    } catch (error) {
+      if (isForeignKeyConstraintError(error))
+        return { deleted: false as const, reason: "IN_USE" as const };
       throw error;
     }
   }

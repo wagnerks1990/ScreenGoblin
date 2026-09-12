@@ -388,6 +388,23 @@ export interface DeviceCredentialRevokeAuditContext {
   requestId?: string | undefined;
 }
 
+export type UserMutationAuditContext = DeviceCredentialRevokeAuditContext;
+
+export type AuditedCreateResult<T> =
+  { created: true; value: T } | { created: false; reason: "FORBIDDEN" };
+
+export type AuditedUpdateResult<T> =
+  | { updated: true; value: T }
+  | { updated: false; reason: "NOT_FOUND" | "FORBIDDEN" };
+
+export type AuditedPlaylistCreateResult =
+  | { created: true; value: PlaylistRecord }
+  | { created: false; reason: "FORBIDDEN" | "INVALID_ASSET" };
+
+export type AuditedDeleteResult =
+  | { deleted: true }
+  | { deleted: false; reason: "NOT_FOUND" | "IN_USE" | "FORBIDDEN" };
+
 export type DeviceCredentialRevokeResult =
   | { revoked: true; credential?: DeviceCredentialRecord | undefined }
   | {
@@ -414,6 +431,14 @@ export interface DataStore {
       "name" | "location" | "orientation" | "resolution" | "tags"
     >,
   ): Promise<ScreenRecord>;
+  createScreenAndAudit(
+    orgId: string,
+    data: Pick<
+      ScreenRecord,
+      "name" | "location" | "orientation" | "resolution" | "tags"
+    >,
+    audit: UserMutationAuditContext,
+  ): Promise<AuditedCreateResult<ScreenRecord>>;
   updateScreen(
     orgId: string,
     id: string,
@@ -424,6 +449,17 @@ export interface DataStore {
       >
     >,
   ): Promise<ScreenRecord | null>;
+  updateScreenAndAudit(
+    orgId: string,
+    id: string,
+    data: Partial<
+      Pick<
+        ScreenRecord,
+        "name" | "location" | "orientation" | "resolution" | "tags"
+      >
+    >,
+    audit: UserMutationAuditContext,
+  ): Promise<AuditedUpdateResult<ScreenRecord>>;
   deleteScreen(orgId: string, id: string): Promise<boolean>;
   deleteScreenAndAudit(
     orgId: string,
@@ -563,15 +599,38 @@ export interface DataStore {
       "id" | "organizationId" | "createdAt" | "updatedAt"
     >,
   ): Promise<MediaRecord>;
+  createMediaAndAudit(
+    orgId: string,
+    data: Omit<
+      MediaRecord,
+      "id" | "organizationId" | "createdAt" | "updatedAt"
+    >,
+    audit: UserMutationAuditContext,
+  ): Promise<AuditedCreateResult<MediaRecord>>;
   getMedia(orgId: string, id: string): Promise<MediaRecord | null>;
   deleteMedia(orgId: string, id: string): Promise<DeleteResult>;
+  deleteMediaAndAudit(
+    orgId: string,
+    id: string,
+    audit: UserMutationAuditContext,
+  ): Promise<AuditedDeleteResult>;
   listPlaylists(orgId: string): Promise<PlaylistRecord[]>;
   createPlaylist(
     orgId: string,
     data: Pick<PlaylistRecord, "name" | "description" | "items">,
   ): Promise<PlaylistRecord>;
+  createPlaylistAndAudit(
+    orgId: string,
+    data: Pick<PlaylistRecord, "name" | "description" | "items">,
+    audit: UserMutationAuditContext,
+  ): Promise<AuditedPlaylistCreateResult>;
   getPlaylist(orgId: string, id: string): Promise<PlaylistRecord | null>;
   deletePlaylist(orgId: string, id: string): Promise<DeleteResult>;
+  deletePlaylistAndAudit(
+    orgId: string,
+    id: string,
+    audit: UserMutationAuditContext,
+  ): Promise<AuditedDeleteResult>;
   listSchedules(orgId: string): Promise<ScheduleRecord[]>;
   createSchedule(
     orgId: string,

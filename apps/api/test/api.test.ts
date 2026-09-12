@@ -313,6 +313,64 @@ describe("authentication and organization RBAC", () => {
       "Main Lobby",
     );
   });
+
+  it("preserves invalid-asset errors from the transactional playlist write", async () => {
+    const asset = await store.createMedia("org-a", {
+      name: "Concurrent removal",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/concurrent.png",
+      checksumSha256: "a".repeat(64),
+      sizeBytes: 3,
+    });
+    store.createPlaylistAndAudit = async () => ({
+      created: false,
+      reason: "INVALID_ASSET",
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/playlists",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Concurrent playlist",
+        description: "",
+        items: [{ assetId: asset.id, position: 0, durationSeconds: 15 }],
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.code).toBe("INVALID_ASSET");
+    expect(store.playlists).toEqual([]);
+  });
+
+  it("does not fall back to the split audit API for ordinary mutations", async () => {
+    store.audit = async () => {
+      throw new Error("split audit API must not be called");
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/screens",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Atomic screen",
+        location: "Lobby",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(store.screens).toHaveLength(1);
+    expect(store.audits).toMatchObject([
+      {
+        action: "screen.created",
+        entityType: "screen",
+        entityId: response.json().id,
+      },
+    ]);
+  });
 });
 
 describe("immutable ordinary release publication", () => {

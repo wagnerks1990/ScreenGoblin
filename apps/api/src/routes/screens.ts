@@ -45,22 +45,22 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
   });
   app.post("/screens", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN"]);
-    const x = await app.store.createScreen(
+    const result = await app.store.createScreenAndAudit(
       request.user.organizationId,
       screen.parse(request.body),
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
     );
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "screen.created",
-      entityType: "screen",
-      entityId: x.id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: { name: x.name },
-    });
-    return reply.code(201).send(x);
+    if (!result.created)
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to perform this action",
+      );
+    return reply.code(201).send(result.value);
   });
   app.patch("/screens/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN"]);
@@ -77,24 +77,24 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
         : {}),
       ...(parsed.tags !== undefined ? { tags: parsed.tags } : {}),
     };
-    const x = await app.store.updateScreen(
+    const result = await app.store.updateScreenAndAudit(
       request.user.organizationId,
       id,
       changes,
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
     );
-    if (!x) return sendNotFound(reply);
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "screen.updated",
-      entityType: "screen",
-      entityId: id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: {},
-    });
-    return x;
+    if (!result.updated && result.reason === "FORBIDDEN")
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to perform this action",
+      );
+    if (!result.updated) return sendNotFound(reply);
+    return result.value;
   });
   app.post("/screens/:id/device-credential/revoke", async (request, reply) => {
     requireCapability(request, CAPABILITIES.screenCredentialRevoke);

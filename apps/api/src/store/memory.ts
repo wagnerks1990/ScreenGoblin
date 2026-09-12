@@ -28,6 +28,7 @@ import type {
   ScheduleWithdrawalResult,
   ScreenRecord,
   SessionUser,
+  UserMutationAuditContext,
 } from "../domain/types.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
 import {
@@ -108,6 +109,19 @@ export class MemoryStore implements DataStore {
     delete safe.deviceTokenHash;
     return safe;
   }
+  private activeActor(
+    org: string,
+    actorUserId: string,
+    roles: SessionUser["role"][],
+  ) {
+    return this.users.find(
+      (user) =>
+        user.id === actorUserId &&
+        user.organizationId === org &&
+        !user.disabledAt &&
+        roles.includes(user.role),
+    );
+  }
   async listScreens(org: string) {
     return this.screens
       .filter((x) => x.organizationId === org)
@@ -139,6 +153,41 @@ export class MemoryStore implements DataStore {
     this.screens.push(x);
     return x;
   }
+  async createScreenAndAudit(
+    org: string,
+    data: Pick<
+      ScreenRecord,
+      "name" | "location" | "orientation" | "resolution" | "tags"
+    >,
+    audit: UserMutationAuditContext,
+  ) {
+    if (!this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]))
+      return { created: false, reason: "FORBIDDEN" } as const;
+    const timestamp = now();
+    const screen: ScreenRecord = {
+      id: id(),
+      organizationId: org,
+      status: "offline",
+      ...data,
+      tags: [...new Set(data.tags)],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "screen.created",
+      entityType: "screen",
+      entityId: screen.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { name: screen.name },
+    });
+    this.screens.push(screen);
+    this.audits.push(auditRecord);
+    return { created: true, value: this.publicScreen(screen) } as const;
+  }
   async updateScreen(
     org: string,
     screenId: string,
@@ -155,6 +204,44 @@ export class MemoryStore implements DataStore {
     if (!x) return null;
     Object.assign(x, data, { updatedAt: now() });
     return x;
+  }
+  async updateScreenAndAudit(
+    org: string,
+    screenId: string,
+    data: Partial<
+      Pick<
+        ScreenRecord,
+        "name" | "location" | "orientation" | "resolution" | "tags"
+      >
+    >,
+    audit: UserMutationAuditContext,
+  ) {
+    if (!this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]))
+      return { updated: false, reason: "FORBIDDEN" } as const;
+    const screen = this.screens.find(
+      (candidate) =>
+        candidate.organizationId === org && candidate.id === screenId,
+    );
+    if (!screen) return { updated: false, reason: "NOT_FOUND" } as const;
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "screen.updated",
+      entityType: "screen",
+      entityId: screenId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {},
+    });
+    Object.assign(
+      screen,
+      data,
+      data.tags ? { tags: [...new Set(data.tags)] } : {},
+      { updatedAt: now() },
+    );
+    this.audits.push(auditRecord);
+    return { updated: true, value: this.publicScreen(screen) } as const;
   }
   async deleteScreen(org: string, screenId: string) {
     const n = this.screens.length;
@@ -1247,6 +1334,41 @@ export class MemoryStore implements DataStore {
     this.media.push(x);
     return x;
   }
+  async createMediaAndAudit(
+    org: string,
+    data: Omit<
+      MediaRecord,
+      "id" | "organizationId" | "createdAt" | "updatedAt"
+    >,
+    audit: UserMutationAuditContext,
+  ) {
+    if (
+      !this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN", "PUBLISHER"])
+    )
+      return { created: false, reason: "FORBIDDEN" } as const;
+    const timestamp = now();
+    const media: MediaRecord = {
+      id: id(),
+      organizationId: org,
+      ...data,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "media.created",
+      entityType: "media",
+      entityId: media.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { name: media.name },
+    });
+    this.media.push(media);
+    this.audits.push(auditRecord);
+    return { created: true, value: media } as const;
+  }
   async getMedia(org: string, assetId: string) {
     return (
       this.media.find((x) => x.organizationId === org && x.id === assetId) ??
@@ -1278,6 +1400,51 @@ export class MemoryStore implements DataStore {
     );
     return "DELETED" as const;
   }
+  async deleteMediaAndAudit(
+    org: string,
+    assetId: string,
+    audit: UserMutationAuditContext,
+  ) {
+    if (
+      !this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN", "PUBLISHER"])
+    )
+      return { deleted: false, reason: "FORBIDDEN" } as const;
+    if (
+      !this.media.some(
+        (asset) => asset.organizationId === org && asset.id === assetId,
+      )
+    )
+      return { deleted: false, reason: "NOT_FOUND" } as const;
+    if (
+      this.playlists.some(
+        (playlist) =>
+          playlist.organizationId === org &&
+          playlist.items.some((item) => item.assetId === assetId),
+      ) ||
+      this.releases.some(
+        (release) =>
+          release.organizationId === org &&
+          release.items.some((item) => item.asset.id === assetId),
+      )
+    )
+      return { deleted: false, reason: "IN_USE" } as const;
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "media.deleted",
+      entityType: "media",
+      entityId: assetId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {},
+    });
+    this.media = this.media.filter(
+      (asset) => !(asset.organizationId === org && asset.id === assetId),
+    );
+    this.audits.push(auditRecord);
+    return { deleted: true } as const;
+  }
   async listPlaylists(org: string) {
     return this.playlists.filter((x) => x.organizationId === org);
   }
@@ -1296,6 +1463,49 @@ export class MemoryStore implements DataStore {
     };
     this.playlists.push(x);
     return x;
+  }
+  async createPlaylistAndAudit(
+    org: string,
+    data: Pick<PlaylistRecord, "name" | "description" | "items">,
+    audit: UserMutationAuditContext,
+  ) {
+    if (
+      !this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN", "PUBLISHER"])
+    )
+      return { created: false, reason: "FORBIDDEN" } as const;
+    if (
+      data.items.some(
+        (item) =>
+          !this.media.some(
+            (asset) =>
+              asset.organizationId === org && asset.id === item.assetId,
+          ),
+      )
+    )
+      return { created: false, reason: "INVALID_ASSET" } as const;
+    const timestamp = now();
+    const playlist: PlaylistRecord = {
+      id: id(),
+      organizationId: org,
+      ...data,
+      items: data.items.map((item) => ({ ...item, id: id() })),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "playlist.created",
+      entityType: "playlist",
+      entityId: playlist.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { itemCount: playlist.items.length },
+    });
+    this.playlists.push(playlist);
+    this.audits.push(auditRecord);
+    return { created: true, value: playlist } as const;
   }
   async getPlaylist(org: string, playlistId: string) {
     return (
@@ -1328,6 +1538,52 @@ export class MemoryStore implements DataStore {
       (x) => !(x.organizationId === org && x.id === playlistId),
     );
     return "DELETED" as const;
+  }
+  async deletePlaylistAndAudit(
+    org: string,
+    playlistId: string,
+    audit: UserMutationAuditContext,
+  ) {
+    if (
+      !this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN", "PUBLISHER"])
+    )
+      return { deleted: false, reason: "FORBIDDEN" } as const;
+    if (
+      !this.playlists.some(
+        (playlist) =>
+          playlist.organizationId === org && playlist.id === playlistId,
+      )
+    )
+      return { deleted: false, reason: "NOT_FOUND" } as const;
+    if (
+      this.schedules.some(
+        (schedule) =>
+          schedule.organizationId === org && schedule.playlistId === playlistId,
+      ) ||
+      this.releases.some(
+        (release) =>
+          release.organizationId === org &&
+          release.sourcePlaylistId === playlistId,
+      )
+    )
+      return { deleted: false, reason: "IN_USE" } as const;
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "playlist.deleted",
+      entityType: "playlist",
+      entityId: playlistId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {},
+    });
+    this.playlists = this.playlists.filter(
+      (playlist) =>
+        !(playlist.organizationId === org && playlist.id === playlistId),
+    );
+    this.audits.push(auditRecord);
+    return { deleted: true } as const;
   }
   async listSchedules(org: string) {
     return this.schedules.filter((schedule) => {
