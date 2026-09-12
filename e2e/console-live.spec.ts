@@ -11,6 +11,8 @@ const demoScreenNames = [
   "Auditorium Lobby",
   "District Office",
 ];
+const demoPlaylistName = "High School Hallways";
+const demoScheduleName = "School Day Baseline";
 
 function requiredOwnerCredentials() {
   const email = process.env.SEED_ADMIN_EMAIL?.trim();
@@ -67,6 +69,14 @@ async function ensureLiveScreen(page: Page) {
     },
   });
   expect(createResponse).toBeOK();
+}
+
+async function liveHeaders(page: Page) {
+  const accessToken = await page.evaluate(() =>
+    window.sessionStorage.getItem("sg_access_token"),
+  );
+  expect(accessToken).toBeTruthy();
+  return { Authorization: `Bearer ${accessToken}` };
 }
 
 test.beforeEach(async ({ page }) => {
@@ -191,4 +201,79 @@ test("a screens 401 clears the live session and never substitutes demo fleet rec
   for (const name of demoScreenNames) {
     await expect(page.getByText(name, { exact: true })).toHaveCount(0);
   }
+});
+
+test("authenticated playlists render live definitions without fixture or mutation affordances", async ({
+  page,
+}) => {
+  await loginAsSeededOwner(page);
+  const headers = await liveHeaders(page);
+  const playlistName = `Chromium read-only playlist ${Date.now()}`;
+  const created = await page.request.post(`${apiBaseUrl}/playlists`, {
+    headers,
+    data: { name: playlistName, description: "E2E API fixture", items: [] },
+  });
+  expect(created.status()).toBe(201);
+  const playlist = (await created.json()) as { id: string };
+
+  try {
+    await page.goto("/playlists");
+    await expect(page.getByText("Live API data")).toBeVisible();
+    await expect(page.getByText(playlistName, { exact: true })).toBeVisible();
+    await expect(page.getByText(demoPlaylistName, { exact: true })).toHaveCount(
+      0,
+    );
+    const pageContent = page.locator("#main-content");
+    await expect(
+      pageContent.getByRole("button", {
+        name: /new|edit|delete|preview|options/i,
+      }),
+    ).toHaveCount(0);
+    await expect(pageContent.getByText(/Assigned to/i)).toHaveCount(0);
+  } finally {
+    const removed = await page.request.delete(
+      `${apiBaseUrl}/playlists/${encodeURIComponent(playlist.id)}`,
+      { headers },
+    );
+    expect(removed.status()).toBe(204);
+  }
+});
+
+test("authenticated schedules mirror the live collection without inferred state", async ({
+  page,
+}) => {
+  await loginAsSeededOwner(page);
+  const headers = await liveHeaders(page);
+  const response = await page.request.get(`${apiBaseUrl}/schedules`, {
+    headers,
+  });
+  expect(response).toBeOK();
+  const schedules = (await response.json()) as {
+    data: Array<{ name: string; enabled: boolean }>;
+  };
+
+  await page.goto("/schedules");
+  await expect(page.getByText("Live API data")).toBeVisible();
+  if (schedules.data[0]) {
+    await expect(
+      page.getByText(schedules.data[0].name, { exact: true }),
+    ).toBeVisible();
+  } else {
+    await expect(
+      page.getByRole("heading", { name: "No schedules" }),
+    ).toBeVisible();
+  }
+  await expect(page.getByText(demoScheduleName, { exact: true })).toHaveCount(
+    0,
+  );
+  const pageContent = page.locator("#main-content");
+  await expect(
+    pageContent.getByRole("button", {
+      name: /new|publish|withdraw|options/i,
+    }),
+  ).toHaveCount(0);
+  for (const inferred of ["Active", "Upcoming", "Draft", "Published"])
+    await expect(pageContent.getByText(inferred, { exact: true })).toHaveCount(
+      0,
+    );
 });

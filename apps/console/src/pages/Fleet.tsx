@@ -11,8 +11,8 @@ import {
   KeyRound,
   AlertTriangle,
 } from "lucide-react";
-import type { ScreenSummary } from "@screengoblin/contracts";
-import { screens } from "../data";
+import type { ManagementScreen } from "@screengoblin/contracts";
+import { screens, type DemoScreen } from "../data";
 import {
   Button,
   Drawer,
@@ -40,6 +40,8 @@ const terminalReenrollmentStatuses = new Set([
   "expired",
 ]);
 
+type FleetScreen = ManagementScreen | DemoScreen;
+
 function deviceDescription(device: DeviceReenrollmentCandidate["device"]) {
   const values = [
     device.model,
@@ -55,7 +57,7 @@ function deviceDescription(device: DeviceReenrollmentCandidate["device"]) {
 
 export function Fleet({ canManage = true }: { canManage?: boolean }) {
   const liveViewRequested = api.hasLiveSession() || !api.demoAllowed();
-  const [fleetScreens, setFleetScreens] = useState<ScreenSummary[]>(
+  const [fleetScreens, setFleetScreens] = useState<FleetScreen[]>(
     liveViewRequested ? [] : screens,
   );
   const [loadError, setLoadError] = useState("");
@@ -64,7 +66,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
   >(liveViewRequested ? "loading" : "demo");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All statuses");
-  const [selected, setSelected] = useState<ScreenSummary | null>(null);
+  const [selected, setSelected] = useState<FleetScreen | null>(null);
   const [pairOpen, setPairOpen] = useState(false);
   const [pairing, setPairing] = useState<{
     code: string;
@@ -72,7 +74,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
   }>();
   const [pairError, setPairError] = useState("");
   const [reenrollOpen, setReenrollOpen] = useState(false);
-  const [reenrollScreen, setReenrollScreen] = useState<ScreenSummary | null>(
+  const [reenrollScreen, setReenrollScreen] = useState<FleetScreen | null>(
     null,
   );
   const [reenrollGrant, setReenrollGrant] = useState<DeviceReenrollmentGrant>();
@@ -162,7 +164,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
     }
   }, [reenrollStatus, selectedCandidateId]);
 
-  const beginReenrollment = (screen: ScreenSummary) => {
+  const beginReenrollment = (screen: FleetScreen) => {
     if (reenrollGrant && !reenrollmentIsTerminal && !reenrollActivation) {
       setReenrollOpen(true);
       return;
@@ -357,8 +359,12 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
               <tr>
                 <th>Screen</th>
                 <th>Location</th>
-                <th>Status</th>
-                <th>Now playing</th>
+                <th>Reported status</th>
+                <th>
+                  {loadState === "demo"
+                    ? "Now playing (demo)"
+                    : "Player-reported asset ID"}
+                </th>
                 <th>Last seen</th>
                 <th>Player</th>
                 <th>
@@ -381,9 +387,17 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
                   <td>
                     <Status value={s.status} />
                   </td>
-                  <td>{s.nowPlaying}</td>
-                  <td className="table-secondary">{s.lastSeenAt}</td>
-                  <td className="table-secondary">v{s.playerVersion}</td>
+                  <td>
+                    {loadState === "demo"
+                      ? demoNowPlaying(s)
+                      : liveValue(s, "nowPlayingAssetId")}
+                  </td>
+                  <td className="table-secondary">
+                    {formatTimestamp(s.lastSeenAt)}
+                  </td>
+                  <td className="table-secondary">
+                    {s.playerVersion ? `v${s.playerVersion}` : "Not reported"}
+                  </td>
                   <td>
                     <button
                       className="icon-button"
@@ -455,19 +469,45 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
               </button>
             </div>
             <div className="drawer-section">
-              <h3>Device health</h3>
+              <h3>Player reports</h3>
               <dl className="detail-list">
                 <div>
-                  <dt>Now playing</dt>
+                  <dt>
+                    {loadState === "demo"
+                      ? "Now playing (demo)"
+                      : "Player-reported asset ID"}
+                  </dt>
                   <dd>
                     {loadState === "demo"
-                      ? (selected.nowPlaying ?? "Not reported")
-                      : "Not available from this API"}
+                      ? demoNowPlaying(selected)
+                      : liveValue(selected, "nowPlayingAssetId")}
                   </dd>
                 </div>
                 <div>
-                  <dt>Health telemetry</dt>
-                  <dd>Not exposed by the current Console contract</dd>
+                  <dt>Last heartbeat</dt>
+                  <dd>{formatTimestamp(selected.lastSeenAt)}</dd>
+                </div>
+                <div>
+                  <dt>Network type</dt>
+                  <dd>{liveValue(selected, "networkType")}</dd>
+                </div>
+                <div>
+                  <dt>Reported uptime</dt>
+                  <dd>
+                    {"uptimeSeconds" in selected &&
+                    selected.uptimeSeconds !== undefined
+                      ? formatDuration(selected.uptimeSeconds)
+                      : "Not reported"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Reported free storage</dt>
+                  <dd>
+                    {"freeStorageBytes" in selected &&
+                    selected.freeStorageBytes !== undefined
+                      ? formatBytes(selected.freeStorageBytes)
+                      : "Not reported"}
+                  </dd>
                 </div>
               </dl>
             </div>
@@ -484,7 +524,19 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
                 </div>
                 <div>
                   <dt>Player version</dt>
-                  <dd>{selected.playerVersion}</dd>
+                  <dd>{selected.playerVersion ?? "Not reported"}</dd>
+                </div>
+                <div>
+                  <dt>Model</dt>
+                  <dd>{liveValue(selected, "model")}</dd>
+                </div>
+                <div>
+                  <dt>OS version</dt>
+                  <dd>{liveValue(selected, "osVersion")}</dd>
+                </div>
+                <div>
+                  <dt>Manifest version</dt>
+                  <dd>{liveValue(selected, "manifestVersion")}</dd>
                 </div>
               </dl>
               <div className="tag-row">
@@ -731,4 +783,66 @@ function heartbeatDescription(lastSeenAt?: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(timestamp)}`;
+}
+
+function demoNowPlaying(screen: FleetScreen) {
+  return "demoNowPlayingTitle" in screen
+    ? (screen.demoNowPlayingTitle ?? "Not reported")
+    : "Not reported";
+}
+
+function liveValue(
+  screen: FleetScreen,
+  field:
+    | "nowPlayingAssetId"
+    | "networkType"
+    | "model"
+    | "osVersion"
+    | "manifestVersion",
+) {
+  if (!(field in screen)) return "Not reported";
+  const value = (screen as Partial<ManagementScreen>)[field];
+  return typeof value === "string" && value ? value : "Not reported";
+}
+
+function formatTimestamp(value?: string) {
+  if (!value) return "Not reported";
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(timestamp);
+}
+
+function formatDuration(seconds: number) {
+  if (!Number.isSafeInteger(seconds) || seconds < 0) return "Not reported";
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [
+    days ? `${days}d` : "",
+    hours ? `${hours}h` : "",
+    minutes ? `${minutes}m` : "",
+    remainingSeconds || !(days || hours || minutes)
+      ? `${remainingSeconds}s`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) return "Not reported";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = bytes / 1024;
+  let unit = units[0]!;
+  for (const next of units.slice(1)) {
+    if (value < 1024) break;
+    value /= 1024;
+    unit = next;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${unit}`;
 }

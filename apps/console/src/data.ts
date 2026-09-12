@@ -1,5 +1,9 @@
 import type { FleetSummary, ScreenSummary } from "@screengoblin/contracts";
 
+export interface DemoScreen extends Omit<ScreenSummary, "nowPlaying"> {
+  demoNowPlayingTitle?: string;
+}
+
 export type Asset = {
   id: string;
   name: string;
@@ -32,7 +36,7 @@ export type Schedule = {
   status: "Active" | "Upcoming" | "Draft";
 };
 
-export const screens: ScreenSummary[] = [
+export const screens: DemoScreen[] = [
   {
     id: "scr-001",
     name: "Main Lobby",
@@ -41,7 +45,7 @@ export const screens: ScreenSummary[] = [
     orientation: "landscape",
     resolution: "3840 × 2160",
     lastSeenAt: "Just now",
-    nowPlaying: "Morning announcements",
+    demoNowPlayingTitle: "Morning announcements",
     playerVersion: "0.8.4",
     tags: ["lobby", "student-facing"],
   },
@@ -53,7 +57,7 @@ export const screens: ScreenSummary[] = [
     orientation: "landscape",
     resolution: "1920 × 1080",
     lastSeenAt: "18 sec ago",
-    nowPlaying: "Club Fair",
+    demoNowPlayingTitle: "Club Fair",
     playerVersion: "0.8.4",
     tags: ["hallway"],
   },
@@ -65,7 +69,7 @@ export const screens: ScreenSummary[] = [
     orientation: "landscape",
     resolution: "1920 × 1080",
     lastSeenAt: "4 min ago",
-    nowPlaying: "Lunch Menu · Friday",
+    demoNowPlayingTitle: "Lunch Menu · Friday",
     playerVersion: "0.8.3",
     tags: ["menu", "priority"],
   },
@@ -77,7 +81,7 @@ export const screens: ScreenSummary[] = [
     orientation: "portrait",
     resolution: "1080 × 1920",
     lastSeenAt: "1 min ago",
-    nowPlaying: "Library rotation",
+    demoNowPlayingTitle: "Library rotation",
     playerVersion: "0.8.4",
     tags: ["portrait", "quiet-zone"],
   },
@@ -89,7 +93,7 @@ export const screens: ScreenSummary[] = [
     orientation: "landscape",
     resolution: "1920 × 1080",
     lastSeenAt: "18 min ago",
-    nowPlaying: "Last known good · Events",
+    demoNowPlayingTitle: "Last known good · Events",
     playerVersion: "0.8.4",
     tags: ["public", "emergency-enabled"],
   },
@@ -101,7 +105,7 @@ export const screens: ScreenSummary[] = [
     orientation: "landscape",
     resolution: "1920 × 1080",
     lastSeenAt: "2 min ago",
-    nowPlaying: "Fallback brand loop",
+    demoNowPlayingTitle: "Fallback brand loop",
     playerVersion: "0.8.2",
     tags: ["staff-facing"],
   },

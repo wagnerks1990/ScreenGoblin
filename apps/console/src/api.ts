@@ -1,9 +1,12 @@
 import type {
   FleetSummary,
+  ManagementListResponse,
+  ManagementPlaylist,
+  ManagementSchedule,
+  ManagementScreen,
   MediaAsset,
-  ScreenSummary,
 } from "@screengoblin/contracts";
-import { demoFleet, screens } from "./data";
+import { demoFleet, screens, type DemoScreen } from "./data";
 
 export type ApiResult<T> = { data: T; source: "live" | "demo" };
 export interface LiveSession {
@@ -75,12 +78,12 @@ function clearSession(invalidated: boolean) {
   window.dispatchEvent(new Event("screengoblin:session-changed"));
 }
 
-async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
+async function authenticatedRequest<T>(path: string): Promise<T> {
   const accessToken = window.sessionStorage.getItem("sg_access_token");
   if (!accessToken) {
     if (window.sessionStorage.getItem(invalidatedSessionKey))
       throw new Error("Live session expired; sign in again");
-    return { data: fallback, source: "demo" };
+    throw new Error("Connect the Console to the live API first");
   }
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 2500);
@@ -98,10 +101,19 @@ async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
       }
       throw new Error(`Live API returned HTTP ${response.status}`);
     }
-    return { data: (await response.json()) as T, source: "live" };
+    return (await response.json()) as T;
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
+  if (!window.sessionStorage.getItem("sg_access_token")) {
+    if (window.sessionStorage.getItem(invalidatedSessionKey))
+      throw new Error("Live session expired; sign in again");
+    return { data: fallback, source: "demo" };
+  }
+  return { data: await authenticatedRequest<T>(path), source: "live" };
 }
 
 async function mutate<T>(path: string, init: RequestInit): Promise<T> {
@@ -212,7 +224,9 @@ export const api = {
       { method: "DELETE" },
     ),
   fleet: async (): Promise<ApiResult<FleetSummary>> => {
-    const result = await request<{ data: ScreenSummary[] }>("/screens", {
+    const result = await request<{
+      data: Array<ManagementScreen | DemoScreen>;
+    }>("/screens", {
       data: screens,
     });
     if (result.source === "demo") return { data: demoFleet, source: "demo" };
@@ -226,10 +240,12 @@ export const api = {
     );
     return { data: fleet, source: "live" };
   },
-  screens: async (): Promise<ApiResult<ScreenSummary[]>> => {
-    const result = await request<{ data: ScreenSummary[] }>("/screens", {
-      data: screens,
-    });
+  screens: async (): Promise<
+    ApiResult<Array<ManagementScreen | DemoScreen>>
+  > => {
+    const result = await request<{
+      data: Array<ManagementScreen | DemoScreen>;
+    }>("/screens", { data: screens });
     return {
       data: result.data.data,
       source: result.source,
@@ -241,4 +257,16 @@ export const api = {
     });
     return { data: result.data.data, source: result.source };
   },
+  playlists: async (): Promise<ManagementPlaylist[]> =>
+    (
+      await authenticatedRequest<ManagementListResponse<ManagementPlaylist>>(
+        "/playlists",
+      )
+    ).data,
+  schedules: async (): Promise<ManagementSchedule[]> =>
+    (
+      await authenticatedRequest<ManagementListResponse<ManagementSchedule>>(
+        "/schedules",
+      )
+    ).data,
 };
