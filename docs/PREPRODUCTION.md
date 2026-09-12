@@ -6,7 +6,10 @@ An unchecked item is a known gap, not an implicit approval.
 
 - [ ] Pilot content is non-life-safety and contains no student, staff, visitor, or other PII.
 - [ ] Players run on a dedicated signage VLAN with client isolation and only required outbound access.
-- [ ] `EMERGENCY_FEATURE_ENABLED=false` remains enforced until every emergency/security gate is signed off.
+- [x] Production startup rejects `EMERGENCY_FEATURE_ENABLED=true`; this
+      containment control remains required until every emergency/security gate
+      is implemented and signed off. This does not complete those gates or
+      authorize emergency use.
 - [ ] The pilot owner understands ScreenGoblin is not the authoritative emergency-notification system.
 
 ## Product and reliability

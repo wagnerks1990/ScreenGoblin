@@ -120,7 +120,7 @@ Routine polls may refresh `generatedAt`, `validUntil`, and the signature without
 
 Daily times use local wall-clock semantics in the configured IANA time zone. A boundary that does not exist during a spring-forward gap advances to the first valid instant after the gap. During a fall-back repeat, starts use the later occurrence and ends use the earlier occurrence. This prevents early activation and prevents ended content from reactivating when the clock repeats.
 
-Emergency overrides are distinct, expire explicitly, and never erase the baseline schedule. Emergency publishing remains disabled by default until separate approval, player acknowledgement, and partial-delivery handling are implemented and physically tested.
+Emergency overrides are distinct, expire explicitly, and never erase the baseline schedule. Production configuration rejects emergency publishing while separate approval, MFA, player acknowledgement, partial-delivery handling, recovery, and tabletop gates remain incomplete. Non-production fixture coverage does not authorize operational use.
 
 ## Commands (planned; disabled in this prototype)
 

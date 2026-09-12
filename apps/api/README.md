@@ -48,8 +48,14 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
 
 ## Security and scope
 
-- OWNER/ADMIN control screens and emergency takeovers; PUBLISHER may manage ordinary content and schedules; VIEWER is read-only.
-- Emergency publishing is supplemental—not a life-safety or mass-notification system—and is disabled by default. Set `EMERGENCY_FEATURE_ENABLED=true` only after local policy, authorization, failover, and end-to-end device acknowledgment have been validated.
+- OWNER/ADMIN control screens; PUBLISHER may manage ordinary content and
+  schedules; VIEWER is read-only. Legacy emergency routes exist only for
+  isolated non-production fixtures and are not a complete authorization model.
+- Emergency publishing is supplemental—not a life-safety or mass-notification
+  system—and production startup rejects `EMERGENCY_FEATURE_ENABLED=true` while
+  the required authorization, two-person approval, MFA, acknowledgement,
+  partial-delivery, recovery, and tabletop gates remain incomplete. The flag is
+  available only outside production for isolated automated fixtures.
 - Database queries include organization scope. Public screen responses exclude bearer verifier hashes and private device-authentication state. Pairing codes use a deployment-specific HMAC pepper at rest. Proof challenges are short-lived, stored only as hashes, durably bounded, and consumed once after valid signature verification. OWNER/ADMIN revocation transactionally disables a credential, invalidates outstanding challenges, marks the screen, and appends one audit record.
 - Proof-v1 supports manual, targeted, zero-overlap re-enrollment of an
   existing screen. The request immediately revokes the old identity; fresh-key
