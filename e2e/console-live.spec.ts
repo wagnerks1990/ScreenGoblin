@@ -102,7 +102,9 @@ test("an owner connects to live fleet data, creates a pairing code, and disconne
       return /^\d{6}$/.test(code ?? "");
     })
     .toBe(true);
-  await pairingDialog.getByRole("button", { name: "Close" }).click();
+  await pairingDialog
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
 
   await page.getByRole("button", { name: "Disconnect live" }).click();
   await expect(
