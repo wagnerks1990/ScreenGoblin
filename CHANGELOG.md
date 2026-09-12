@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Add a real Chromium Console gate against an isolated PostgreSQL-backed API;
+  verify owner login, live fleet data, pairing, explicit disconnect, and
+  fail-closed session invalidation without demonstration-record substitution.
+- Install Debian's exact fixed PCRE2 package in the final API image to remediate
+  CVE-2026-86145 and CVE-2026-89161 while the immutable Node base remains pinned.
+
 - Pin every checked-in container build, service, CI, and recovery-fixture image
   to a registry digest; remove floating OS package upgrades from Docker builds;
   and add a validation gate that rejects mutable container inputs.
@@ -92,6 +98,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   boundaries, including current-membership revalidation.
 
 ### Fixed
+
+- Omit the JSON content type from bodyless Console mutations so strict API
+  parsing accepts pairing-code creation instead of rejecting an empty JSON body.
+
+- Render Console dialogs through labeled portals, make background application
+  content inert, contain keyboard focus, restore the exact opener, and prevent
+  modal close controls from implicitly submitting forms.
 
 - Build shared contracts before every API development, build, type-check, and
   test lifecycle so clean workspaces cannot rely on stale generated output.

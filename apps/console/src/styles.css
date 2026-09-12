@@ -140,7 +140,7 @@ a:focus-visible {
 }
 .nav-section-label {
   padding: 19px 12px 7px;
-  color: #62758a;
+  color: #8093a8;
   font-size: 0.67rem;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -156,7 +156,7 @@ a:focus-visible {
   text-decoration: none;
   font-size: 0.875rem;
   font-weight: 600;
-  transition: 0.15s;
+  transition: none;
 }
 .nav-link svg {
   color: #8093a8;
@@ -1299,7 +1299,7 @@ th {
   padding: 11px 14px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #6f8398;
+  color: #91a3b8;
   font-size: 0.57rem;
   background: #132336;
   border-bottom: 1px solid var(--border);

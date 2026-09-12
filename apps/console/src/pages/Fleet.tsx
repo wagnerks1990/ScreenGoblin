@@ -60,10 +60,12 @@ function deviceDescription(device: DeviceReenrollmentCandidate["device"]) {
 
 export function Fleet({ canManage = true }: { canManage?: boolean }) {
   const [fleetScreens, setFleetScreens] = useState<ScreenSummary[]>(
-    api.hasLiveSession() ? [] : screens,
+    api.hasLiveSession() || !api.demoAllowed() ? [] : screens,
   );
   const [loadError, setLoadError] = useState("");
-  const [source, setSource] = useState<"live" | "demo">("demo");
+  const [source, setSource] = useState<"live" | "demo">(
+    api.demoAllowed() ? "demo" : "live",
+  );
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All statuses");
   const [selected, setSelected] = useState<ScreenSummary | null>(null);
@@ -110,6 +112,8 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
         setLoadError("");
       })
       .catch((error: unknown) => {
+        setFleetScreens([]);
+        setSource("live");
         setLoadError(
           error instanceof Error
             ? error.message

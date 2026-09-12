@@ -62,6 +62,58 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_DB: screengoblin_e2e
+          POSTGRES_USER: screengoblin
+          POSTGRES_PASSWORD: e2e-test-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U screengoblin -d screengoblin_e2e"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      HOST: 127.0.0.1
+      PORT: 3000
+      DATABASE_URL: postgresql://screengoblin:e2e-test-only-password@127.0.0.1:5432/screengoblin_e2e?schema=public
+      JWT_SECRET: e2e-only-jwt-secret-at-least-32-characters
+      PAIRING_CODE_PEPPER: e2e-only-pairing-pepper-at-least-32-characters
+      MANIFEST_SIGNING_PRIVATE_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      PUBLIC_API_URL: http://127.0.0.1:3000
+      CORS_ORIGINS: http://127.0.0.1:4173
+      MEDIA_ALLOWED_ORIGINS: http://127.0.0.1:4173
+      DEVICE_AUTH_MODE: development-bearer
+      EMERGENCY_FEATURE_ENABLED: "false"
+      LOG_LEVEL: warn
+      VITE_API_BASE_URL: http://127.0.0.1:3000/api/v1
+      SEED_ADMIN_EMAIL: owner.e2e@example.test
+      SEED_ADMIN_PASSWORD: e2e-only-owner-password
+      SEED_ADMIN_NAME: E2E Owner
+      SEED_ORGANIZATION_NAME: ScreenGoblin E2E
+      SEED_ORGANIZATION_SLUG: screengoblin-e2e
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm run validate:container-inputs
+      - run: npm ci
+      - name: Install pinned Chromium browser revision
+        run: npx playwright install --with-deps chromium
+      - run: npm run prisma:generate -w @screengoblin/api
+      - run: npm run prisma:migrate -w @screengoblin/api
+      - run: npm run prisma:seed -w @screengoblin/api
+      - run: npm run build -w @screengoblin/api
+      - run: npm run build -w @screengoblin/console
+      - run: npm run test:e2e:console
+
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 30

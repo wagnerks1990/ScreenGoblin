@@ -24,9 +24,18 @@ export function Dashboard({
   onCreate: () => void;
   canCreate: boolean;
 }) {
-  const [fleet, setFleet] = useState<FleetSummary>(demoFleet);
-  const [screens, setScreens] = useState<ScreenSummary[]>(fallbackScreens);
-  const [source, setSource] = useState<"live" | "demo">("demo");
+  const demoAllowed = api.demoAllowed();
+  const [fleet, setFleet] = useState<FleetSummary>(
+    demoAllowed
+      ? demoFleet
+      : { total: 0, online: 0, warning: 0, offline: 0, fallback: 0 },
+  );
+  const [screens, setScreens] = useState<ScreenSummary[]>(
+    demoAllowed ? fallbackScreens : [],
+  );
+  const [source, setSource] = useState<"live" | "demo">(
+    demoAllowed ? "demo" : "live",
+  );
   const [loadError, setLoadError] = useState("");
   useEffect(() => {
     void Promise.all([api.fleet(), api.screens()])
