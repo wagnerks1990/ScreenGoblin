@@ -124,10 +124,7 @@ export class MemoryStore implements DataStore {
           left.id.localeCompare(right.id),
       )
       .slice(-(LOGIN_FAILURE_MAX_RECORDS - 1));
-    this.loginFailures = [
-      ...retained,
-      { id: id(), ...input, occurredAt },
-    ];
+    this.loginFailures = [...retained, { id: id(), ...input, occurredAt }];
   }
   async findSessionUser(userId: string, organizationId: string) {
     return (

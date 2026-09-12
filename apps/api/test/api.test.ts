@@ -276,16 +276,8 @@ describe("authentication and organization RBAC", () => {
     ]);
     expect(store.loginFailures.map((event) => event.accountKey).sort()).toEqual(
       [
-        opaqueSecurityEventKey(
-          secret,
-          "login-failure-account",
-          knownEmail,
-        ),
-        opaqueSecurityEventKey(
-          secret,
-          "login-failure-account",
-          unknownEmail,
-        ),
+        opaqueSecurityEventKey(secret, "login-failure-account", knownEmail),
+        opaqueSecurityEventKey(secret, "login-failure-account", unknownEmail),
       ].sort(),
     );
     expect(
