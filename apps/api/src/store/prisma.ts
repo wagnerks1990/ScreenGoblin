@@ -374,7 +374,9 @@ const isForeignKeyConstraintError = (error: unknown) =>
   error.code === "P2003";
 const isRetryableWriteConflict = (error: unknown) =>
   error instanceof Prisma.PrismaClientKnownRequestError &&
-  error.code === "P2034";
+  (error.code === "P2034" ||
+    (error.code === "P2010" &&
+      (error.meta as { code?: unknown } | undefined)?.code === "40001"));
 
 export class PrismaStore implements DataStore {
   constructor(readonly prisma = new PrismaClient()) {}
