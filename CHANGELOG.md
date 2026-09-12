@@ -6,6 +6,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Fail production startup when JWT or pairing secrets reuse documented
+  placeholders or checked-in test fixtures, or when manifest signing uses the
+  public all-zero test seed. Non-production fixtures remain available only
+  outside production.
 - Revalidate current `OWNER`/`ADMIN` membership inside pairing-code issuance
   transactions so concurrent demotion, disablement, or tenant removal cannot
   mint enrollment authority; authorization failure leaves pairing and audit

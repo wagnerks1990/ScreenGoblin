@@ -15,7 +15,7 @@ npm run prisma:seed -w @screengoblin/api
 npm run dev -w @screengoblin/api
 ```
 
-The API listens on port `3000` by default. Replace both secrets and the seeded password before exposing the service. `/health/live` returns an empty `204` when the process is alive. The internal-only `/health/ready` returns an empty `204` only when PostgreSQL and the production Redis request-protection backend are reachable; failures return an empty `503` without identifying the failed dependency.
+The API listens on port `3000` by default. Generate independent JWT and pairing secrets, a random manifest-signing seed, and a unique seeded password before exposing the service. Production startup rejects documented placeholders, checked-in test secrets, and the all-zero signing seed used by automated tests. `/health/live` returns an empty `204` when the process is alive. The internal-only `/health/ready` returns an empty `204` only when PostgreSQL and the production Redis request-protection backend are reachable; failures return an empty `503` without identifying the failed dependency.
 
 ## API surface
 
