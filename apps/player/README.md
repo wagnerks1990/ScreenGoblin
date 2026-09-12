@@ -37,8 +37,32 @@ its public key and challenge-signing operation to the WebView. The server enroll
 that public key through a two-stage transcript-bound exchange and requires a
 fresh, one-use, operation- and body-bound proof for each heartbeat and manifest.
 Production proof mode issues no bearer token. Remote device commands remain
-disabled until their server-side authorization, persistence, expiry, and replay
-controls are implemented.
+disabled. The Android wrapper contains a native-only journal in app-private
+preferences that recognizes exactly `REFRESH_CONTENT` and `RESTART_RENDERER`,
+uses lexicographic credential-generation and per-generation sequence ordering,
+atomically supersedes every older-generation pending or terminal state when a
+higher generation arrives, and rejects rollback and conflicting replay. Restart
+completion requires an explicit trusted native ready signal from a different
+renderer lifecycle; bridge JavaScript cannot assert readiness, and plugin reload
+alone does not report success. The trusted native lifecycle integration is not
+implemented, so the staged restart remains pending. The plugin is deliberately
+not registered with the current Capacitor bridge, no server response or Player
+JavaScript can invoke it, no command API or polling route exists, and the Console
+continues to offer no command action. `SharedPreferences.commit()` gives this
+substrate a synchronous Android API-level replace result, but a false return or
+exception does not prove whether Android's in-memory preferences changed. The
+journal then poisons that storage namespace for the rest of the process: every operation
+returns `STATE_UNCERTAIN` without reading it. A process restart clears only the
+in-memory poison; the journal then accepts an exact valid stored snapshot and
+fails closed with `STATE_CORRUPT` otherwise. Clearing application data is a
+manual destructive reset that also erases replay high-water state, and a running
+poisoned process must still be restarted. None of this is evidence of physical
+power-loss durability, encrypted or hardware-backed storage, privileged rollback
+resistance, or state survival after application data is cleared. Server
+authorization, signed delivery, expiry, audit, capability negotiation,
+proof-authenticated acknowledgement, trusted native readiness integration, and
+representative device lifecycle/power-loss testing must land together before
+this substrate can be reached.
 
 ## Local development
 
