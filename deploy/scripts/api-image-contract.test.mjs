@@ -9,8 +9,10 @@ const dockerfile = readFileSync(
 
 test("the API image retains and verifies workspace runtime dependencies", () => {
   assert.match(dockerfile, /npm prune --omit=dev/);
-  assert.match(dockerfile, /--workspace @screengoblin\/api/);
-  assert.match(dockerfile, /--workspace @screengoblin\/contracts/);
+  assert.match(
+    dockerfile,
+    /npm prune --omit=dev --workspaces --include-workspace-root/,
+  );
 
   const runtimeAssertions = dockerfile.match(
     /await Promise\.all\(\[import\('@prisma\/client'\), import\('fastify'\), import\('@screengoblin\/contracts'\)\]\)/g,

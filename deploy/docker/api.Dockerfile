@@ -13,9 +13,7 @@ RUN npm run build -w @screengoblin/contracts \
  && npm run build -w @screengoblin/api
 
 FROM build AS production-deps
-RUN npm prune --omit=dev \
-      --workspace @screengoblin/api \
-      --workspace @screengoblin/contracts \
+RUN npm prune --omit=dev --workspaces --include-workspace-root \
  && node --input-type=module -e "await Promise.all([import('@prisma/client'), import('fastify'), import('@screengoblin/contracts')])" \
  && test -f node_modules/.prisma/client/schema.prisma
 

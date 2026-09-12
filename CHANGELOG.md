@@ -178,8 +178,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   internal backend network, retain redacted failure evidence, and always remove
   disposable containers and volumes. Render the MinIO bootstrap policy using
   only POSIX shell built-ins available in the pinned client image. Preserve the
-  API and contracts workspace production dependencies during image pruning, and
-  fail the build if the Prisma package or generated client is absent.
+  workspace production dependencies during image pruning, and fail the build if
+  the Prisma package, Fastify, shared contracts, or generated client is absent.
 - Replace automatic demo seeding with an explicit one-time bootstrap profile that refuses placeholders and never resets an existing owner password or grants unexpected privileges.
 - Add contributor/agent invariants and AI safety context.
 - Add explicit NO-GO governance templates for data flows, the non-PII pilot profile, retention/deletion, required approvals, incident response, SLOs, release evidence, and supported-device validation.
