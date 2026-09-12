@@ -15,6 +15,87 @@ import {
   enforceRateLimitBudget,
   opaqueRateLimitKey,
 } from "../utils/rate-limit.js";
+import type { ScheduleRecord } from "../domain/types.js";
+
+const MANIFEST_LEASE_MS = 5 * 60_000;
+
+type ZonedParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+};
+
+const zonedParts = (instant: Date, timeZone: string): ZonedParts => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const numberPart = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((candidate) => candidate.type === type)?.value);
+  return {
+    year: numberPart("year"),
+    month: numberPart("month"),
+    day: numberPart("day"),
+    hour: numberPart("hour"),
+    minute: numberPart("minute"),
+  };
+};
+
+/** Resolve a wall-clock time in an IANA zone without assuming a fixed UTC offset. */
+const zonedInstant = (parts: ZonedParts, timeZone: string): Date => {
+  const desired = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+  );
+  let candidate = desired;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const actual = zonedParts(new Date(candidate), timeZone);
+    const represented = Date.UTC(
+      actual.year,
+      actual.month - 1,
+      actual.day,
+      actual.hour,
+      actual.minute,
+    );
+    const correction = desired - represented;
+    if (correction === 0) break;
+    candidate += correction;
+  }
+  return new Date(candidate);
+};
+
+const selectedSchedulePlaybackEndsAt = (
+  schedule: ScheduleRecord,
+  generatedAt: Date,
+): string | undefined => {
+  const candidates: number[] = [];
+  if (schedule.endsAt) candidates.push(Date.parse(schedule.endsAt));
+  if (schedule.dailyEndMinutes !== undefined) {
+    const local = zonedParts(generatedAt, schedule.timezone);
+    const dailyBoundary = zonedInstant(
+      {
+        ...local,
+        hour: Math.floor(schedule.dailyEndMinutes / 60),
+        minute: schedule.dailyEndMinutes % 60,
+      },
+      schedule.timezone,
+    ).getTime();
+    if (dailyBoundary > generatedAt.getTime()) candidates.push(dailyBoundary);
+  }
+  return candidates.length
+    ? new Date(Math.min(...candidates)).toISOString()
+    : undefined;
+};
 
 const claim = z
   .object({
@@ -35,8 +116,12 @@ const heartbeat = z
     playerVersion: z.string().min(1).max(80),
     manifestVersion: z.string().max(128).optional(),
     nowPlayingAssetId: opaqueId.optional(),
-    uptimeSeconds: z.number().int().nonnegative(),
-    freeStorageBytes: z.number().int().nonnegative(),
+    uptimeSeconds: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    freeStorageBytes: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER),
     networkType: z.string().min(1).max(40),
     occurredAt: z.iso.datetime(),
   })
@@ -84,24 +169,33 @@ export const pairingAdminRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (request, reply) => {
-      const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
       const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-      const pairing = await app.store.createPairing(
-        request.user.organizationId,
-        pairingCodeHash(code, app.config.pairingCodePepper),
-        expiresAt,
-      );
-      await app.store.audit({
-        organizationId: request.user.organizationId,
-        actorUserId: request.user.sub,
-        actorType: "user",
-        action: "pairing.created",
-        entityType: "pairing",
-        entityId: pairing.id,
-        ipAddress: request.ip,
-        requestId: request.id,
-        metadata: { expiresAt },
-      });
+      let code: string | undefined;
+      let pairingId: string | undefined;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const candidate = randomInt(0, 1_000_000).toString().padStart(6, "0");
+        const result = await app.store.tryCreatePairingAndAudit(
+          request.user.organizationId,
+          pairingCodeHash(candidate, app.config.pairingCodePepper),
+          expiresAt,
+          {
+            actorUserId: request.user.sub,
+            ipAddress: request.ip,
+            requestId: request.id,
+          },
+        );
+        if (result.created) {
+          code = candidate;
+          pairingId = result.pairing.id;
+          break;
+        }
+      }
+      if (!code || !pairingId)
+        throw new ApiError(
+          503,
+          "PAIRING_CODE_SPACE_EXHAUSTED",
+          "A pairing code could not be allocated; try again",
+        );
       return reply.code(201).send({ code, expiresAt });
     },
   );
@@ -150,10 +244,11 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     async (request, reply) => {
       const input = claim.parse(request.body);
       const token = randomToken();
-      const screen = await app.store.claimPairing(
+      const screen = await app.store.claimPairingAndAudit(
         pairingCodeHash(input.code, app.config.pairingCodePepper),
         input.device,
         sha256(token),
+        { ipAddress: request.ip, requestId: request.id },
       );
       if (!screen)
         throw new ApiError(
@@ -161,16 +256,6 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           "PAIRING_CODE_INVALID",
           "Pairing code is invalid or expired",
         );
-      await app.store.audit({
-        organizationId: screen.organizationId,
-        actorType: "device",
-        action: "device.paired",
-        entityType: "screen",
-        entityId: screen.id,
-        ipAddress: request.ip,
-        requestId: request.id,
-        metadata: { installationId: input.device.installationId },
-      });
       return reply.code(201).send({
         screenId: screen.id,
         deviceToken: token,
@@ -234,7 +319,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     },
     async (request) => {
       const screen = request.device!;
-      const generatedAt = new Date().toISOString();
+      const generatedDate = new Date();
+      const generatedAt = generatedDate.toISOString();
       const emergency = app.config.emergencyPublishingEnabled
         ? await app.store.activeEmergency(
             screen.organizationId,
@@ -244,7 +330,11 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         : null;
       let priority: "normal" | "campaign" | "priority" | "emergency" = "normal";
       let releaseIdentity = "no-schedule";
-      let validUntil = new Date(Date.now() + 5 * 60_000).toISOString();
+      let withdrawn = true;
+      let playbackEndsAt: string | undefined;
+      let validUntil = new Date(
+        generatedDate.getTime() + MANIFEST_LEASE_MS,
+      ).toISOString();
       let items: Array<{
         id: string;
         asset: {
@@ -262,6 +352,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       }> = [];
       if (emergency) {
         priority = "emergency";
+        withdrawn = false;
         releaseIdentity = `emergency:${emergency.id}:${emergency.expiresAt}`;
         validUntil = emergency.expiresAt;
         const raw = JSON.stringify({
@@ -303,13 +394,6 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         ).sort(compareSchedulePrecedence);
         const selected = schedules[0];
         if (selected) {
-          priority = selected.priority;
-          releaseIdentity = `schedule:${selected.id}:${selected.updatedAt}`;
-          if (
-            selected.endsAt &&
-            new Date(selected.endsAt).getTime() < new Date(validUntil).getTime()
-          )
-            validUntil = selected.endsAt;
           const playlist = await app.store.getPlaylist(
             screen.organizationId,
             selected.playlistId,
@@ -353,6 +437,18 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                 durationSeconds: item.durationSeconds,
               }));
           }
+          // An applicable schedule without a playable item must clear playback.
+          // Publishing an empty non-withdrawn release would be rejected by the
+          // player and could leave stale content on screen indefinitely.
+          if (items.length > 0) {
+            priority = selected.priority;
+            withdrawn = false;
+            releaseIdentity = `schedule:${selected.id}:${selected.updatedAt}`;
+            playbackEndsAt = selectedSchedulePlaybackEndsAt(
+              selected,
+              generatedDate,
+            );
+          }
         }
       }
       const version = sha256(
@@ -360,7 +456,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           screenId: screen.id,
           releaseIdentity,
           priority,
-          validUntil,
+          withdrawn,
+          playbackEndsAt,
           items,
         }),
       );
@@ -370,6 +467,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         validUntil,
         screenId: screen.id,
         priority,
+        withdrawn,
+        ...(playbackEndsAt ? { playbackEndsAt } : {}),
         items,
       };
       return {

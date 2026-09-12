@@ -4,6 +4,9 @@ import type {
   EmergencyRecord,
   MediaRecord,
   PairingRecord,
+  PairingClaimAuditContext,
+  PairingCreateAuditContext,
+  PairingCreateResult,
   PlaylistRecord,
   ScheduleRecord,
   ScreenRecord,
@@ -24,11 +27,19 @@ export class MemoryStore implements DataStore {
   audits: AuditRecord[] = [];
   pairings: PairingRecord[] = [];
   async ping() {}
+  protected buildAuditRecord(
+    event: Omit<AuditRecord, "id" | "createdAt">,
+  ): AuditRecord {
+    return { id: id(), ...event, createdAt: now() };
+  }
   async findUserByEmail(email: string) {
     return (
-      this.users.find(
-        (u) => u.email.toLowerCase() === email.toLowerCase() && !u.disabledAt,
-      ) ?? null
+      this.users
+        .filter(
+          (u) => u.email.toLowerCase() === email.toLowerCase() && !u.disabledAt,
+        )
+        .sort((a, b) => a.organizationId.localeCompare(b.organizationId))[0] ??
+      null
     );
   }
   async findSessionUser(userId: string, organizationId: string) {
@@ -102,6 +113,33 @@ export class MemoryStore implements DataStore {
     return n !== this.screens.length;
   }
   async createPairing(org: string, codeHash: string, expiresAt: string) {
+    const result = await this.tryCreatePairing(org, codeHash, expiresAt);
+    if (!result.created) throw new Error("Pairing code collision");
+    return result.pairing;
+  }
+  async tryCreatePairing(
+    org: string,
+    codeHash: string,
+    expiresAt: string,
+  ): Promise<PairingCreateResult> {
+    const currentTime = now();
+    for (const pairing of this.pairings) {
+      if (
+        pairing.codeHash === codeHash &&
+        pairing.status === "PENDING" &&
+        pairing.expiresAt <= currentTime
+      ) {
+        pairing.status = "EXPIRED";
+      }
+    }
+    if (
+      this.pairings.some(
+        (pairing) =>
+          pairing.codeHash === codeHash && pairing.status === "PENDING",
+      )
+    ) {
+      return { created: false, reason: "CODE_COLLISION" };
+    }
     const x: PairingRecord = {
       id: id(),
       organizationId: org,
@@ -110,9 +148,57 @@ export class MemoryStore implements DataStore {
       status: "PENDING",
     };
     this.pairings.push(x);
-    return x;
+    return { created: true, pairing: x };
   }
-  async claimPairing(
+  async tryCreatePairingAndAudit(
+    org: string,
+    codeHash: string,
+    expiresAt: string,
+    audit: PairingCreateAuditContext,
+  ): Promise<PairingCreateResult> {
+    const currentTime = now();
+    const expired = this.pairings.filter(
+      (pairing) =>
+        pairing.codeHash === codeHash &&
+        pairing.status === "PENDING" &&
+        pairing.expiresAt <= currentTime,
+    );
+    if (
+      this.pairings.some(
+        (pairing) =>
+          pairing.codeHash === codeHash &&
+          pairing.status === "PENDING" &&
+          pairing.expiresAt > currentTime,
+      )
+    ) {
+      return { created: false, reason: "CODE_COLLISION" };
+    }
+    const pairing: PairingRecord = {
+      id: id(),
+      organizationId: org,
+      codeHash,
+      expiresAt,
+      status: "PENDING",
+    };
+    // Build the required audit before changing either in-memory collection.
+    // This preserves transaction-like behavior for test doubles that reject it.
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "pairing.created",
+      entityType: "pairing",
+      entityId: pairing.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { expiresAt },
+    });
+    for (const existing of expired) existing.status = "EXPIRED";
+    this.pairings.push(pairing);
+    this.audits.push(auditRecord);
+    return { created: true, pairing };
+  }
+  private claimPairingRecord(
     codeHash: string,
     device: {
       installationId: string;
@@ -121,7 +207,7 @@ export class MemoryStore implements DataStore {
       playerVersion: string;
     },
     tokenHash: string,
-  ) {
+  ): ScreenRecord | null {
     const p = this.pairings.find(
       (x) =>
         x.codeHash === codeHash &&
@@ -149,6 +235,48 @@ export class MemoryStore implements DataStore {
     p.status = "CLAIMED";
     p.screenId = x.id;
     return x;
+  }
+  async claimPairing(
+    codeHash: string,
+    device: {
+      installationId: string;
+      model: string;
+      osVersion: string;
+      playerVersion: string;
+    },
+    tokenHash: string,
+  ) {
+    return this.claimPairingRecord(codeHash, device, tokenHash);
+  }
+  async claimPairingAndAudit(
+    codeHash: string,
+    device: {
+      installationId: string;
+      model: string;
+      osVersion: string;
+      playerVersion: string;
+    },
+    tokenHash: string,
+    audit: PairingClaimAuditContext,
+  ) {
+    const screen = this.claimPairingRecord(codeHash, device, tokenHash);
+    if (!screen) return null;
+    this.audits.push({
+      id: id(),
+      organizationId: screen.organizationId,
+      actorType: "device",
+      action: "device.paired",
+      entityType: "screen",
+      entityId: screen.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        ...audit.metadata,
+        installationId: device.installationId,
+      },
+      createdAt: now(),
+    });
+    return screen;
   }
   async authenticateDevice(screenId: string) {
     const screen = this.screens.find(
@@ -322,6 +450,6 @@ export class MemoryStore implements DataStore {
       .slice(0, limit);
   }
   async audit(event: Omit<AuditRecord, "id" | "createdAt">) {
-    this.audits.push({ id: id(), ...event, createdAt: now() });
+    this.audits.push(this.buildAuditRecord(event));
   }
 }

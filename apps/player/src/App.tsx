@@ -9,6 +9,7 @@ import {
   networkType,
 } from "./core/device";
 import { ManifestManager } from "./core/manifest";
+import { SingleFlight } from "./core/single-flight";
 import { IndexedDbPlayerStore } from "./core/storage";
 import type { Credentials, Heartbeat, PlayerManifest } from "./core/types";
 
@@ -26,6 +27,9 @@ export default function App() {
   const [fallback, setFallback] = useState(false);
   const [fatal, setFatal] = useState<string>();
   const playingRef = useRef<string | undefined>(undefined);
+  const activeManifestVersionRef = useRef<string | undefined>(undefined);
+  const manifestSyncRef = useRef(new SingleFlight());
+  activeManifestVersionRef.current = manifest?.version;
   const api = useMemo(
     () =>
       credentials
@@ -78,29 +82,26 @@ export default function App() {
 
   const syncManifest = useCallback(async () => {
     if (!api || !online) return;
-    try {
-      const next = await manager.stageAndActivate(await api.manifest());
-      setManifest(next);
-      setFallback(false);
-      setFatal(undefined);
-    } catch (reason) {
-      const saved = await manager.recover();
-      if (saved) {
-        setManifest(saved);
-        setFallback(true);
-      } else if (
-        reason instanceof Error &&
-        reason.message === "Manifest contains no playable items"
-      ) {
-        setManifest(undefined);
+    await manifestSyncRef.current.run(async () => {
+      try {
+        const next = await manager.stageAndActivate(await api.manifest());
+        if (!next) playingRef.current = undefined;
+        setManifest(next);
+        setFallback(false);
         setFatal(undefined);
-      } else
-        setFatal(
-          reason instanceof Error
-            ? reason.message
-            : "No playable schedule is available",
-        );
-    }
+      } catch (reason) {
+        const saved = await manager.recover();
+        if (saved) {
+          setManifest(saved);
+          setFallback(true);
+        } else
+          setFatal(
+            reason instanceof Error
+              ? reason.message
+              : "No playable schedule is available",
+          );
+      }
+    });
   }, [api, online]);
 
   useEffect(() => {
@@ -111,18 +112,39 @@ export default function App() {
   }, [credentials, syncManifest]);
 
   useEffect(() => {
+    if (!manifest?.playbackEndsAt) return;
+    const expectedVersion = manifest.version;
+    const remaining = Date.parse(manifest.playbackEndsAt) - Date.now();
+    const stop = () => {
+      if (activeManifestVersionRef.current !== expectedVersion) return;
+      playingRef.current = undefined;
+      setManifest(undefined);
+      setFallback(false);
+    };
+    if (remaining <= 0) {
+      stop();
+      return;
+    }
+    const timer = window.setTimeout(stop, remaining);
+    return () => clearTimeout(timer);
+  }, [manifest]);
+
+  useEffect(() => {
     if (!manifest || manifest.priority !== "emergency") return;
+    const expectedVersion = manifest.version;
     const remaining = Date.parse(manifest.validUntil) - Date.now();
     const restore = async () => {
-      const prior = await manager.rollback();
+      const prior = await manager.rollback(expectedVersion);
       if (
         prior?.priority === "emergency" &&
         Date.parse(prior.validUntil) <= Date.now()
       ) {
         setManifest(undefined);
+        playingRef.current = undefined;
         setFallback(false);
       } else {
         setManifest(prior);
+        if (!prior) playingRef.current = undefined;
         setFallback(Boolean(prior));
       }
     };
@@ -166,15 +188,16 @@ export default function App() {
     setCredentials(value);
   }, []);
   const playbackError = useCallback(async () => {
-    const prior = await manager.rollback();
+    const prior = await manager.rollback(manifest?.version);
     if (prior) {
       setManifest(prior);
       setFallback(true);
     } else {
       setManifest(undefined);
+      playingRef.current = undefined;
       setFatal("Cached playback content is unavailable");
     }
-  }, []);
+  }, [manifest]);
   const nowPlaying = useCallback((id: string) => {
     playingRef.current = id;
   }, []);

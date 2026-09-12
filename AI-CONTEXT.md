@@ -14,8 +14,8 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 ## Architecture invariants
 
 - Players connect outbound over TLS and use unique credentials. The Android wrapper now creates a non-exportable Keystore identity key, but the current bearer credential remains authoritative; production requires server enrollment and replay-safe proof of possession.
-- Manifests bind to a screen, carry a validity window, and are signed with Ed25519. Players pin the verification key during trusted enrollment and verify before staging.
-- Non-web assets are size/hash verified before atomic activation. Emergency overlays never enter the normal rollback chain.
+- Manifests bind to a screen, carry a renewable envelope lease, and are signed with Ed25519. A signed normal withdrawal clears stale playback; an optional signed `playbackEndsAt` is the hard schedule boundary. Players pin the verification key during trusted enrollment and verify before staging.
+- Non-web assets are bounded, size/hash verified, and cache-pruned around atomic activation. Emergency overlays never enter the normal rollback chain, and stale callbacks may not roll back a newer active version.
 - Live operational data must fail visibly. Never replace a failed authenticated request with demo values.
 - Published content, schedules, commands, permissions, emergencies, and device lifecycle operations require durable audit coverage.
 - Remote shell is not a default capability. Any future implementation needs explicit authorization, consent, scope, expiry, strong audit, and product-level review.
@@ -30,4 +30,4 @@ AI may draft copy, suggest templates/tags/schedules, summarize device health, an
 
 ## Quality gate
 
-Run `npm run validate`. Add PostgreSQL-backed isolation/integrity tests, browser accessibility/E2E tests, Android tests, offline/emergency recovery tests, and physical-device evidence as the corresponding features mature. Green unit tests alone do not establish pre-production readiness.
+Run `npm run validate`; CI additionally runs the destructive-guarded PostgreSQL integration suite. Continue expanding database-enforced composite tenant integrity, browser accessibility/E2E tests, Android tests, native stream-to-disk caching, offline/emergency recovery tests, and physical-device evidence as the corresponding features mature. Green automated tests alone do not establish pre-production readiness.

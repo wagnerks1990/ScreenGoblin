@@ -38,20 +38,79 @@ export class IndexedDbPlayerStore implements PlayerStore {
   getPreviousManifest = () => read<PlayerManifest>("previous-manifest");
 
   async activateManifest(value: PlayerManifest): Promise<void> {
-    const active = await this.getActiveManifest();
-    const entries: Array<[string, unknown]> = [["active-manifest", value]];
-    // Emergency content is an overlay, never part of the normal rollback
-    // chain. Repeated emergency polls must preserve the last verified normal
-    // release, and returning to normal must not make a cleared alert rollbackable.
-    if (active && active.priority !== "emergency")
-      entries.push(["previous-manifest", active]);
-    await write(entries);
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const state = tx.objectStore(STORE);
+      const request = state.get("active-manifest");
+
+      request.onsuccess = () => {
+        const active = request.result as PlayerManifest | undefined;
+        const sameRelease = active?.version === value.version;
+
+        // One transaction changes the active marker and rollback baseline.
+        // A withdrawn marker remains active in storage so reconnect/recovery
+        // cannot mistake an intentional blank screen for missing state.
+        state.put(value, "active-manifest");
+
+        // Emergency content is an overlay, never part of the normal rollback
+        // chain. Blank releases also preserve, rather than replace, the last
+        // playable baseline. Reissued envelopes for one semantic release may
+        // refresh validity metadata without rotating rollback history.
+        if (
+          !sameRelease &&
+          active &&
+          active.priority !== "emergency" &&
+          !active.withdrawn
+        ) {
+          state.put(active, "previous-manifest");
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
   }
 
-  async rollback(): Promise<PlayerManifest | undefined> {
-    const previous = await this.getPreviousManifest();
-    if (previous) await write([["active-manifest", previous]]);
-    return previous;
+  async rollback(
+    expectedActiveVersion?: string,
+  ): Promise<PlayerManifest | undefined> {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const state = tx.objectStore(STORE);
+      const activeRequest = state.get("active-manifest");
+      const previousRequest = state.get("previous-manifest");
+      let resultingActive: PlayerManifest | undefined;
+
+      const apply = () => {
+        const active = activeRequest.result as PlayerManifest | undefined;
+        if (
+          expectedActiveVersion !== undefined &&
+          active?.version !== expectedActiveVersion
+        ) {
+          // An older error/expiry callback lost a race with a successful sync.
+          resultingActive = active;
+          return;
+        }
+        const previous = previousRequest.result as PlayerManifest | undefined;
+        resultingActive = previous;
+        if (previous) state.put(previous, "active-manifest");
+        else state.delete("active-manifest");
+      };
+      const maybeApply = () => {
+        if (
+          activeRequest.readyState === "done" &&
+          previousRequest.readyState === "done"
+        )
+          apply();
+      };
+      activeRequest.onsuccess = maybeApply;
+      previousRequest.onsuccess = maybeApply;
+      tx.oncomplete = () => resolve(resultingActive);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
   }
 
   async clear(): Promise<void> {

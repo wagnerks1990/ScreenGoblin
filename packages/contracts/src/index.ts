@@ -29,6 +29,8 @@ export interface PlaybackManifest {
   validUntil: string;
   screenId: string;
   priority: SchedulePriority;
+  withdrawn: boolean;
+  playbackEndsAt?: string;
   items: PlaylistItem[];
   signatureAlgorithm: "Ed25519";
   signature: string;

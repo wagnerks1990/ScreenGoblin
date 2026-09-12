@@ -16,21 +16,21 @@ ScreenGoblin is not currently a certified emergency-notification or life-safety 
 
 ## Principal threats and controls
 
-| Threat                        | Impact                      | Required control                                                                                                                     |
-| ----------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Credential theft              | Account/device takeover     | MFA/SSO before production, short user sessions, unique revocable device tokens, secret redaction                                     |
-| Cross-tenant access           | Data or screen compromise   | Organization scoping in every query, negative authorization tests, server-generated object keys                                      |
-| Pairing-code guessing         | Rogue device enrollment     | Short expiry, one-time atomic use, hash at rest, attempt and source rate limits                                                      |
-| Manifest or media tampering   | Unapproved display content  | TLS, canonical manifest signature, SHA-256 asset checks, atomic activation                                                           |
-| Malicious upload              | Player/browser compromise   | Type sniffing, size limits, malware scan, image/video transcoding, reject active HTML by default                                     |
-| Stored XSS/template injection | Admin session compromise    | Output encoding, sanitized templates, CSP, no arbitrary scripts, isolated web content                                                |
-| SSRF from URL content         | Internal service access     | URL allowlist, DNS/IP revalidation, block private/link-local networks, fetch proxy limits                                            |
-| Emergency misuse              | Panic or unsafe instruction | Separate permission, clear scope/expiry, re-authentication and two-person approval in production, immutable audit                    |
-| Replay/forged commands        | Fleet disruption            | Commands disabled in prototype; require signed expiring IDs, replay cache, authorization, and allowlisted handlers before enablement |
-| Denial of service             | Console/API outage          | Request/body limits, rate limits, backoff/jitter, quotas, cached playback                                                            |
-| Dependency/build compromise   | Supply-chain execution      | lockfile, protected branches, dependency review, CodeQL, secret scan, image scan, signed artifacts/SBOM before production            |
-| Database/object loss          | Lost schedules/media/audit  | Encrypted versioned backups, restore drills, retention and off-host copies                                                           |
-| Screenshot privacy leak       | Unintended personal data    | Role-gate, audit, short retention, encryption, disable per location where required                                                   |
+| Threat                        | Impact                      | Required control                                                                                                                          |
+| ----------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Credential theft              | Account/device takeover     | MFA/SSO before production, short user sessions, unique revocable device tokens, secret redaction                                          |
+| Cross-tenant access           | Data or screen compromise   | Organization scoping in every query, negative authorization tests, server-generated object keys                                           |
+| Pairing-code guessing         | Rogue device enrollment     | Short expiry, collision-safe allocation, transactional one-time claim and audit, hash at rest, attempt and source rate limits             |
+| Manifest or media tampering   | Unapproved display content  | TLS, canonical manifest signature, SHA-256 asset checks, atomic activation                                                                |
+| Malicious upload              | Player/browser compromise   | Type sniffing, size limits, malware scan, image/video transcoding, reject active HTML by default                                          |
+| Stored XSS/template injection | Admin session compromise    | Output encoding, sanitized templates, CSP, no arbitrary scripts, isolated web content                                                     |
+| SSRF from URL content         | Internal service access     | URL allowlist, DNS/IP revalidation, block private/link-local networks, fetch proxy limits                                                 |
+| Emergency misuse              | Panic or unsafe instruction | Separate permission, clear scope/expiry, re-authentication and two-person approval in production, immutable audit                         |
+| Replay/forged commands        | Fleet disruption            | Commands disabled in prototype; require signed expiring IDs, replay cache, authorization, and allowlisted handlers before enablement      |
+| Denial of service             | Console/API/player outage   | Request/body limits, rate limits, bounded retries/timeouts/download concurrency and verification memory, cache retention, cached playback |
+| Dependency/build compromise   | Supply-chain execution      | lockfile, protected branches, dependency review, CodeQL, secret scan, image scan, signed artifacts/SBOM before production                 |
+| Database/object loss          | Lost schedules/media/audit  | Encrypted versioned backups, restore drills, retention and off-host copies                                                                |
+| Screenshot privacy leak       | Unintended personal data    | Role-gate, audit, short retention, encryption, disable per location where required                                                        |
 
 ## Container posture
 
@@ -38,4 +38,4 @@ Only ports 80/443 are published. Data services use an internal network. Applicat
 
 ## Security validation gate
 
-Before production, complete authentication/authorization tests, upload fuzzing, dependency and container scanning, restore testing, TLS validation, player downgrade/rollback testing, external penetration testing, and an emergency-workflow tabletop exercise. Track accepted risk with an owner and review date.
+Before production, complete authentication/authorization tests, database-enforced composite tenant constraints, upload fuzzing, dependency and container scanning, restore testing, TLS validation, native cache/full-disk and player downgrade/rollback testing, external penetration testing, and an emergency-workflow tabletop exercise. Track accepted risk with an owner and review date.

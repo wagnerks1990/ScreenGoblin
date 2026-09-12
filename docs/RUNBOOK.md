@@ -15,7 +15,7 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 5. During the maintenance window, run `docker compose --env-file deploy/.env pull` for referenced images and `docker compose --env-file deploy/.env build --pull` for application images.
 6. Run `docker compose --env-file deploy/.env up -d` and inspect `docker compose --env-file deploy/.env ps`.
 7. On a new installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Confirm the owner can sign in, then remove all `SEED_*` values from the host environment.
-8. Verify readiness, login, publish, pairing, Ed25519 manifest verification, media checksum, heartbeat, and last-known-good playback.
+8. Verify readiness, login, publish, atomic pairing/audit, Ed25519 manifest verification, media checksum, heartbeat, signed withdrawal, schedule-boundary blanking, and last-known-good playback.
 
 Do not run the bootstrap profile as part of normal startup. It refuses to reset an existing owner password or grant owner to an existing unrelated user. Remove bootstrap credentials after the first successful login.
 
@@ -61,7 +61,7 @@ Object storage needs a matching versioned backup and integrity inventory; the Po
 
 Application rollback is safe only when the old application supports the migrated schema. Prefer forward-compatible, expand/migrate/contract database changes. Redeploy the prior image tag, verify readiness, and document the incident. Do not automatically reverse a destructive migration; restore the verified backup when required.
 
-Players retain a last-known-good manifest and should be released in rings: development, lab, pilot site, then broad fleet. Stop rollout when crash rate, fallback state, or heartbeat loss exceeds the agreed threshold.
+Players retain a last-known-good manifest and prune persistent web cache to the active and rollback generations. Signed withdrawals and `playbackEndsAt` boundaries intentionally blank expired schedules; an ordinary manifest lease expiry does not erase offline last-known-good playback. Players should be released in rings: development, lab, pilot site, then broad fleet. Stop rollout when crash rate, fallback state, storage pressure, or heartbeat loss exceeds the agreed threshold. Native stream-to-disk verification and representative full-disk testing remain required before fleet use.
 
 The release-evidence workflow retains checksum-bound local Docker archives for tags/manual runs, but those artifacts are explicitly unsigned and are not production releases. A production rollback must use an approved, signed, immutable registry digest whose schema compatibility and retention have been verified. See `docs/RELEASE_EVIDENCE.md`.
 

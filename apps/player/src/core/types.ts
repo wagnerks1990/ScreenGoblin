@@ -15,8 +15,16 @@ export interface PlayerManifest {
   version: string;
   generatedAt: string;
   validUntil: string;
+  /** Signed schedule boundary after which playback must stop, even offline. */
+  playbackEndsAt?: string;
   screenId: string;
   priority: ManifestPriority;
+  /**
+   * A signed, normal-priority release that intentionally clears playback.
+   * Optional only so an already-cached pre-0.1 manifest can still be recovered
+   * during an in-place prototype upgrade.
+   */
+  withdrawn?: boolean;
   items: PlayerAsset[];
 }
 
@@ -59,12 +67,13 @@ export interface PlayerStore {
   getActiveManifest(): Promise<PlayerManifest | undefined>;
   getPreviousManifest(): Promise<PlayerManifest | undefined>;
   activateManifest(value: PlayerManifest): Promise<void>;
-  rollback(): Promise<PlayerManifest | undefined>;
+  rollback(expectedActiveVersion?: string): Promise<PlayerManifest | undefined>;
   clear(): Promise<void>;
 }
 
 export interface AssetRepository {
   prefetch(asset: PlayerAsset): Promise<void>;
   resolve(asset: PlayerAsset): Promise<string>;
+  prune?(retainedAssets: PlayerAsset[]): Promise<void>;
   removeAll(): Promise<void>;
 }
