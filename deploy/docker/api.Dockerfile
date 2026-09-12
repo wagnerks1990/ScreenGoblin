@@ -23,7 +23,7 @@ COPY apps/api/package.json apps/api/tsconfig.json ./apps/api/
 RUN npm ci --omit=dev --ignore-scripts \
  && test -f apps/api/node_modules/@prisma/client/package.json \
  && cd apps/api \
- && node --input-type=module -e "await Promise.all([import('@prisma/client'), import('fastify')])"
+ && node --input-type=module -e "await import('fastify')"
 
 FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001
