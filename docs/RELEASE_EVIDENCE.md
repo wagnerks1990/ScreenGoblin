@@ -82,6 +82,24 @@ Recovery image overrides are accepted only when the operator supplies an
 explicit SHA-256 digest; the drill records the resolved references in its
 evidence bundle.
 
+The recovery workflow builds the API migration stage and applies the complete
+checked-in Prisma migration chain to an empty disposable PostgreSQL database.
+It then backs up and restores a representative organization, membership,
+screen, playlist/media, schedule/target, immutable release/assignment, and
+audit relation graph. The registered live and frozen media metadata is bound to
+the exact size and SHA-256 of an object that is independently mirrored, deleted,
+restored, and byte-compared in disposable MinIO. After restore, the drill checks
+the applied migration count, validated constraints, composite references, audit
+link, and both copies of the referenced object metadata.
+
+The retained artifact includes fixture image digests, checksums, source commit,
+schema/reference results, dump and object hashes/sizes, and elapsed migration,
+dump, restore, object recovery, and image rollback timings. These measurements
+describe one hosted disposable CI run only. They are not production RPO or RTO
+evidence and do not exercise production data volume, write quiescence,
+encryption or off-host transfer, retention, regional loss, credential recovery,
+operator response, or a production restore destination.
+
 `--ignore-unfixed` is intentional: findings without an upstream fix remain visible in reports but do not independently block this prototype workflow. This policy must be reviewed before production approval. An exception must never be created merely to obtain a green build.
 
 ## Tag and manual evidence
