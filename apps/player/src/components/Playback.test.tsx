@@ -278,16 +278,18 @@ describe("player playback state", () => {
     const playing = vi.fn();
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(
-            JSON.stringify({ title: "Weather alert", message: "Stay inside" }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            title: "Weather alert",
+            message: "Stay inside",
+            backgroundColor: "#c1121f",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
         ),
+      ),
     );
-    render(
+    const { container } = render(
       <Playback
         manifest={{
           ...manifest,
@@ -312,6 +314,9 @@ describe("player playback state", () => {
     expect(
       await screen.findByRole("heading", { name: "Weather alert" }),
     ).toBeVisible();
+    expect(
+      container.querySelector(".emergency-template-background rect"),
+    ).toHaveAttribute("fill", "#c1121f");
     await waitFor(() => expect(playing).toHaveBeenCalledWith("asset-1"));
   });
 

@@ -299,10 +299,21 @@ function PlaybackContent({
         />
       )}
       {currentSource && item.kind === "template" && currentTemplate && (
-        <section
-          className="emergency-template"
-          style={{ backgroundColor: currentTemplate.backgroundColor }}
-        >
+        <section className="emergency-template">
+          {currentTemplate.backgroundColor && (
+            <svg
+              className="emergency-template-background"
+              viewBox="0 0 1 1"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <rect
+                width="1"
+                height="1"
+                fill={currentTemplate.backgroundColor}
+              />
+            </svg>
+          )}
           <p>Emergency message</p>
           <h1>{currentTemplate.title}</h1>
           <div>{currentTemplate.message}</div>

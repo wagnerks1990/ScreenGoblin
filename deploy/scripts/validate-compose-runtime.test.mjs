@@ -54,6 +54,50 @@ case " $* " in
     printf 'release-digest\nassignment-digest\nwithdrawal-digest\n'
     exit 0
     ;;
+  *" pull zaproxy/zap-stable:"*) exit 0 ;;
+  *" image inspect zaproxy/zap-stable:"*) printf '%s\\n' "$COMPOSE_DAST_IMAGE"; exit 0 ;;
+  *" zap-full-scan.py "*)
+    raw_report=''
+    raw_coverage=''
+    inventory_path=''
+    target=''
+    previous=''
+    for argument in "$@"; do
+      if [[ "$previous" == -t ]]; then target="$argument"; fi
+      case "$argument" in
+        *,dst=/zap/wrk/report.json) raw_report="\${argument#*src=}"; raw_report="\${raw_report%%,dst=*}" ;;
+        *,dst=/zap/wrk/seed-coverage.json) raw_coverage="\${argument#*src=}"; raw_coverage="\${raw_coverage%%,dst=*}" ;;
+        *,dst=/zap/runtime-inventory.json,readonly) inventory_path="\${argument#*src=}"; inventory_path="\${inventory_path%%,dst=*}" ;;
+      esac
+      previous="$argument"
+    done
+    [[ -n "$raw_report" && -n "$raw_coverage" && -n "$inventory_path" && -n "$target" ]]
+    surface=console-api
+    [[ "$target" == https://player.example.test ]] && surface=player
+    node -e '
+      const fs = require("node:fs");
+      const [reportPath, coveragePath, inventoryPath, target, surface] = process.argv.slice(1);
+      const inventory = JSON.parse(fs.readFileSync(inventoryPath, "utf8"));
+      const alerts = ["10104", "10109"].map((pluginid) => ({
+        pluginid,
+        alert: "Informational Scanner Observation",
+        riskcode: "0",
+        riskdesc: "Informational (Medium)",
+        confidence: "2",
+        confidencedesc: "Medium",
+        instances: [],
+      }));
+      fs.writeFileSync(reportPath, JSON.stringify({ site: [{ "@name": target, alerts }] }));
+      fs.writeFileSync(coveragePath, JSON.stringify({
+        schemaVersion: 1,
+        surface,
+        phase: "pre-shutdown-after-active-scan",
+        coveredLabels: inventory.surfaces[surface].routes.map((route) => route.label),
+      }));
+    ' "$raw_report" "$raw_coverage" "$inventory_path" "$target" "$surface"
+    printf 'INFO: 2 WARN-NEW: 2\\n'
+    exit "\${FAKE_ZAP_STATUS:-0}"
+    ;;
   *" run --rm "*) exit 0 ;;
 esac
 echo "Unexpected fake docker command: $*" >&2
@@ -65,10 +109,12 @@ set -eu
 output=''
 headers=''
 url=''
+request='GET'
 while (($#)); do
   case "$1" in
     --output) output="$2"; shift 2 ;;
     --dump-header) headers="$2"; shift 2 ;;
+    --request) request="$2"; shift 2 ;;
     https://*) url="$1"; shift ;;
     *) shift ;;
   esac
@@ -80,6 +126,10 @@ fi
 status=200
 body=''
 case "$url" in
+  */api/v1/auth/login)
+    if [[ "$request" == TRACE ]]; then status=405; body=''; fi
+    if [[ "$request" == POST ]]; then status=400; body='{"error":"invalid request"}'; fi
+    ;;
   */health/live) status=204 ;;
   */health/ready) status=404 ;;
   */media/runtime-smoke.txt) status=404 ;;
@@ -88,8 +138,17 @@ case "$url" in
   *) body='<div id="root"></div>' ;;
 esac
 if [[ "$output" == *private-media-withdrawn.body ]]; then status=404; body=''; fi
-printf 'HTTP/2 %s\\r\\nContent-Security-Policy: default-src '\''self'\''\\r\\nX-Frame-Options: DENY\\r\\nStrict-Transport-Security: max-age=31536000\\r\\nX-Content-Type-Options: nosniff\\r\\n\\r\\n' "$status" > "$headers"
-if [[ -n "$body" ]]; then printf '%s\\n' "$body" > "$output"; else : > "$output"; fi
+csp="default-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'none'"
+if [[ "$url" == https://player.example.test/* ]]; then
+  csp="default-src 'self'; style-src 'self'; connect-src 'self' https://signage.example.test; frame-src 'none'"
+fi
+if [[ -n "\${FAKE_CSP:-}" ]]; then csp="$FAKE_CSP"; fi
+if [[ -n "$headers" ]]; then
+  printf 'HTTP/2 %s\\r\\nContent-Security-Policy: %s\\r\\nX-Frame-Options: DENY\\r\\nStrict-Transport-Security: max-age=31536000\\r\\nX-Content-Type-Options: nosniff\\r\\n\\r\\n' "$status" "$csp" > "$headers"
+fi
+if [[ -n "$output" ]]; then
+  if [[ -n "$body" ]]; then printf '%s\\n' "$body" > "$output"; else : > "$output"; fi
+fi
 printf '%s' "$status"
 `;
 
@@ -99,12 +158,19 @@ function fixture() {
   mkdirSync(bin);
   const docker = join(bin, "docker");
   const curl = join(bin, "curl");
+  const id = join(bin, "id");
   writeFileSync(docker, dockerFixture);
   writeFileSync(curl, curlFixture);
+  writeFileSync(
+    id,
+    '#!/usr/bin/env bash\ncase "$1" in -u) echo 1000 ;; -g) echo 1000 ;; *) exit 2 ;; esac\n',
+  );
   chmodSync(docker, 0o755);
   chmodSync(curl, 0o755);
+  chmodSync(id, 0o755);
   return {
     root,
+    bin,
     docker,
     curl,
     evidence: join(root, "evidence"),
@@ -125,6 +191,7 @@ function runSmoke(f, extraEnv = {}) {
       COMPOSE_SMOKE_EVIDENCE_DIR: f.evidence,
       FAKE_COMMAND_LOG: f.commandLog,
       FAKE_LEAK_CAPTURE: f.leakCapture,
+      PATH: `${f.bin}:${process.env.PATH}`,
       ...extraEnv,
     },
   });
@@ -168,6 +235,51 @@ test("runs bounded production-mode probes and always removes volumes", () => {
   }
 });
 
+test("validated informational ZAP evidence is authoritative over wrapper finding status", () => {
+  const f = fixture();
+  try {
+    const result = runSmoke(f, {
+      COMPOSE_DAST_IMAGE:
+        "zaproxy/zap-stable:2.17.0@sha256:8d387b1a63e3425beef4846e39719f5af2a787753af2d8b6558c6257d7a577a2",
+      FAKE_ZAP_STATUS: "2",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    for (const surface of ["console-api", "player"]) {
+      const evidence = JSON.parse(
+        readFileSync(join(f.evidence, `zap-${surface}.json`), "utf8"),
+      );
+      assert.equal(evidence.findingCount, 2);
+      assert.equal(evidence.informationalFindingCount, 2);
+      assert.equal(evidence.securitySeverityFindingCount, 0);
+    }
+    assert.match(
+      result.stderr,
+      /validated retained report severity is authoritative/,
+    );
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("ZAP operational wrapper failure remains blocking even with a report", () => {
+  const f = fixture();
+  try {
+    const result = runSmoke(f, {
+      COMPOSE_DAST_IMAGE:
+        "zaproxy/zap-stable:2.17.0@sha256:8d387b1a63e3425beef4846e39719f5af2a787753af2d8b6558c6257d7a577a2",
+      FAKE_ZAP_STATUS: "3",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /scanner failed operationally.*exit 3/);
+    assert.match(
+      readFileSync(f.commandLog, "utf8"),
+      /down --volumes --remove-orphans --timeout 20/,
+    );
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 test("propagates failures, redacts diagnostics, and still cleans up", () => {
   const f = fixture();
   try {
@@ -191,6 +303,46 @@ test("propagates failures, redacts diagnostics, and still cleans up", () => {
       readFileSync(join(f.evidence, "result.txt"), "utf8"),
       /failed \(exit /,
     );
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+for (const [name, csp] of [
+  [
+    "wildcard origin",
+    "default-src 'self'; style-src 'self'; connect-src 'self' https://example.test:*; frame-src 'none'",
+  ],
+  [
+    "scheme-wide source",
+    "default-src 'self'; style-src 'self'; connect-src 'self' https:; frame-src 'none'",
+  ],
+  [
+    "insecure origin",
+    "default-src 'self'; style-src 'self'; connect-src 'self' http://example.test; frame-src 'none'",
+  ],
+]) {
+  test(`rejects a CSP ${name}`, () => {
+    const f = fixture();
+    try {
+      const result = runSmoke(f, { FAKE_CSP: csp });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /wildcard or scheme-wide source/);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("rejects unsafe inline styles in CSP", () => {
+  const f = fixture();
+  try {
+    const result = runSmoke(f, {
+      FAKE_CSP:
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'none'",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /restrict styles to packaged resources/);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }

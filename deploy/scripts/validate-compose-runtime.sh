@@ -9,12 +9,21 @@ readonly CURL_BIN="${CURL_BIN:-curl}"
 readonly OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
 readonly WAIT_TIMEOUT_SECONDS="${COMPOSE_SMOKE_TIMEOUT_SECONDS:-240}"
 readonly EVIDENCE_DIR="${COMPOSE_SMOKE_EVIDENCE_DIR:-$ROOT_DIR/compose-smoke-evidence}"
+readonly DAST_IMAGE="${COMPOSE_DAST_IMAGE:-}"
+readonly DAST_HOOK="$ROOT_DIR/deploy/scripts/zap-runtime-hooks.py"
+readonly DAST_INVENTORY="$ROOT_DIR/deploy/scripts/zap-runtime-inventory.json"
+readonly DAST_TMPFS_BYTES=268435456
+readonly DAST_FILE_BLOCKS=524288
 
 [[ "$WAIT_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] &&
   ((WAIT_TIMEOUT_SECONDS >= 30 && WAIT_TIMEOUT_SECONDS <= 900)) || {
   echo "COMPOSE_SMOKE_TIMEOUT_SECONDS must be between 30 and 900" >&2
   exit 2
 }
+if [[ -n "$DAST_IMAGE" && ! "$DAST_IMAGE" =~ ^[^[:space:]@]+:[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; then
+  echo "COMPOSE_DAST_IMAGE must include an immutable tag and SHA-256 digest" >&2
+  exit 2
+fi
 [[ ! -e "$EVIDENCE_DIR" ]] || {
   echo "Refusing to overwrite existing Compose smoke evidence: $EVIDENCE_DIR" >&2
   exit 2
@@ -24,6 +33,11 @@ command -v "$DOCKER_BIN" >/dev/null
 command -v "$CURL_BIN" >/dev/null
 command -v "$OPENSSL_BIN" >/dev/null
 command -v awk >/dev/null
+command -v sha256sum >/dev/null
+if [[ -n "$DAST_IMAGE" ]]; then
+  command -v node >/dev/null
+  command -v timeout >/dev/null
+fi
 
 mkdir -p "$EVIDENCE_DIR"
 work_dir="$(mktemp -d)"
@@ -114,6 +128,16 @@ services:
   caddy:
     volumes:
       - ${SMOKE_CADDYFILE}:/etc/caddy/Caddyfile:ro
+    networks:
+      frontend:
+      backend:
+      dast:
+        aliases:
+          - signage.example.test
+          - player.example.test
+networks:
+  dast:
+    internal: true
 EOF
 
 compose=(
@@ -150,10 +174,23 @@ sanitize_stream() {
 }
 
 attempted_start=false
+dast_active=false
+
+write_checksums() {
+  (
+    cd "$EVIDENCE_DIR"
+    find . -type f ! -name SHA256SUMS -print0 |
+      LC_ALL=C sort -z |
+      xargs -0 sha256sum >SHA256SUMS
+  )
+}
+
 collect_failure_evidence() {
   "${compose[@]}" ps --all >"$EVIDENCE_DIR/compose-ps.txt" 2>&1 || true
-  "${compose[@]}" logs --no-color --tail 200 2>&1 |
-    sanitize_stream >"$EVIDENCE_DIR/compose-logs.txt" || true
+  if [[ "$dast_active" == false ]]; then
+    "${compose[@]}" logs --no-color --tail 200 2>&1 |
+      sanitize_stream >"$EVIDENCE_DIR/compose-logs.txt" || true
+  fi
 }
 
 cleanup() {
@@ -162,11 +199,17 @@ cleanup() {
   set +e
   if ((status != 0)); then
     collect_failure_evidence
-    printf 'Compose runtime smoke: failed (exit %s)\n' "$status" \
+    printf 'Compose runtime smoke and unauthenticated DAST: failed (exit %s)\n' "$status" \
       >"$EVIDENCE_DIR/result.txt"
-    printf '%s\n' '--- sanitized Compose diagnostics (last 200 lines) ---' >&2
-    tail -n 200 "$EVIDENCE_DIR/compose-logs.txt" >&2 || true
+    write_checksums || true
+    if [[ "$dast_active" == false ]]; then
+      printf '%s\n' '--- sanitized Compose diagnostics (last 200 lines) ---' >&2
+      tail -n 200 "$EVIDENCE_DIR/compose-logs.txt" >&2 || true
+    fi
   fi
+  "$DOCKER_BIN" rm --force \
+    "${project_name}-zap-console-api" "${project_name}-zap-player" \
+    >/dev/null 2>&1 || true
   if [[ "$attempted_start" == true ]]; then
     "${compose[@]}" down --volumes --remove-orphans --timeout 20 >/dev/null 2>&1
   fi
@@ -197,6 +240,213 @@ assert_header() {
     echo "$label did not return required $header header" >&2
     return 1
   }
+}
+
+assert_csp() {
+  local label="$1" expected_connect_origin="${2:-}"
+  local value
+  value="$(tr -d '\r' <"$work_dir/${label}.headers" |
+    awk 'BEGIN { IGNORECASE=1 } /^Content-Security-Policy:/ { sub(/^[^:]+:[[:space:]]*/, ""); print; exit }')"
+  [[ -n "$value" ]] || {
+    echo "$label did not return a Content-Security-Policy value" >&2
+    return 1
+  }
+  ! printf '%s\n' "$value" | grep -Fq '*' &&
+    ! printf '%s\n' "$value" |
+      grep -Eq '(^|[[:space:]])https?:([[:space:];]|$)|http://' || {
+    echo "$label CSP contains a wildcard or scheme-wide source" >&2
+    return 1
+  }
+  [[ "$value" == *"frame-src 'none'"* ]] || {
+    echo "$label CSP does not deny frames" >&2
+    return 1
+  }
+  [[ "$value" == *"style-src 'self';"* && "$value" != *"unsafe-inline"* ]] || {
+    echo "$label CSP does not restrict styles to packaged resources" >&2
+    return 1
+  }
+  if [[ -n "$expected_connect_origin" ]]; then
+    [[ "$value" == *"connect-src 'self' $expected_connect_origin;"* ]] || {
+      echo "$label CSP does not contain the exact required API origin" >&2
+      return 1
+    }
+  else
+    [[ "$value" == *"connect-src 'self';"* ]] || {
+      echo "$label CSP connect policy is not self-only" >&2
+      return 1
+    }
+  fi
+}
+
+assert_public_runtime_security() {
+  local trace_status cors_headers malformed_body malformed_status reflected_body
+  trace_status="$($CURL_BIN --silent --show-error --insecure \
+    --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+    --request TRACE --output /dev/null --write-out '%{http_code}' \
+    "https://$SCREEN_GOBLIN_HOST/api/v1/auth/login")"
+  [[ "$trace_status" =~ ^(400|404|405|501)$ ]] || {
+    echo "TRACE reached the public API with unexpected HTTP $trace_status" >&2
+    return 1
+  }
+
+  cors_headers="$work_dir/cors.headers"
+  "$CURL_BIN" --silent --show-error --insecure \
+    --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+    --header "Origin: https://untrusted.example.test" \
+    --dump-header "$cors_headers" --output /dev/null \
+    "https://$SCREEN_GOBLIN_HOST/health/live"
+  ! tr -d '\r' <"$cors_headers" |
+    grep -qi '^Access-Control-Allow-Origin: https://untrusted\.example\.test$' || {
+    echo "Public API reflected an untrusted CORS origin" >&2
+    return 1
+  }
+
+  malformed_body="$work_dir/malformed-auth.body"
+  malformed_status="$($CURL_BIN --silent --show-error --insecure \
+    --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+    --request POST --header "Content-Type: application/json" \
+    --data '{"email":' --output "$malformed_body" --write-out '%{http_code}' \
+    "https://$SCREEN_GOBLIN_HOST/api/v1/auth/login")"
+  [[ "$malformed_status" == 400 ]] || {
+    echo "Malformed authentication JSON returned HTTP $malformed_status; expected 400" >&2
+    return 1
+  }
+  ! grep -Eqi 'node_modules|postgresql://|prisma|JWT_SECRET|MEDIA_DELIVERY_SECRET|(^|[^a-z])stack([^a-z]|$)| at [A-Za-z0-9_$]+ \(' \
+    "$malformed_body" || {
+    echo "Malformed authentication response exposed an internal error marker" >&2
+    return 1
+  }
+
+  reflected_body="$work_dir/reflection.body"
+  "$CURL_BIN" --silent --show-error --insecure \
+    --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+    --output "$reflected_body" \
+    "https://$SCREEN_GOBLIN_HOST/api/v1/not-found?probe=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+  ! grep -Fqi '<script>alert(1)</script>' "$reflected_body" || {
+    echo "Public API reflected an executable probe payload" >&2
+    return 1
+  }
+}
+
+emit_zap_diagnostics() {
+  local scan_log="$1"
+  echo "ZAP sanitized diagnostic classes and counts:" >&2
+  {
+    grep -E \
+      '^((FAIL-NEW|FAIL-INPROG|WARN-NEW|WARN-INPROG|INFO|PASS): [0-9]+)([[:space:]]+(FAIL-NEW|FAIL-INPROG|WARN-NEW|WARN-INPROG|INFO|PASS): [0-9]+)*$' \
+      "$scan_log" || true
+    grep -E \
+      '^DAST-HOOK-PHASE: (seed-start|seed-complete|coverage-start|coverage-complete)$|^ERROR <class '\''[[:alpha:]_][[:alnum:]_.]*(Exception|Error)'\''>$' \
+      "$scan_log" || true
+    grep -Eo \
+      'java\.(io|net|lang|nio\.[[:alnum:]_.]+)\.[[:alnum:]_]+(Exception|Error)|org\.zaproxy\.[[:alnum:]_.]+Exception' \
+      "$scan_log" || true
+    for marker in \
+      OutOfMemoryError 'Read-only file system' 'Permission denied' \
+      'Address already in use' 'File size limit exceeded' 'No URLs found'; do
+      grep -Fq "$marker" "$scan_log" && echo "$marker" || true
+    done
+  } | LC_ALL=C sort -u | sed 's/^/  /' >&2
+}
+
+run_zap_scan() {
+  local surface="$1" target="$2"
+  local raw_dir="$work_dir/zap-$surface"
+  local raw_report="$raw_dir/report.json"
+  local raw_coverage="$raw_dir/seed-coverage.json"
+  local scan_log="$raw_dir/scan.log"
+  local scan_status summary_status scanner_uid scanner_gid container_name
+  scanner_uid="$(id -u)"
+  scanner_gid="$(id -g)"
+  [[ "$scanner_uid" =~ ^[0-9]+$ && "$scanner_gid" =~ ^[0-9]+$ ]] &&
+    ((scanner_uid > 0)) || {
+    echo "Refusing to run the DAST scanner as root or with an invalid host identity" >&2
+    return 1
+  }
+  container_name="${project_name}-zap-${surface}"
+  install -d -m 0700 "$raw_dir"
+  : >"$raw_report"
+  : >"$raw_coverage"
+  set +e
+  (
+    ulimit -f "$DAST_FILE_BLOCKS"
+    exec timeout --signal=TERM --kill-after=30s 12m \
+    "$DOCKER_BIN" run --rm --name "$container_name" --pull never \
+      --user "$scanner_uid:$scanner_gid" \
+      --read-only \
+      --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m \
+      --tmpfs "/zap/wrk:rw,noexec,nosuid,nodev,size=${DAST_TMPFS_BYTES},uid=${scanner_uid},gid=${scanner_gid},mode=0700" \
+      --env HOME=/zap/wrk \
+      --env XDG_CACHE_HOME=/zap/wrk/.cache \
+      --env XDG_CONFIG_HOME=/zap/wrk/.config \
+      --env XDG_DATA_HOME=/zap/wrk/.local/share \
+      --cap-drop ALL \
+      --security-opt no-new-privileges:true \
+      --pids-limit 512 \
+      --memory 2g \
+      --cpus 2 \
+      --ulimit "fsize=$DAST_TMPFS_BYTES:$DAST_TMPFS_BYTES" \
+      --network "${project_name}_dast" \
+      --workdir /zap/wrk \
+      --mount "type=bind,src=$DAST_HOOK,dst=/zap/runtime-hooks.py,readonly" \
+      --mount "type=bind,src=$DAST_INVENTORY,dst=/zap/runtime-inventory.json,readonly" \
+      --mount "type=bind,src=$raw_report,dst=/zap/wrk/report.json" \
+      --mount "type=bind,src=$raw_coverage,dst=/zap/wrk/seed-coverage.json" \
+      "$DAST_IMAGE" \
+      zap-full-scan.py -t "$target" -m 1 -T 8 \
+        -J report.json -s --hook=/zap/runtime-hooks.py \
+        -z "-silent -dir /zap/wrk/.ZAP -config start.checkForUpdates=false" \
+  ) >"$scan_log" 2>&1
+  scan_status=$?
+  "$DOCKER_BIN" rm --force "$container_name" >/dev/null 2>&1 || true
+  set -e
+
+  [[ -s "$raw_report" ]] || {
+    echo "ZAP did not emit a report for $surface (exit $scan_status)" >&2
+    emit_zap_diagnostics "$scan_log"
+    return 1
+  }
+  [[ -s "$raw_coverage" ]] || {
+    echo "ZAP did not emit seed coverage for $surface" >&2
+    return 1
+  }
+  case "$scan_status" in
+    0 | 1 | 2) ;;
+    *)
+      echo "ZAP scanner failed operationally on $surface (exit $scan_status)" >&2
+      emit_zap_diagnostics "$scan_log"
+      return 1
+      ;;
+  esac
+  set +e
+  node "$ROOT_DIR/deploy/scripts/summarize-zap-report.mjs" \
+    "$raw_report" "$EVIDENCE_DIR/zap-$surface.json" "$surface" "$DAST_IMAGE" \
+    "$target" "$raw_coverage" "$DAST_INVENTORY"
+  summary_status=$?
+  set -e
+  if ((summary_status != 0)); then
+    echo "Validated ZAP evidence blocked $surface (exit $summary_status)" >&2
+    return "$summary_status"
+  fi
+  if ((scan_status != 0)); then
+    echo "ZAP wrapper returned finding status $scan_status on $surface; validated retained report severity is authoritative" >&2
+    emit_zap_diagnostics "$scan_log"
+  fi
+}
+
+run_unauthenticated_dast() {
+  [[ -n "$DAST_IMAGE" ]] || return 0
+  dast_active=true
+  "$DOCKER_BIN" pull "$DAST_IMAGE" >/dev/null
+  "$DOCKER_BIN" image inspect "$DAST_IMAGE" \
+    --format '{{join .RepoDigests "\n"}}' |
+    grep -Fq "@${DAST_IMAGE##*@}" || {
+    echo "Pulled DAST image did not resolve to the required digest" >&2
+    return 1
+  }
+  assert_public_runtime_security
+  run_zap_scan "console-api" "https://$SCREEN_GOBLIN_HOST"
+  run_zap_scan "player" "https://$PLAYER_HOST"
 }
 
 "${compose[@]}" config --quiet
@@ -455,6 +705,16 @@ for label in console player; do
   assert_header "$label" "Strict-Transport-Security"
   assert_header "$label" "X-Content-Type-Options"
 done
+assert_csp "console"
+assert_csp "player" "https://$SCREEN_GOBLIN_HOST"
+
+run_unauthenticated_dast
+if [[ -n "$DAST_IMAGE" ]]; then
+  dast_result="passed"
+else
+  dast_result="not requested"
+fi
+readonly dast_result
 
 "${compose[@]}" ps --all >"$EVIDENCE_DIR/compose-ps.txt"
 cat >"$EVIDENCE_DIR/result.txt" <<EOF
@@ -462,6 +722,12 @@ Compose production-mode startup and health: passed
 Caddy API, readiness isolation, Console, Player, headers, and legacy media denial: passed
 Private MinIO denial and valid/withdrawn/tampered/expired API capability delivery: passed
 Published-port and internal-backend-network assertions: passed
+Unauthenticated public-surface method, CORS, error-reflection, and pinned ZAP checks: $dast_result
 EOF
+write_checksums
+(
+  cd "$EVIDENCE_DIR"
+  sha256sum --check SHA256SUMS
+)
 
-echo "Compose production-runtime smoke passed"
+echo "Compose production-runtime smoke passed; unauthenticated DAST $dast_result"
