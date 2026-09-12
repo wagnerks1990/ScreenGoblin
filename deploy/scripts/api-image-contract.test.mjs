@@ -17,9 +17,8 @@ test("the API image retains and verifies workspace runtime dependencies", () => 
   );
   assert.equal(runtimeAssertions?.length, 2);
   assert.equal(
-    dockerfile.match(
-      /test -f node_modules\/\.prisma\/client\/schema\.prisma/g,
-    )?.length,
+    dockerfile.match(/test -f node_modules\/\.prisma\/client\/schema\.prisma/g)
+      ?.length,
     2,
   );
 });
