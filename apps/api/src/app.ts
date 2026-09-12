@@ -49,6 +49,16 @@ export interface BuildOptions {
   closeRedisOnClose?: boolean;
   onRoute?: (route: RouteOptions) => void;
 }
+
+export const BROWSER_CORS_METHODS = [
+  "GET",
+  "HEAD",
+  "POST",
+  "PATCH",
+  "DELETE",
+  "OPTIONS",
+];
+
 export async function buildApp(
   options: BuildOptions,
 ): Promise<FastifyInstance> {
@@ -103,7 +113,7 @@ export async function buildApp(
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
     origin: options.corsOrigins ?? ["http://localhost:5173"],
-    methods: ["GET", "HEAD", "POST", "DELETE", "OPTIONS"],
+    methods: BROWSER_CORS_METHODS,
     credentials: true,
   });
   await app.register(rateLimit, {
