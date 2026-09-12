@@ -1,8 +1,8 @@
 import type {
   Credentials,
   PendingProofPairing,
-  PlayerManifest,
   PlayerStore,
+  SignedPlayerManifest,
 } from "./types";
 
 const DATABASE = "screengoblin-player";
@@ -80,10 +80,10 @@ export class IndexedDbPlayerStore implements PlayerStore {
       tx.onabort = () => reject(tx.error);
     });
   }
-  getActiveManifest = () => read<PlayerManifest>("active-manifest");
-  getPreviousManifest = () => read<PlayerManifest>("previous-manifest");
+  getActiveManifest = () => read<SignedPlayerManifest>("active-manifest");
+  getPreviousManifest = () => read<SignedPlayerManifest>("previous-manifest");
 
-  async activateManifest(value: PlayerManifest): Promise<void> {
+  async activateManifest(value: SignedPlayerManifest): Promise<void> {
     const db = await openDatabase();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
@@ -91,8 +91,9 @@ export class IndexedDbPlayerStore implements PlayerStore {
       const request = state.get("active-manifest");
 
       request.onsuccess = () => {
-        const active = request.result as PlayerManifest | undefined;
-        const sameRelease = active?.version === value.version;
+        const active = request.result as SignedPlayerManifest | undefined;
+        const sameRelease =
+          active?.manifest?.version === value.manifest.version;
 
         // One transaction changes the active marker and rollback baseline.
         // A withdrawn marker remains active in storage so reconnect/recovery
@@ -106,8 +107,9 @@ export class IndexedDbPlayerStore implements PlayerStore {
         if (
           !sameRelease &&
           active &&
-          active.priority !== "emergency" &&
-          !active.withdrawn
+          active.manifest &&
+          active.manifest?.priority !== "emergency" &&
+          !active.manifest?.withdrawn
         ) {
           state.put(active, "previous-manifest");
         }
@@ -120,26 +122,27 @@ export class IndexedDbPlayerStore implements PlayerStore {
 
   async rollback(
     expectedActiveVersion?: string,
-  ): Promise<PlayerManifest | undefined> {
+  ): Promise<SignedPlayerManifest | undefined> {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
       const state = tx.objectStore(STORE);
       const activeRequest = state.get("active-manifest");
       const previousRequest = state.get("previous-manifest");
-      let resultingActive: PlayerManifest | undefined;
+      let resultingActive: SignedPlayerManifest | undefined;
 
       const apply = () => {
-        const active = activeRequest.result as PlayerManifest | undefined;
+        const active = activeRequest.result as SignedPlayerManifest | undefined;
         if (
           expectedActiveVersion !== undefined &&
-          active?.version !== expectedActiveVersion
+          active?.manifest?.version !== expectedActiveVersion
         ) {
           // An older error/expiry callback lost a race with a successful sync.
           resultingActive = active;
           return;
         }
-        const previous = previousRequest.result as PlayerManifest | undefined;
+        const previous = previousRequest.result as
+          SignedPlayerManifest | undefined;
         resultingActive = previous;
         if (previous) state.put(previous, "active-manifest");
         else state.delete("active-manifest");
@@ -154,6 +157,19 @@ export class IndexedDbPlayerStore implements PlayerStore {
       activeRequest.onsuccess = maybeApply;
       previousRequest.onsuccess = maybeApply;
       tx.oncomplete = () => resolve(resultingActive);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+
+  async clearManifests(): Promise<void> {
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const state = tx.objectStore(STORE);
+      state.delete("active-manifest");
+      state.delete("previous-manifest");
+      tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
     });

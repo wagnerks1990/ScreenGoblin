@@ -1,4 +1,11 @@
-import type { AssetRepository, PlayerManifest, PlayerStore } from "./types";
+import { verifyManifestPayloadSignature } from "./crypto";
+import type {
+  AssetRepository,
+  ManifestTrust,
+  PlayerManifest,
+  PlayerStore,
+  SignedPlayerManifest,
+} from "./types";
 
 export class ManifestError extends Error {}
 
@@ -159,8 +166,91 @@ export function assertManifest(
   }
 }
 
+function normalizeSignedPayload(value: unknown): PlayerManifest {
+  if (!value || typeof value !== "object")
+    throw new ManifestError("Signed manifest payload is invalid");
+  const wire = value as Record<string, unknown>;
+  if (!Array.isArray(wire.items))
+    throw new ManifestError("Signed manifest items are invalid");
+  const manifest = {
+    version: wire.version,
+    generatedAt: wire.generatedAt,
+    validUntil: wire.validUntil,
+    ...(wire.playbackEndsAt !== undefined
+      ? { playbackEndsAt: wire.playbackEndsAt }
+      : {}),
+    screenId: wire.screenId,
+    priority: wire.priority,
+    // Pre-0.1 signed envelopes did not carry an explicit withdrawal marker.
+    withdrawn: wire.withdrawn ?? false,
+    items: wire.items.map((item) => {
+      if (!item || typeof item !== "object")
+        throw new ManifestError("Signed manifest item is invalid");
+      const playlistItem = item as Record<string, unknown>;
+      if (!playlistItem.asset || typeof playlistItem.asset !== "object")
+        throw new ManifestError("Signed manifest asset is invalid");
+      return {
+        ...(playlistItem.asset as Record<string, unknown>),
+        durationSeconds: playlistItem.durationSeconds,
+      };
+    }),
+  };
+  assertManifest(manifest);
+  return manifest;
+}
+
+export function createSignedPlayerManifest(
+  unsigned: unknown,
+  signatureAlgorithm: "Ed25519",
+  signature: string,
+): SignedPlayerManifest {
+  const payloadJson = JSON.stringify(unsigned);
+  return {
+    formatVersion: 1,
+    payloadJson,
+    signatureAlgorithm,
+    signature,
+    manifest: normalizeSignedPayload(unsigned),
+  };
+}
+
+export async function verifySignedPlayerManifest(
+  value: unknown,
+  trust: ManifestTrust,
+): Promise<PlayerManifest | undefined> {
+  if (!value || typeof value !== "object") return undefined;
+  const stored = value as Partial<SignedPlayerManifest>;
+  if (
+    stored.formatVersion !== 1 ||
+    typeof stored.payloadJson !== "string" ||
+    stored.signatureAlgorithm !== "Ed25519" ||
+    typeof stored.signature !== "string" ||
+    !stored.manifest
+  )
+    return undefined;
+  try {
+    if (
+      !(await verifyManifestPayloadSignature(
+        stored.payloadJson,
+        stored.signature,
+        trust.manifestVerificationKey,
+      ))
+    )
+      return undefined;
+    const manifest = normalizeSignedPayload(JSON.parse(stored.payloadJson));
+    if (
+      manifest.screenId !== trust.screenId ||
+      JSON.stringify(manifest) !== JSON.stringify(stored.manifest)
+    )
+      return undefined;
+    return manifest;
+  } catch {
+    return undefined;
+  }
+}
+
 export class ManifestManager {
-  private stagingTail: Promise<void> = Promise.resolve();
+  private operationTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly store: PlayerStore,
@@ -168,25 +258,22 @@ export class ManifestManager {
   ) {}
 
   async stageAndActivate(
-    candidate: unknown,
+    signedCandidate: SignedPlayerManifest,
+    trust: ManifestTrust,
   ): Promise<PlayerManifest | undefined> {
-    const operation = this.stagingTail.then(() =>
-      this.stageAndActivateExclusive(candidate),
-    );
-    this.stagingTail = operation.then(
-      () => undefined,
-      () => undefined,
-    );
-    return operation;
-  }
-
-  private async stageAndActivateExclusive(
-    candidate: unknown,
-  ): Promise<PlayerManifest | undefined> {
-    assertManifest(candidate);
+    const candidate = await verifySignedPlayerManifest(signedCandidate, trust);
+    if (!candidate)
+      throw new ManifestError(
+        "Manifest signature or screen binding is invalid",
+      );
     if (Date.parse(candidate.validUntil) <= Date.now())
       throw new ManifestError("Manifest has already expired");
-    const active = await this.store.getActiveManifest();
+
+    // Downloads must not occupy the state-transition queue: one blackholed
+    // release can otherwise delay an emergency expiry or playback rollback for
+    // the sum of every asset timeout.
+    const signedActive = await this.store.getActiveManifest();
+    const active = await verifySignedPlayerManifest(signedActive, trust);
     const playbackBoundary = manifestPlaybackEndsAt(candidate);
     const playbackEnded =
       playbackBoundary !== undefined && playbackBoundary <= Date.now();
@@ -194,25 +281,75 @@ export class ManifestManager {
       await Promise.all(
         candidate.items.map((item) => this.assets.prefetch(item)),
       );
-    await this.store.activateManifest(candidate);
+
+    const result = await this.enqueue(() =>
+      this.activateExclusive(signedCandidate, trust),
+    );
+    await this.pruneRetainedAssets();
+    return result;
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationTail.then(operation);
+    this.operationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async activateExclusive(
+    signedCandidate: SignedPlayerManifest,
+    trust: ManifestTrust,
+  ): Promise<PlayerManifest | undefined> {
+    const candidate = await verifySignedPlayerManifest(signedCandidate, trust);
+    if (!candidate)
+      throw new ManifestError(
+        "Manifest signature or screen binding is invalid",
+      );
+    if (Date.parse(candidate.validUntil) <= Date.now())
+      throw new ManifestError("Manifest has already expired");
+    const playbackBoundary = manifestPlaybackEndsAt(candidate);
+    const playbackEnded =
+      playbackBoundary !== undefined && playbackBoundary <= Date.now();
+    const signedActive = await this.store.getActiveManifest();
+    const active = await verifySignedPlayerManifest(signedActive, trust);
+    if (signedActive && !active) await this.store.clearManifests();
+    await this.store.activateManifest(signedCandidate);
+    return candidate.withdrawn || playbackEnded ? undefined : candidate;
+  }
+
+  private async pruneRetainedAssets(): Promise<void> {
     if (this.assets.prune) {
       try {
         const activeAfterActivation = await this.store.getActiveManifest();
         const previousAfterActivation = await this.store.getPreviousManifest();
         const retainedAssets = [activeAfterActivation, previousAfterActivation]
-          .filter((manifest): manifest is PlayerManifest => Boolean(manifest))
-          .flatMap((manifest) => manifest.items);
+          .filter((manifest): manifest is SignedPlayerManifest =>
+            Boolean(manifest),
+          )
+          .flatMap((manifest) => manifest.manifest.items);
         await this.assets.prune(retainedAssets);
       } catch {
         // Cache collection is best-effort and must not make a successful,
         // durable activation appear to have failed.
       }
     }
-    return candidate.withdrawn || playbackEnded ? undefined : candidate;
   }
 
-  async recover(): Promise<PlayerManifest | undefined> {
-    const active = await this.store.getActiveManifest();
+  async recover(trust: ManifestTrust): Promise<PlayerManifest | undefined> {
+    return this.enqueue(() => this.recoverExclusive(trust));
+  }
+
+  private async recoverExclusive(
+    trust: ManifestTrust,
+  ): Promise<PlayerManifest | undefined> {
+    const signedActive = await this.store.getActiveManifest();
+    const active = await verifySignedPlayerManifest(signedActive, trust);
+    if (signedActive && !active) {
+      await this.store.clearManifests();
+      return undefined;
+    }
     if (active?.withdrawn) return undefined;
     // `validUntil` is only the signed-envelope refresh lease for normal
     // last-known-good playback. `playbackEndsAt` is the signed hard schedule
@@ -221,27 +358,80 @@ export class ManifestManager {
       active?.priority === "emergency" &&
       Date.parse(active.validUntil) <= Date.now()
     ) {
-      const rollbackCandidate = await this.store.getPreviousManifest();
+      const signedRollbackCandidate = await this.store.getPreviousManifest();
+      const rollbackCandidate = await verifySignedPlayerManifest(
+        signedRollbackCandidate,
+        trust,
+      );
+      if (signedRollbackCandidate && !rollbackCandidate) {
+        await this.store.clearManifests();
+        return undefined;
+      }
       if (
         rollbackCandidate?.priority === "emergency" &&
         Date.parse(rollbackCandidate.validUntil) <= Date.now()
       )
         return undefined;
       const previous = await this.store.rollback(active.version);
-      return isStoredManifestPlayable(previous) ? previous : undefined;
+      const verifiedPrevious = await verifySignedPlayerManifest(
+        previous,
+        trust,
+      );
+      return isStoredManifestPlayable(verifiedPrevious)
+        ? verifiedPrevious
+        : undefined;
     }
     if (active && !isStoredManifestPlayable(active)) return undefined;
     if (active) return active;
-    const previous = await this.store.rollback();
-    return isStoredManifestPlayable(previous) ? previous : undefined;
+    const signedPrevious = await this.store.getPreviousManifest();
+    if (signedPrevious) {
+      await this.store.clearManifests();
+    }
+    return undefined;
   }
 
   async rollback(
+    trust: ManifestTrust,
     expectedActiveVersion?: string,
   ): Promise<PlayerManifest | undefined> {
+    return this.enqueue(() =>
+      this.rollbackExclusive(trust, expectedActiveVersion),
+    );
+  }
+
+  private async rollbackExclusive(
+    trust: ManifestTrust,
+    expectedActiveVersion?: string,
+  ): Promise<PlayerManifest | undefined> {
+    const signedActive = await this.store.getActiveManifest();
+    const active = await verifySignedPlayerManifest(signedActive, trust);
+    if (!active) {
+      if (signedActive || (await this.store.getPreviousManifest()))
+        await this.store.clearManifests();
+      return undefined;
+    }
+    if (
+      expectedActiveVersion !== undefined &&
+      active.version !== expectedActiveVersion
+    )
+      return isStoredManifestPlayable(active) ? active : undefined;
+    const signedPrevious = await this.store.getPreviousManifest();
+    const previous = await verifySignedPlayerManifest(signedPrevious, trust);
+    if (signedPrevious && !previous) {
+      await this.store.clearManifests();
+      return undefined;
+    }
     const resultingActive = await this.store.rollback(expectedActiveVersion);
-    return isStoredManifestPlayable(resultingActive)
-      ? resultingActive
+    const verifiedActive = await verifySignedPlayerManifest(
+      resultingActive,
+      trust,
+    );
+    if (resultingActive && !verifiedActive) {
+      await this.store.clearManifests();
+      return undefined;
+    }
+    return isStoredManifestPlayable(verifiedActive)
+      ? verifiedActive
       : undefined;
   }
 }

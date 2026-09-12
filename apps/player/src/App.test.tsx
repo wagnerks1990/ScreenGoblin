@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlayerApiFailure } from "./core/api";
 import type { Credentials, PlayerManifest } from "./core/types";
@@ -7,6 +7,8 @@ import App from "./App";
 const mocks = vi.hoisted(() => ({
   clear: vi.fn(),
   getCredentials: vi.fn(),
+  getActiveManifest: vi.fn(),
+  getPreviousManifest: vi.fn(),
   getPendingPairing: vi.fn(),
   putPendingPairing: vi.fn(),
   completePairing: vi.fn(),
@@ -14,17 +16,21 @@ const mocks = vi.hoisted(() => ({
   clearProvisionedState: vi.fn(),
   removeAll: vi.fn(),
   recover: vi.fn(),
+  rollback: vi.fn(),
   stageAndActivate: vi.fn(),
   manifest: vi.fn(),
   heartbeat: vi.fn(),
   hasNativeDeviceIdentity: vi.fn(),
   finalizeDeviceIdentityRotation: vi.fn(),
   pairingProps: undefined as Record<string, unknown> | undefined,
+  playbackProps: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock("./core/storage", () => ({
   IndexedDbPlayerStore: class {
     getCredentials = mocks.getCredentials;
+    getActiveManifest = mocks.getActiveManifest;
+    getPreviousManifest = mocks.getPreviousManifest;
     getPendingPairing = mocks.getPendingPairing;
     putPendingPairing = mocks.putPendingPairing;
     completePairing = mocks.completePairing;
@@ -52,6 +58,7 @@ vi.mock("./core/manifest", () => ({
   },
   ManifestManager: class {
     recover = mocks.recover;
+    rollback = mocks.rollback;
     stageAndActivate = mocks.stageAndActivate;
   },
 }));
@@ -84,7 +91,10 @@ vi.mock("./components/Pairing", () => ({
 }));
 
 vi.mock("./components/Playback", () => ({
-  Playback: () => <div>Playing content</div>,
+  Playback: (props: Record<string, unknown>) => {
+    mocks.playbackProps = props;
+    return <div>Playing content</div>;
+  },
 }));
 
 const credentials: Credentials = {
@@ -110,6 +120,8 @@ const manifest: PlayerManifest = {
 beforeEach(() => {
   mocks.clear.mockReset().mockResolvedValue(undefined);
   mocks.getCredentials.mockReset().mockResolvedValue(credentials);
+  mocks.getActiveManifest.mockReset().mockResolvedValue({ formatVersion: 1 });
+  mocks.getPreviousManifest.mockReset().mockResolvedValue(undefined);
   mocks.getPendingPairing.mockReset().mockResolvedValue(undefined);
   mocks.putPendingPairing.mockReset().mockResolvedValue(undefined);
   mocks.completePairing.mockReset().mockResolvedValue(undefined);
@@ -117,12 +129,14 @@ beforeEach(() => {
   mocks.clearProvisionedState.mockReset().mockResolvedValue(undefined);
   mocks.removeAll.mockReset().mockResolvedValue(undefined);
   mocks.recover.mockReset().mockResolvedValue(manifest);
+  mocks.rollback.mockReset().mockResolvedValue(undefined);
   mocks.stageAndActivate.mockReset().mockResolvedValue(manifest);
   mocks.manifest.mockReset().mockResolvedValue(manifest);
   mocks.heartbeat.mockReset().mockResolvedValue(undefined);
   mocks.hasNativeDeviceIdentity.mockReset().mockReturnValue(false);
   mocks.finalizeDeviceIdentityRotation.mockReset().mockResolvedValue(undefined);
   mocks.pairingProps = undefined;
+  mocks.playbackProps = undefined;
   Object.defineProperty(navigator, "onLine", {
     configurable: true,
     value: true,
@@ -180,9 +194,74 @@ describe("device revocation", () => {
     expect(mocks.removeAll).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("Playing content")).not.toBeInTheDocument();
   });
+
+  it("does not restore a rollback result after concurrent deprovision", async () => {
+    let finishRollback!: (value: PlayerManifest) => void;
+    let rejectHeartbeat!: (reason: Error) => void;
+    mocks.rollback.mockReturnValue(
+      new Promise((resolve) => {
+        finishRollback = resolve;
+      }),
+    );
+    mocks.heartbeat.mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        rejectHeartbeat = reject;
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    const playbackError = mocks.playbackProps?.onPlaybackError as
+      (() => Promise<void>) | undefined;
+    expect(playbackError).toBeTypeOf("function");
+    let recovery!: Promise<void>;
+    await act(async () => {
+      recovery = playbackError!();
+      await Promise.resolve();
+    });
+    expect(mocks.rollback).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      rejectHeartbeat(new PlayerApiFailure("revoked", "http", false, 401));
+    });
+    expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
+
+    await act(async () => {
+      finishRollback(manifest);
+      await recovery;
+    });
+    expect(screen.queryByText("Playing content")).not.toBeInTheDocument();
+  });
 });
 
 describe("boot credential validation", () => {
+  it("blanks an expired emergency before a stalled rollback completes", async () => {
+    mocks.recover.mockResolvedValue({
+      ...manifest,
+      version: "emergency-v1",
+      priority: "emergency",
+      validUntil: new Date(Date.now() + 50).toISOString(),
+    });
+    mocks.rollback.mockReturnValue(new Promise(() => undefined));
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: false,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Waiting for a published schedule…",
+        {},
+        { timeout: 1_000 },
+      ),
+    ).toBeInTheDocument();
+    expect(mocks.rollback).toHaveBeenCalledOnce();
+  });
+
   it("stops offline playback at the earliest signed asset expiry", async () => {
     const expiringManifest: PlayerManifest = {
       ...manifest,

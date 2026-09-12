@@ -1,16 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ManifestError,
   ManifestManager,
   assertManifest,
   manifestPlaybackEndsAt,
+  createSignedPlayerManifest,
 } from "./manifest";
+import { verifyManifestPayloadSignature } from "./crypto";
 import type {
   AssetRepository,
   Credentials,
   PlayerManifest,
   PlayerStore,
+  SignedPlayerManifest,
 } from "./types";
+
+vi.mock("./crypto", () => ({
+  verifyManifestPayloadSignature: vi.fn().mockResolvedValue(true),
+}));
 
 const valid: PlayerManifest = {
   version: "v2",
@@ -32,10 +39,43 @@ const valid: PlayerManifest = {
   ],
 };
 
+const trust = {
+  screenId: "screen-1",
+  manifestVerificationKey: "test-verification-key",
+};
+
+const signed = (manifest: PlayerManifest): SignedPlayerManifest =>
+  createSignedPlayerManifest(
+    {
+      version: manifest.version,
+      generatedAt: manifest.generatedAt,
+      validUntil: manifest.validUntil,
+      screenId: manifest.screenId,
+      priority: manifest.priority,
+      withdrawn: manifest.withdrawn,
+      ...(manifest.playbackEndsAt
+        ? { playbackEndsAt: manifest.playbackEndsAt }
+        : {}),
+      items: manifest.items.map((asset, position) => ({
+        id: `item-${position}`,
+        position,
+        durationSeconds: asset.durationSeconds,
+        asset: Object.fromEntries(
+          Object.entries(asset).filter(([key]) => key !== "durationSeconds"),
+        ),
+      })),
+    },
+    "Ed25519",
+    "test-signature",
+  );
+
 class MemoryStore implements PlayerStore {
   credentials: Credentials | undefined;
   active: PlayerManifest | undefined;
   previous: PlayerManifest | undefined;
+  rawActive: SignedPlayerManifest | undefined;
+  rawPrevious: SignedPlayerManifest | undefined;
+  manifestClears = 0;
   async getCredentials() {
     return this.credentials;
   }
@@ -52,13 +92,15 @@ class MemoryStore implements PlayerStore {
   async deletePendingPairing() {}
   async clearProvisionedState() {}
   async getActiveManifest() {
-    return this.active;
+    return this.rawActive ?? (this.active ? signed(this.active) : undefined);
   }
   async getPreviousManifest() {
-    return this.previous;
+    return (
+      this.rawPrevious ?? (this.previous ? signed(this.previous) : undefined)
+    );
   }
-  async activateManifest(value: PlayerManifest) {
-    const sameRelease = this.active?.version === value.version;
+  async activateManifest(value: SignedPlayerManifest) {
+    const sameRelease = this.active?.version === value.manifest.version;
     if (
       !sameRelease &&
       this.active &&
@@ -66,16 +108,24 @@ class MemoryStore implements PlayerStore {
       !this.active.withdrawn
     )
       this.previous = this.active;
-    this.active = value;
+    this.active = value.manifest;
+    this.rawActive = undefined;
   }
   async rollback(expectedActiveVersion?: string) {
     if (
       expectedActiveVersion !== undefined &&
       this.active?.version !== expectedActiveVersion
     )
-      return this.active;
+      return this.active ? signed(this.active) : undefined;
     this.active = this.previous;
-    return this.previous;
+    return this.previous ? signed(this.previous) : undefined;
+  }
+  async clearManifests() {
+    this.manifestClears += 1;
+    this.active = undefined;
+    this.previous = undefined;
+    this.rawActive = undefined;
+    this.rawPrevious = undefined;
   }
   async clear() {
     this.active = undefined;
@@ -103,12 +153,150 @@ class MemoryAssets implements AssetRepository {
 }
 
 describe("manifest transaction", () => {
+  it("recovers only an intact signed envelope for the pinned screen", async () => {
+    const store = new MemoryStore();
+    store.rawActive = signed(valid);
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
+    ).resolves.toEqual(valid);
+
+    store.rawActive = signed(valid);
+    store.rawActive.manifest.playbackEndsAt = "2099-01-01T00:00:00Z";
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
+    ).resolves.toBeUndefined();
+    expect(store.manifestClears).toBe(1);
+  });
+
+  it("fails closed and removes legacy unsigned cached manifests", async () => {
+    const store = new MemoryStore();
+    store.rawActive = valid as unknown as SignedPlayerManifest;
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
+    ).resolves.toBeUndefined();
+    expect(store.manifestClears).toBe(1);
+    expect(store.active).toBeUndefined();
+  });
+
+  it("rejects a stored envelope whose signature no longer verifies", async () => {
+    const store = new MemoryStore();
+    store.rawActive = signed(valid);
+    vi.mocked(verifyManifestPayloadSignature).mockResolvedValueOnce(false);
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
+    ).resolves.toBeUndefined();
+    expect(store.manifestClears).toBe(1);
+  });
+
+  it("verifies a rollback envelope before promoting it", async () => {
+    const store = new MemoryStore();
+    store.active = { ...valid, version: "current" };
+    store.rawPrevious = signed({ ...valid, version: "previous" });
+    store.rawPrevious.manifest.priority = "emergency";
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).rollback(trust, "current"),
+    ).resolves.toBeUndefined();
+    expect(store.manifestClears).toBe(1);
+  });
+
+  it("does not revive a previous release when the active marker is missing", async () => {
+    const store = new MemoryStore();
+    store.previous = { ...valid, version: "previous" };
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
+    ).resolves.toBeUndefined();
+    expect(store.manifestClears).toBe(1);
+    expect(store.previous).toBeUndefined();
+  });
+
   it("prefetches before atomically activating", async () => {
     const store = new MemoryStore();
     const assets = new MemoryAssets();
-    await new ManifestManager(store, assets).stageAndActivate(valid);
+    await new ManifestManager(store, assets).stageAndActivate(
+      signed(valid),
+      trust,
+    );
     expect(assets.prefetched).toEqual(["asset-1"]);
     expect(assets.pruned).toEqual(["asset-1"]);
+    expect(store.active).toEqual(valid);
+  });
+
+  it("does not trust a tampered active hint when deciding whether to prefetch", async () => {
+    const store = new MemoryStore();
+    const assets = new MemoryAssets();
+    store.rawActive = signed({ ...valid, version: "old" });
+    store.rawActive.manifest.version = valid.version;
+
+    await new ManifestManager(store, assets).stageAndActivate(
+      signed(valid),
+      trust,
+    );
+
+    expect(store.manifestClears).toBe(1);
+    expect(assets.prefetched).toEqual(["asset-1"]);
+    expect(store.active).toEqual(valid);
+  });
+
+  it("does not let stalled asset staging block an emergency rollback", async () => {
+    const store = new MemoryStore();
+    let finishPrefetch!: () => void;
+    class StalledAssets extends MemoryAssets {
+      override async prefetch(): Promise<void> {
+        await new Promise<void>((resolve) => {
+          finishPrefetch = resolve;
+        });
+      }
+    }
+    const manager = new ManifestManager(store, new StalledAssets());
+    store.active = {
+      ...valid,
+      version: "emergency-v1",
+      priority: "emergency",
+      generatedAt: "2019-01-01T00:00:00Z",
+      validUntil: "2020-01-01T00:00:00Z",
+    };
+    store.previous = { ...valid, version: "normal-baseline" };
+    const activate = manager.stageAndActivate(
+      signed({ ...valid, version: "replacement-v1" }),
+      trust,
+    );
+    await vi.waitFor(() => expect(finishPrefetch).toBeTypeOf("function"));
+    const rollback = manager.rollback(trust, "emergency-v1");
+
+    await expect(rollback).resolves.toMatchObject({
+      version: "normal-baseline",
+    });
+    finishPrefetch();
+    await expect(activate).resolves.toMatchObject({
+      version: "replacement-v1",
+    });
+  });
+
+  it("serializes a fresh activation after stale recovery cleanup", async () => {
+    const store = new MemoryStore();
+    const manager = new ManifestManager(store, new MemoryAssets());
+    store.rawActive = signed({ ...valid, version: "corrupt-old" });
+    let finishVerification!: (valid: boolean) => void;
+    vi.mocked(verifyManifestPayloadSignature).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishVerification = resolve;
+        }),
+    );
+
+    const recovery = manager.recover(trust);
+    await vi.waitFor(() => expect(finishVerification).toBeTypeOf("function"));
+    const activation = manager.stageAndActivate(signed(valid), trust);
+    finishVerification(false);
+
+    await expect(recovery).resolves.toBeUndefined();
+    await expect(activation).resolves.toEqual(valid);
+    expect(store.manifestClears).toBe(1);
     expect(store.active).toEqual(valid);
   });
 
@@ -118,7 +306,7 @@ describe("manifest transaction", () => {
     store.active = { ...valid, version: "v1" };
     assets.fail = true;
     await expect(
-      new ManifestManager(store, assets).stageAndActivate(valid),
+      new ManifestManager(store, assets).stageAndActivate(signed(valid), trust),
     ).rejects.toThrow("bad hash");
     expect(store.active.version).toBe("v1");
   });
@@ -128,8 +316,8 @@ describe("manifest transaction", () => {
     const assets = new MemoryAssets();
     store.active = { ...valid, version: "v1" };
     const manager = new ManifestManager(store, assets);
-    await manager.stageAndActivate(valid);
-    expect((await manager.rollback())?.version).toBe("v1");
+    await manager.stageAndActivate(signed(valid), trust);
+    expect((await manager.rollback(trust))?.version).toBe("v1");
   });
 
   it("refreshes a repeated release envelope without rotating rollback history", async () => {
@@ -139,13 +327,13 @@ describe("manifest transaction", () => {
     store.active = baseline;
     const manager = new ManifestManager(store, assets);
 
-    await manager.stageAndActivate(valid);
+    await manager.stageAndActivate(signed(valid), trust);
     const refreshed = {
       ...valid,
       generatedAt: "2026-09-11T00:01:00Z",
       validUntil: "2099-09-12T00:01:00Z",
     };
-    await manager.stageAndActivate(refreshed);
+    await manager.stageAndActivate(signed(refreshed), trust);
 
     expect(assets.prefetched).toEqual(["asset-1"]);
     expect(store.active).toEqual(refreshed);
@@ -158,9 +346,9 @@ describe("manifest transaction", () => {
     store.active = baseline;
     const manager = new ManifestManager(store, new MemoryAssets());
 
-    await manager.stageAndActivate(valid);
+    await manager.stageAndActivate(signed(valid), trust);
 
-    expect((await manager.rollback())?.version).toBe("v1");
+    expect((await manager.rollback(trust))?.version).toBe("v1");
     expect(store.active).toEqual(baseline);
   });
 
@@ -174,7 +362,7 @@ describe("manifest transaction", () => {
     const result = await new ManifestManager(
       store,
       new MemoryAssets(),
-    ).rollback(stale.version);
+    ).rollback(trust, stale.version);
 
     expect(result).toEqual(current);
     expect(store.active).toEqual(current);
@@ -193,14 +381,16 @@ describe("manifest transaction", () => {
       items: [],
     };
 
-    await expect(manager.stageAndActivate(withdrawal)).resolves.toBeUndefined();
+    await expect(
+      manager.stageAndActivate(signed(withdrawal), trust),
+    ).resolves.toBeUndefined();
     expect(store.active).toEqual(withdrawal);
     expect(store.previous).toEqual(baseline);
 
     // A fresh manager represents an application reconnect/restart. The signed
     // blank marker must win over the retained safety rollback.
     await expect(
-      new ManifestManager(store, new MemoryAssets()).recover(),
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
     ).resolves.toBeUndefined();
     expect(store.active).toEqual(withdrawal);
   });
@@ -218,10 +408,10 @@ describe("manifest transaction", () => {
     const manager = new ManifestManager(store, new MemoryAssets());
     const republished = { ...valid, version: "v3" };
 
-    await expect(manager.recover()).resolves.toBeUndefined();
-    await expect(manager.stageAndActivate(republished)).resolves.toEqual(
-      republished,
-    );
+    await expect(manager.recover(trust)).resolves.toBeUndefined();
+    await expect(
+      manager.stageAndActivate(signed(republished), trust),
+    ).resolves.toEqual(republished);
     expect(store.active).toEqual(republished);
     expect(store.previous).toEqual(baseline);
   });
@@ -237,10 +427,12 @@ describe("manifest transaction", () => {
     };
     const manager = new ManifestManager(store, assets);
 
-    await expect(manager.stageAndActivate(ended)).resolves.toBeUndefined();
+    await expect(
+      manager.stageAndActivate(signed(ended), trust),
+    ).resolves.toBeUndefined();
     expect(assets.prefetched).toEqual([]);
     expect(store.active).toEqual(ended);
-    await expect(manager.recover()).resolves.toBeUndefined();
+    await expect(manager.recover(trust)).resolves.toBeUndefined();
     expect(store.active).toEqual(ended);
   });
 
@@ -254,7 +446,7 @@ describe("manifest transaction", () => {
     store.active = leased;
 
     await expect(
-      new ManifestManager(store, new MemoryAssets()).recover(),
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
     ).resolves.toEqual(leased);
   });
 
@@ -273,24 +465,27 @@ describe("manifest transaction", () => {
     };
     const manager = new ManifestManager(store, assets);
 
-    await expect(manager.stageAndActivate(expired)).resolves.toBeUndefined();
+    await expect(
+      manager.stageAndActivate(signed(expired), trust),
+    ).resolves.toBeUndefined();
     expect(assets.prefetched).toEqual([]);
-    await expect(manager.recover()).resolves.toBeUndefined();
+    await expect(manager.recover(trust)).resolves.toBeUndefined();
 
     store.active = { ...valid, version: "current" };
     store.previous = expired;
-    await expect(manager.rollback("current")).resolves.toBeUndefined();
+    await expect(manager.rollback(trust, "current")).resolves.toBeUndefined();
   });
 
   it("does not recover a legacy cached web manifest", async () => {
     const store = new MemoryStore();
-    store.active = {
-      ...valid,
-      items: [{ ...valid.items[0]!, kind: "web", mimeType: "text/html" }],
-    };
+    const invalid = signed(valid);
+    invalid.manifest.items = [
+      { ...valid.items[0]!, kind: "web", mimeType: "text/html" },
+    ];
+    store.rawActive = invalid;
 
     await expect(
-      new ManifestManager(store, new MemoryAssets()).recover(),
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
     ).resolves.toBeUndefined();
   });
 
@@ -300,13 +495,14 @@ describe("manifest transaction", () => {
       ...valid,
       version: "emergency-expired",
       priority: "emergency",
+      generatedAt: "2019-01-01T00:00:00Z",
       validUntil: "2020-01-01T00:01:00Z",
     };
     store.previous = { ...valid, version: "normal-last-known-good" };
     const recovered = await new ManifestManager(
       store,
       new MemoryAssets(),
-    ).recover();
+    ).recover(trust);
     expect(recovered?.version).toBe("normal-last-known-good");
     expect(store.active?.priority).toBe("normal");
   });
@@ -321,14 +517,17 @@ describe("manifest transaction", () => {
       priority: "emergency" as const,
     };
     store.active = normal;
-    await manager.stageAndActivate(emergency);
-    await manager.stageAndActivate({ ...emergency, version: "emergency-v2" });
+    await manager.stageAndActivate(signed(emergency), trust);
+    await manager.stageAndActivate(
+      signed({ ...emergency, version: "emergency-v2" }),
+      trust,
+    );
     expect(store.previous?.version).toBe("normal-v1");
 
     const restored = { ...normal, version: "normal-v2" };
-    await manager.stageAndActivate(restored);
-    expect((await manager.rollback())?.priority).toBe("normal");
-    expect((await manager.rollback())?.version).toBe("normal-v1");
+    await manager.stageAndActivate(signed(restored), trust);
+    expect((await manager.rollback(trust))?.priority).toBe("normal");
+    expect((await manager.rollback(trust))?.version).toBe("normal-v1");
   });
 
   it("retains active emergency assets and the normal rollback baseline during pruning", async () => {
@@ -347,7 +546,10 @@ describe("manifest transaction", () => {
       items: [{ ...valid.items[0]!, id: "emergency-asset" }],
     };
 
-    await new ManifestManager(store, assets).stageAndActivate(emergency);
+    await new ManifestManager(store, assets).stageAndActivate(
+      signed(emergency),
+      trust,
+    );
 
     expect(assets.pruned).toEqual(["emergency-asset", "normal-asset"]);
   });

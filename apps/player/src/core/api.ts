@@ -3,6 +3,7 @@ import type {
   Heartbeat,
   PendingProofPairing,
   PlayerManifest,
+  SignedPlayerManifest,
 } from "./types";
 import {
   canonicalJson,
@@ -14,6 +15,7 @@ import {
   type PairingPendingApprovalResponse,
   type PairingResponse,
 } from "@screengoblin/contracts";
+import { createSignedPlayerManifest } from "./manifest";
 import { sha256Hex, utf8, verifyManifestSignature } from "./crypto";
 import {
   getDeviceIdentity,
@@ -902,7 +904,9 @@ export class PlayerApi {
     }
   }
 
-  async manifest(options: PlayerRequestOptions = {}): Promise<PlayerManifest> {
+  async manifest(
+    options: PlayerRequestOptions = {},
+  ): Promise<SignedPlayerManifest> {
     // GET is safe to retry. Every attempt retains its own hard deadline.
     const fetchManifest = () =>
       this.protectedRequest<{
@@ -943,13 +947,7 @@ export class PlayerApi {
         "protocol",
         false,
       );
-    return {
-      ...unsigned,
-      items: response.items.map(({ asset, durationSeconds }) => ({
-        ...asset,
-        durationSeconds,
-      })),
-    };
+    return createSignedPlayerManifest(unsigned, signatureAlgorithm, signature);
   }
 
   heartbeat(

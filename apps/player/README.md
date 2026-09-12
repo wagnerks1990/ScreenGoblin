@@ -4,13 +4,19 @@ Offline-first signage runtime for Android TV, HDMI dongles, Chromium kiosks, and
 
 ## Guarantees
 
-- A downloaded image or video is activated only after byte length and SHA-256 validation succeed.
+- A downloaded image or video is activated only after byte length and SHA-256
+  validation succeed. Persistent cache hits are revalidated before reuse and
+  immediately before playback.
 - A manifest is promoted only after every required binary asset is safely cached.
-- The prior manifest remains available for automatic playback rollback.
+- The exact signed manifest bytes remain with each active/rollback record and
+  are reverified against the pinned key and screen before boot recovery or
+  promotion. Legacy unsigned or altered records fail closed.
+- The prior signed manifest remains available for explicit playback rollback;
+  a missing or corrupt active marker never promotes it implicitly.
 - Existing content continues when the API is unavailable. Connectivity status stays unobtrusive in the lower corner.
 - Signed withdrawals and signed schedule boundaries blank content without reviving an older schedule; stale poll and rollback callbacks cannot overwrite a newer version.
 - Cache-miss verification is limited to 128 MiB per asset and 512 MiB per manifest, with two concurrent downloads and active/rollback generation pruning. Larger media requires the planned native incremental hash/stream-to-disk path.
-- Web items are sandboxed but inherently require connectivity unless the remote application implements its own caching. Do not use web items as the only emergency or fallback content.
+- Web media is disabled in the metadata-only pilot.
 
 The current API/player integration supports admin-created pairing codes,
 authenticated heartbeats, and signed schedule manifests. The Android wrapper now

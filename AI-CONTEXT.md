@@ -26,14 +26,14 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   globally new credential, and cancels competing authority atomically. A code
   alone must never install a replacement, and pairing failure must never cause
   silent key rotation.
-- Manifests bind to a screen, carry a renewable envelope lease, and are signed with Ed25519. A signed normal withdrawal clears stale playback; an optional signed `playbackEndsAt` is the hard schedule boundary. Players pin the verification key during trusted enrollment and verify before staging.
+- Manifests bind to a screen, carry a renewable envelope lease, and are signed with Ed25519. A signed normal withdrawal clears stale playback; an optional signed `playbackEndsAt` is the hard schedule boundary. Players pin the verification key during trusted enrollment, persist the exact verified signing bytes with each cache slot, and reverify the signature, screen binding, and normalized view before boot recovery or rollback. Legacy unsigned or altered slots fail closed, and a missing active slot never promotes an older release.
 - Player item state is generation-scoped. It reports now-playing and starts the
   display duration only after renderer readiness, blanks stale transitions, and
   invokes bounded single-shot recovery for silent stalls or render failures.
 - The production Player build injects exact shell assets into a content-derived
   service-worker cache. API requests and verified manifest media never enter or
   read that shell namespace, and activation prunes shell generations only.
-- Non-web assets are bounded, size/hash verified, and cache-pruned around atomic activation. Emergency overlays never enter the normal rollback chain, and stale callbacks may not roll back a newer active version.
+- Non-web assets are bounded, size/hash verified on download, persistent-cache reuse, and playback, and cache-pruned around atomic activation. Emergency overlays never enter the normal rollback chain, and stale callbacks may not roll back a newer active version.
 - Live operational data must fail visibly. Never replace a failed authenticated request with demo values.
 - Published content, schedules, commands, permissions, emergencies, and device lifecycle operations require durable audit coverage.
 - Ordinary schedule publication freezes playlist and asset playback facts plus

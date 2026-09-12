@@ -57,72 +57,84 @@ export default function App() {
     Promise.all([
       getInstallationId(),
       store.getCredentials(),
-      manager.recover(),
+      store.getActiveManifest(),
+      store.getPreviousManifest(),
       store.getPendingPairing(),
     ])
-      .then(async ([id, savedCredentials, savedManifest, savedPending]) => {
-        setInstallationId(id);
-        let resumable = savedPending;
-        if (resumable && Date.parse(resumable.expiresAt) <= Date.now()) {
-          await store.deletePendingPairing();
-          resumable = undefined;
-        }
-        if (savedCredentials && resumable) {
-          await store.deletePendingPairing();
-          resumable = undefined;
-        }
-        if (
-          resumable &&
-          (!hasNativeDeviceIdentity() ||
-            resumable.expectedKeyId !== id ||
-            resumable.installationId !== id)
-        ) {
-          setFatal(
-            "Saved pairing recovery does not match this device identity",
-          );
-          setReady(true);
-          return;
-        }
-        setPendingPairing(resumable);
-        const validCredentials =
-          savedCredentials &&
-          savedCredentials.manifestVerificationKey &&
-          ((savedCredentials.authMode === "proof-v1" &&
-            hasNativeDeviceIdentity() &&
-            savedCredentials.keyId === id &&
-            savedCredentials.installationId === id) ||
-            (savedCredentials.authMode === "development-bearer" &&
-              !hasNativeDeviceIdentity() &&
-              developmentBearerAllowed(savedCredentials.apiBaseUrl)));
-        if (
-          (savedCredentials && !validCredentials) ||
-          (!savedCredentials && savedManifest)
-        ) {
-          await Promise.all([
-            resumable ? store.clearProvisionedState() : store.clear(),
-            assetRepository.removeAll(),
-          ]);
-          setCredentials(undefined);
-          setManifest(undefined);
-          setFallback(false);
-        } else {
-          if (savedCredentials?.authMode === "proof-v1") {
-            try {
-              await finalizeDeviceIdentityRotation(savedCredentials.keyId);
-            } catch {
-              setFatal(
-                "Activated device credentials require secure key cleanup",
-              );
-              setReady(true);
-              return;
-            }
+      .then(
+        async ([
+          id,
+          savedCredentials,
+          savedActive,
+          savedPrevious,
+          savedPending,
+        ]) => {
+          setInstallationId(id);
+          let resumable = savedPending;
+          if (resumable && Date.parse(resumable.expiresAt) <= Date.now()) {
+            await store.deletePendingPairing();
+            resumable = undefined;
           }
-          setCredentials(savedCredentials);
-          setManifest(savedManifest);
-          setFallback(Boolean(savedManifest));
-        }
-        setReady(true);
-      })
+          if (savedCredentials && resumable) {
+            await store.deletePendingPairing();
+            resumable = undefined;
+          }
+          if (
+            resumable &&
+            (!hasNativeDeviceIdentity() ||
+              resumable.expectedKeyId !== id ||
+              resumable.installationId !== id)
+          ) {
+            setFatal(
+              "Saved pairing recovery does not match this device identity",
+            );
+            setReady(true);
+            return;
+          }
+          setPendingPairing(resumable);
+          const validCredentials =
+            savedCredentials &&
+            savedCredentials.manifestVerificationKey &&
+            ((savedCredentials.authMode === "proof-v1" &&
+              hasNativeDeviceIdentity() &&
+              savedCredentials.keyId === id &&
+              savedCredentials.installationId === id) ||
+              (savedCredentials.authMode === "development-bearer" &&
+                !hasNativeDeviceIdentity() &&
+                developmentBearerAllowed(savedCredentials.apiBaseUrl)));
+          const savedManifest = validCredentials
+            ? await manager.recover(savedCredentials)
+            : undefined;
+          if (
+            (savedCredentials && !validCredentials) ||
+            (!savedCredentials && (savedActive || savedPrevious))
+          ) {
+            await Promise.all([
+              resumable ? store.clearProvisionedState() : store.clear(),
+              assetRepository.removeAll(),
+            ]);
+            setCredentials(undefined);
+            setManifest(undefined);
+            setFallback(false);
+          } else {
+            if (savedCredentials?.authMode === "proof-v1") {
+              try {
+                await finalizeDeviceIdentityRotation(savedCredentials.keyId);
+              } catch {
+                setFatal(
+                  "Activated device credentials require secure key cleanup",
+                );
+                setReady(true);
+                return;
+              }
+            }
+            setCredentials(savedCredentials);
+            setManifest(savedManifest);
+            setFallback(Boolean(savedManifest));
+          }
+          setReady(true);
+        },
+      )
       .catch(() => {
         setFatal("Player storage could not be opened or securely cleared");
         setReady(true);
@@ -160,11 +172,14 @@ export default function App() {
   }, []);
 
   const syncManifest = useCallback(async () => {
-    if (!api || !online) return;
+    if (!api || !credentials || !online) return;
     await manifestSyncRef.current.run(async () => {
       const credentialEpoch = credentialEpochRef.current;
       try {
-        const next = await manager.stageAndActivate(await api.manifest());
+        const next = await manager.stageAndActivate(
+          await api.manifest(),
+          credentials,
+        );
         if (credentialEpoch !== credentialEpochRef.current) {
           try {
             await Promise.all([store.clear(), assetRepository.removeAll()]);
@@ -182,7 +197,8 @@ export default function App() {
           await deprovision();
           return;
         }
-        const saved = await manager.recover();
+        const saved = await manager.recover(credentials);
+        if (credentialEpoch !== credentialEpochRef.current) return;
         if (saved) {
           setManifest(saved);
           setFallback(true);
@@ -194,7 +210,7 @@ export default function App() {
           );
       }
     });
-  }, [api, deprovision, online]);
+  }, [api, credentials, deprovision, online]);
 
   useEffect(() => {
     if (!credentials) return;
@@ -235,7 +251,17 @@ export default function App() {
     const expectedVersion = manifest.version;
     const remaining = Date.parse(manifest.validUntil) - Date.now();
     const restore = async () => {
-      const prior = await manager.rollback(expectedVersion);
+      if (!credentials) return;
+      const credentialEpoch = credentialEpochRef.current;
+      // The signed emergency boundary is a display deadline. Blank first so
+      // storage verification or rollback work can never extend the alert.
+      if (activeManifestVersionRef.current === expectedVersion) {
+        playingRef.current = undefined;
+        setManifest(undefined);
+        setFallback(false);
+      }
+      const prior = await manager.rollback(credentials, expectedVersion);
+      if (credentialEpoch !== credentialEpochRef.current) return;
       if (
         prior?.priority === "emergency" &&
         Date.parse(prior.validUntil) <= Date.now()
@@ -255,7 +281,7 @@ export default function App() {
     }
     const timer = window.setTimeout(() => void restore(), remaining);
     return () => clearTimeout(timer);
-  }, [manifest]);
+  }, [credentials, manifest]);
 
   useEffect(() => {
     if (!api || !credentials) return;
@@ -321,7 +347,10 @@ export default function App() {
   }, []);
   const playbackError = useCallback(async () => {
     try {
-      const prior = await manager.rollback(manifest?.version);
+      if (!credentials) return;
+      const credentialEpoch = credentialEpochRef.current;
+      const prior = await manager.rollback(credentials, manifest?.version);
+      if (credentialEpoch !== credentialEpochRef.current) return;
       if (prior) {
         setManifest(prior);
         setFallback(true);
@@ -336,7 +365,7 @@ export default function App() {
       setFallback(false);
       setFatal("Playback recovery failed");
     }
-  }, [manifest]);
+  }, [credentials, manifest]);
   const nowPlaying = useCallback((id: string) => {
     playingRef.current = id;
   }, []);
