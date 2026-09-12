@@ -100,20 +100,28 @@ const scheduledPlaylist = async (
       { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
     ],
   });
-  return store.createSchedule("org-a", {
-    playlistId: playlist.id,
-    name: "School day",
-    priority: "normal",
-    startsAt: "2026-09-14T00:00:00.000Z",
-    endsAt: "2026-09-15T00:00:00.000Z",
-    timezone: "America/New_York",
-    daysOfWeek: [1],
-    dailyStartMinutes: 9 * 60,
-    dailyEndMinutes: 17 * 60,
-    enabled: true,
-    screenIds: [screenId],
-    ...overrides,
-  });
+  const result = await store.publishScheduleAndAudit(
+    "org-a",
+    {
+      playlistId: playlist.id,
+      name: "School day",
+      priority: "normal",
+      startsAt: "2026-09-14T00:00:00.000Z",
+      endsAt: "2026-09-15T00:00:00.000Z",
+      timezone: "America/New_York",
+      daysOfWeek: [1],
+      dailyStartMinutes: 9 * 60,
+      dailyEndMinutes: 17 * 60,
+      enabled: true,
+      screenIds: [screenId],
+      ...overrides,
+    },
+    { actorUserId: store.users[0]!.id },
+    { mediaAllowedOrigins: ["https://media.example.test"] },
+  );
+  if (!result.published)
+    throw new Error(`Schedule fixture failed: ${result.reason}`);
+  return result.schedule;
 };
 
 describe("health and error contract", () => {
@@ -301,6 +309,233 @@ describe("authentication and organization RBAC", () => {
     expect((await store.getScreen("org-a", created.id))?.name).toBe(
       "Main Lobby",
     );
+  });
+});
+
+describe("immutable ordinary release publication", () => {
+  const schedulePayload = (playlistId: string, screenId: string) => ({
+    playlistId,
+    name: "School day",
+    priority: "normal" as const,
+    startsAt: "2026-09-14T00:00:00.000Z",
+    endsAt: "2026-09-15T00:00:00.000Z",
+    timezone: "America/New_York",
+    daysOfWeek: [1],
+    dailyStartMinutes: 9 * 60,
+    dailyEndMinutes: 17 * 60,
+    enabled: true,
+    screenIds: [screenId],
+  });
+
+  it("atomically publishes a frozen release, assignment, schedule, and audit", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Lobby",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const asset = await store.createMedia("org-a", {
+      name: "Welcome",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/welcome.png",
+      checksumSha256: "a".repeat(64),
+      sizeBytes: 3,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Lobby playlist",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    store.audit = async () => {
+      throw new Error("standalone audit must not be used for publication");
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: { authorization: `Bearer ${token}` },
+      payload: schedulePayload(playlist.id, screen.id),
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      playlistId: playlist.id,
+      releaseId: store.releases[0]!.id,
+      assignmentId: store.releaseAssignments[0]!.id,
+    });
+    expect(store.releases[0]!.items[0]!.asset).toMatchObject({
+      id: asset.id,
+      url: asset.url,
+      checksumSha256: asset.checksumSha256,
+    });
+    expect(store.audits).toContainEqual(
+      expect.objectContaining({
+        action: "release.published",
+        entityId: store.releases[0]!.id,
+        metadata: expect.objectContaining({
+          assignmentId: store.releaseAssignments[0]!.id,
+          digestSha256: store.releases[0]!.digestSha256,
+        }),
+      }),
+    );
+  });
+
+  it("reuses an identical active assignment instead of publishing a conflict", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Lobby",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const asset = await store.createMedia("org-a", {
+      name: "Welcome",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/welcome.png",
+      checksumSha256: "a".repeat(64),
+      sizeBytes: 3,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Lobby playlist",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    const request = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/schedules",
+        headers: { authorization: `Bearer ${token}` },
+        payload: schedulePayload(playlist.id, screen.id),
+      });
+
+    const first = await request();
+    const second = await request();
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(second.json()).toMatchObject({
+      id: first.json().id,
+      releaseId: first.json().releaseId,
+      assignmentId: first.json().assignmentId,
+    });
+    expect(store.schedules).toHaveLength(1);
+    expect(store.releases).toHaveLength(1);
+    expect(store.releaseAssignments).toHaveLength(1);
+    expect(store.audits).toHaveLength(1);
+  });
+
+  it("reports a conflict instead of deleting published source records", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Lobby",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const asset = await store.createMedia("org-a", {
+      name: "Welcome",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/welcome.png",
+      checksumSha256: "a".repeat(64),
+      sizeBytes: 3,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Protected source",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    const publication = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: { authorization: `Bearer ${token}` },
+      payload: schedulePayload(playlist.id, screen.id),
+    });
+    expect(publication.statusCode).toBe(201);
+
+    for (const url of [
+      `/api/v1/media/${asset.id}`,
+      `/api/v1/playlists/${playlist.id}`,
+    ]) {
+      const response = await app.inject({
+        method: "DELETE",
+        url,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error.code).toBe("RESOURCE_IN_USE");
+    }
+    expect(await store.getMedia("org-a", asset.id)).not.toBeNull();
+    expect(await store.getPlaylist("org-a", playlist.id)).not.toBeNull();
+    expect(store.releases).toHaveLength(1);
+
+    const screenDeletion = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/screens/${screen.id}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(screenDeletion.statusCode).toBe(204);
+    expect(await store.getScreen("org-a", screen.id)).toBeNull();
+    expect(store.releaseAssignments[0]!.screenIds).toEqual([screen.id]);
+  });
+
+  it("fails closed without partially publishing empty or off-policy content", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Lobby",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const empty = await store.createPlaylist("org-a", {
+      name: "Empty",
+      description: "",
+      items: [],
+    });
+    const emptyResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: { authorization: `Bearer ${token}` },
+      payload: schedulePayload(empty.id, screen.id),
+    });
+    expect(emptyResponse.statusCode).toBe(422);
+    expect(emptyResponse.json().error.code).toBe("EMPTY_RELEASE");
+
+    const asset = await store.createMedia("org-a", {
+      name: "Off policy",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://legacy.example.test/image.png",
+      checksumSha256: "b".repeat(64),
+      sizeBytes: 3,
+    });
+    const offPolicy = await store.createPlaylist("org-a", {
+      name: "Off policy",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    const policyResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: { authorization: `Bearer ${token}` },
+      payload: schedulePayload(offPolicy.id, screen.id),
+    });
+    expect(policyResponse.statusCode).toBe(422);
+    expect(policyResponse.json().error.code).toBe("MEDIA_ORIGIN_NOT_ALLOWED");
+    expect(store.schedules).toEqual([]);
+    expect(store.releases).toEqual([]);
+    expect(store.releaseAssignments).toEqual([]);
+    expect(store.audits).toEqual([]);
   });
 });
 
@@ -512,7 +747,12 @@ describe("device lifecycle", () => {
         headers: device.headers,
       })
     ).json();
-    await store.deleteSchedule("org-a", schedule.id);
+    const deletion = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/schedules/${schedule.id}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(deletion.statusCode).toBe(204);
     const withdrawn = (
       await app.inject({
         url: "/api/v1/device/manifest",
@@ -532,9 +772,48 @@ describe("device lifecycle", () => {
     expect(withdrawn.signature).toBeTypeOf("string");
     expect(withdrawn.version).not.toBe(scheduled.version);
     expect(withdrawn.version).toBe(initialBlank.version);
+    expect(store.releases).toHaveLength(1);
+    expect(store.releaseAssignments.map((x) => x.state)).toEqual([
+      "ASSIGNED",
+      "WITHDRAWN",
+    ]);
   });
 
-  it("publishes a signed withdrawal for an applicable empty playlist", async () => {
+  it("plays only frozen release facts after source and schedule mutation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("immutable-release-device");
+    const schedule = await scheduledPlaylist(device.screenId);
+    const original = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+
+    store.playlists = [];
+    store.media = [];
+    const mutableSchedule = store.schedules.find((x) => x.id === schedule.id)!;
+    mutableSchedule.priority = "priority";
+    mutableSchedule.endsAt = "2026-09-14T13:00:00.000Z";
+    mutableSchedule.screenIds = [];
+
+    const afterSourceMutation = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(afterSourceMutation).toMatchObject({
+      version: original.version,
+      priority: "normal",
+      withdrawn: false,
+      playbackEndsAt: original.playbackEndsAt,
+      items: original.items,
+    });
+  });
+
+  it("ignores legacy schedules that have no immutable release", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
     const device = await pairDevice("empty-playlist-device");
@@ -592,19 +871,25 @@ describe("device lifecycle", () => {
         { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
       ],
     });
-    await store.createSchedule("org-a", {
-      playlistId: playlist.id,
-      name: "Expired school day",
-      priority: "normal",
-      startsAt: "2026-09-14T00:00:00.000Z",
-      endsAt: "2026-09-15T00:00:00.000Z",
-      timezone: "America/New_York",
-      daysOfWeek: [1],
-      dailyStartMinutes: 9 * 60,
-      dailyEndMinutes: 17 * 60,
-      enabled: true,
-      screenIds: [device.screenId],
-    });
+    const publication = await store.publishScheduleAndAudit(
+      "org-a",
+      {
+        playlistId: playlist.id,
+        name: "Expired school day",
+        priority: "normal",
+        startsAt: "2026-09-14T00:00:00.000Z",
+        endsAt: "2026-09-15T00:00:00.000Z",
+        timezone: "America/New_York",
+        daysOfWeek: [1],
+        dailyStartMinutes: 9 * 60,
+        dailyEndMinutes: 17 * 60,
+        enabled: true,
+        screenIds: [device.screenId],
+      },
+      { actorUserId: store.users[0]!.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+    );
+    expect(publication.published).toBe(true);
 
     const manifest = (
       await app.inject({
@@ -818,7 +1103,7 @@ describe("media trust boundary", () => {
     );
   });
 
-  it("withdraws a schedule containing only legacy off-allowlist media", async () => {
+  it("ignores a legacy unpublished schedule with off-allowlist media", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
     const device = await pairDevice("legacy-origin-device");
