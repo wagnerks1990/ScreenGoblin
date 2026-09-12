@@ -326,8 +326,9 @@ describe("PrismaStore PostgreSQL integration", () => {
       "name",
       "PrismaClientUnknownRequestError",
     );
+    expect((checkConstraintError as Error).message).toContain('code: "23514"');
     expect((checkConstraintError as Error).message).toContain(
-      'violates check constraint "PairingCode_screen_organization_check"',
+      "PairingCode_screen_organization_check",
     );
 
     await prisma.screen.delete({ where: { id: alphaScreen.id } });
