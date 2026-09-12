@@ -106,7 +106,9 @@ async function mutate<T>(path: string, init: RequestInit): Promise<T> {
     ...init,
     headers: {
       Accept: "application/json",
-      "Content-Type": "application/json",
+      ...(init.body === undefined
+        ? {}
+        : { "Content-Type": "application/json" }),
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       ...init.headers,
     },

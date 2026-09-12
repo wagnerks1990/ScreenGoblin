@@ -67,6 +67,31 @@ describe("authenticated live data boundary", () => {
     expect(changed).toHaveBeenCalledOnce();
   });
 
+  it("does not label a bodyless mutation as JSON", async () => {
+    window.sessionStorage.setItem("sg_access_token", "live-token");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: "123456",
+          expiresAt: "2030-01-01T00:00:00.000Z",
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.createPairingCode()).resolves.toMatchObject({
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    });
+
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers;
+    expect(headers).toMatchObject({
+      Accept: "application/json",
+      Authorization: "Bearer live-token",
+    });
+    expect(headers).not.toHaveProperty("Content-Type");
+  });
+
   it("stores a successful live login for the active browser tab", async () => {
     vi.stubGlobal(
       "fetch",
