@@ -76,12 +76,17 @@ user-authentication and membership-authorization epochs; password rotation,
 disablement, role mutation, and membership removal advance the applicable epoch,
 revoke affected sessions, and append system audit records atomically. Thus a
 later restoration of the same password hash or role cannot revive an older
-session. Current-session logout commits the revocation and audit event atomically
-without revoking other sessions. The Console clears local credentials even when
-that call fails, but explicitly warns that revocation is unconfirmed until the
-one-hour expiry. No public identity-administration routes currently expose the
-internal lifecycle methods. External IdP, SSO, MFA, and step-up authentication
-remain separate pre-production requirements.
+session. The internal lifecycle helpers also refuse to disable, demote, or
+remove the last active owner of any affected tenant; PostgreSQL serializes
+competing owner changes by tenant, and a multi-tenant disable fails atomically
+if any tenant lacks a replacement. This continuity guard is not an ownership
+transfer workflow or approval policy. Current-session logout commits the
+revocation and audit event atomically without revoking other sessions. The
+Console clears local credentials even when that call fails, but explicitly
+warns that revocation is unconfirmed until the one-hour expiry. No public
+identity-administration routes currently expose the internal lifecycle methods.
+External IdP, SSO, MFA, and step-up authentication remain separate
+pre-production requirements.
 
 Known and unknown invalid credentials take the same password-verification and
 response path and create tenant-neutral failure telemetry keyed only by

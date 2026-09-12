@@ -63,10 +63,17 @@ export interface SystemIdentityMutationAuditContext {
 
 export type UserAuthenticationMutationResult =
   | { updated: true; affectedOrganizationIds: string[] }
-  | { updated: false; reason: "NOT_FOUND" };
+  | {
+      updated: false;
+      reason: "NOT_FOUND" | "OWNER_CONTINUITY_REQUIRED";
+    };
 
 export type MembershipAuthorizationMutationResult =
-  { updated: true } | { updated: false; reason: "NOT_FOUND" };
+  | { updated: true }
+  | {
+      updated: false;
+      reason: "NOT_FOUND" | "OWNER_CONTINUITY_REQUIRED";
+    };
 export interface ScreenRecord {
   id: string;
   organizationId: string;

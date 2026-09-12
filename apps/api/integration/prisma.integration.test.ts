@@ -40,6 +40,84 @@ const publicationIdempotency = () => ({
 });
 const approvedPasswordHash =
   "$2b$12$C6UzMDM.H6dfI/f/IKcEe.82jG7y4g4AY8I8HibLFSWafVkx8S4hS";
+const deferred = () => {
+  let resolve!: () => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
+const waitForOwnerContinuityWaiters = async (minimum: number) => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const [activity] = await prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT COUNT(*)::integer AS "count"
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND wait_event_type = 'Lock'
+        AND query LIKE '%FOR NO KEY UPDATE OF organization%'`;
+    if ((activity?.count ?? 0) >= minimum) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Timed out waiting for ${minimum} owner-continuity transaction(s)`,
+  );
+};
+const queueOwnerContinuityOperations = async <T>(
+  organizationId: string,
+  operations: ReadonlyArray<() => Promise<T>>,
+) => {
+  const acquired = deferred();
+  const release = deferred();
+  const holder = prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT organization."id"
+      FROM "Organization" organization
+      WHERE organization."id" = ${organizationId}
+      FOR NO KEY UPDATE OF organization`;
+    acquired.resolve();
+    await release.promise;
+  });
+  const holderSettled = holder.then(
+    () => ({ succeeded: true as const }),
+    (error: unknown) => {
+      acquired.reject(error);
+      return { succeeded: false as const, error };
+    },
+  );
+  try {
+    await acquired.promise;
+  } catch (error) {
+    release.resolve();
+    await holderSettled;
+    throw error;
+  }
+  const resultsSettled = Promise.all(
+    operations.map((operation) => operation()),
+  ).then(
+    (results) => ({ succeeded: true as const, results }),
+    (error: unknown) => ({ succeeded: false as const, error }),
+  );
+  let barrierError: unknown;
+  try {
+    await waitForOwnerContinuityWaiters(operations.length);
+  } catch (error) {
+    barrierError = error;
+  } finally {
+    release.resolve();
+    await holderSettled;
+  }
+  const [holderResult, operationResult] = await Promise.all([
+    holderSettled,
+    resultsSettled,
+  ]);
+  if (barrierError) throw barrierError;
+  if (!holderResult.succeeded) throw holderResult.error;
+  if (!operationResult.succeeded) throw operationResult.error;
+  return operationResult.results;
+};
 const proofEnrollment = (byte: number) => ({
   keyId: Buffer.alloc(32, byte).toString("base64url"),
   publicKeySpki: Buffer.alloc(91, byte).toString("base64url"),
@@ -2888,6 +2966,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         { organizationId: beta.id, userId: actor.id, role: "VIEWER" },
       ],
     });
+    await createMember(alpha.id, "OWNER", "identity-epoch-backup");
     const createSession = (
       organizationId: string,
       role: "OWNER" | "VIEWER",
@@ -3033,6 +3112,411 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).resolves.toBeNull();
   });
 
+  it("serializes competing owner removals and preserves one active owner", async () => {
+    const organization = await createOrganization("owner-continuity-race");
+    const [first, second] = await Promise.all([
+      createMember(organization.id, "OWNER", "owner-continuity-first"),
+      createMember(organization.id, "OWNER", "owner-continuity-second"),
+      createMember(organization.id, "OWNER", "owner-continuity-disabled", true),
+    ]);
+
+    const results = await queueOwnerContinuityOperations(organization.id, [
+      () =>
+        store.changeMembershipRoleAndAudit(organization.id, first.id, "ADMIN", {
+          reason: "Concurrent owner demotion",
+        }),
+      () =>
+        store.removeMembershipAndAudit(organization.id, second.id, {
+          reason: "Concurrent owner removal",
+        }),
+    ]);
+    expect(results.filter((result) => result.updated)).toHaveLength(1);
+    expect(results.filter((result) => !result.updated)).toEqual([
+      { updated: false, reason: "OWNER_CONTINUITY_REQUIRED" },
+    ]);
+
+    const activeOwners = await prisma.membership.findMany({
+      where: {
+        organizationId: organization.id,
+        role: "OWNER",
+        user: { disabledAt: null },
+      },
+    });
+    expect(activeOwners).toHaveLength(1);
+    await expect(
+      store.disableUserAndAudit(activeOwners[0]!.userId, {
+        reason: "Would orphan tenant",
+      }),
+    ).resolves.toEqual({
+      updated: false,
+      reason: "OWNER_CONTINUITY_REQUIRED",
+    });
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          organizationId: organization.id,
+          action: {
+            in: [
+              "identity.membership_role_changed",
+              "identity.membership_removed",
+              "identity.user_disabled",
+            ],
+          },
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it("serializes owner promotion against removal without an ownerless result", async () => {
+    const organization = await createOrganization("owner-promotion-race");
+    const [owner, candidate] = await Promise.all([
+      createMember(organization.id, "OWNER", "owner-promotion-current"),
+      createMember(organization.id, "ADMIN", "owner-promotion-candidate"),
+    ]);
+
+    const handoff = await queueOwnerContinuityOperations(organization.id, [
+      () =>
+        store.changeMembershipRoleAndAudit(organization.id, owner.id, "ADMIN", {
+          reason: "Concurrent ownership handoff",
+        }),
+      () =>
+        store.changeMembershipRoleAndAudit(
+          organization.id,
+          candidate.id,
+          "OWNER",
+          { reason: "Concurrent ownership handoff" },
+        ),
+    ]);
+    const demotion = handoff[0]!;
+    const promotion = handoff[1]!;
+    expect(promotion).toEqual({ updated: true });
+    expect(
+      demotion.updated || demotion.reason === "OWNER_CONTINUITY_REQUIRED",
+    ).toBe(true);
+    expect(
+      await prisma.membership.count({
+        where: {
+          organizationId: organization.id,
+          role: "OWNER",
+          user: { disabledAt: null },
+        },
+      }),
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps session issue and logout audit FKs compatible with the tenant invariant lock", async () => {
+    const organization = await createOrganization("owner-session-locks");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "owner-session-locks",
+    );
+    await createMember(organization.id, "OWNER", "owner-session-locks-backup");
+    const sessionInput = (tokenHash: string) => ({
+      tokenHash,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      expectedPasswordHash: actor.passwordHash,
+      expectedRole: "OWNER" as const,
+      expectedAuthenticationEpoch: 0,
+      expectedAuthorizationEpoch: 0,
+    });
+    const existingHash = "7".repeat(64);
+    await store.createUserSessionAndAudit(
+      organization.id,
+      sessionInput(existingHash),
+      { actorUserId: actor.id },
+    );
+
+    const whileTenantLocked = async <T>(operation: () => Promise<T>) => {
+      const acquired = deferred();
+      const release = deferred();
+      const holder = prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT organization."id"
+          FROM "Organization" organization
+          WHERE organization."id" = ${organization.id}
+          FOR NO KEY UPDATE OF organization`;
+        acquired.resolve();
+        await release.promise;
+      });
+      const holderSettled = holder.then(
+        () => ({ succeeded: true as const }),
+        (error: unknown) => {
+          acquired.reject(error);
+          return { succeeded: false as const, error };
+        },
+      );
+      try {
+        await acquired.promise;
+      } catch (error) {
+        release.resolve();
+        await holderSettled;
+        throw error;
+      }
+      const operationSettled = operation().then(
+        (result) => ({ succeeded: true as const, result }),
+        (error: unknown) => ({ succeeded: false as const, error }),
+      );
+      let timeout: NodeJS.Timeout | undefined;
+      const raceResult = await Promise.race([
+        operationSettled.then(() => ({ timedOut: false as const })),
+        new Promise<{ timedOut: true }>((resolve) => {
+          timeout = setTimeout(() => resolve({ timedOut: true }), 2_000);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      release.resolve();
+      const [holderResult, operationResult] = await Promise.all([
+        holderSettled,
+        operationSettled,
+      ]);
+      if (!holderResult.succeeded) throw holderResult.error;
+      if (raceResult.timedOut)
+        throw new Error("session operation waited on tenant lock");
+      if (!operationResult.succeeded) throw operationResult.error;
+      return operationResult.result;
+    };
+
+    await expect(
+      whileTenantLocked(() =>
+        store.createUserSessionAndAudit(
+          organization.id,
+          sessionInput("8".repeat(64)),
+          { actorUserId: actor.id },
+        ),
+      ),
+    ).resolves.toMatchObject({ created: true });
+    await expect(
+      whileTenantLocked(() =>
+        store.revokeUserSessionAndAudit(
+          actor.id,
+          organization.id,
+          existingHash,
+          { actorUserId: actor.id },
+        ),
+      ),
+    ).resolves.toEqual({ revoked: true });
+  });
+
+  it("completes session races against demotion, removal, and multi-tenant disable", async () => {
+    const createInput = (
+      actor: { passwordHash: string },
+      tokenHash: string,
+    ) => ({
+      tokenHash,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      expectedPasswordHash: actor.passwordHash,
+      expectedRole: "OWNER" as const,
+      expectedAuthenticationEpoch: 0,
+      expectedAuthorizationEpoch: 0,
+    });
+
+    const demotionOrganization = await createOrganization(
+      "session-demotion-race",
+    );
+    const demoted = await createMember(
+      demotionOrganization.id,
+      "OWNER",
+      "session-demotion-race",
+    );
+    await createMember(
+      demotionOrganization.id,
+      "OWNER",
+      "session-demotion-race-backup",
+    );
+    const demotionHash = "9".repeat(64);
+    const [issuance, demotion] = await Promise.all([
+      store.createUserSessionAndAudit(
+        demotionOrganization.id,
+        createInput(demoted, demotionHash),
+        { actorUserId: demoted.id },
+      ),
+      store.changeMembershipRoleAndAudit(
+        demotionOrganization.id,
+        demoted.id,
+        "ADMIN",
+        { reason: "Concurrent session demotion" },
+      ),
+    ]);
+    expect(demotion).toEqual({ updated: true });
+    expect(issuance.created === true || issuance.reason === "FORBIDDEN").toBe(
+      true,
+    );
+    await expect(
+      store.findActiveUserSession(
+        demoted.id,
+        demotionOrganization.id,
+        demotionHash,
+      ),
+    ).resolves.toBeNull();
+
+    const removalOrganization = await createOrganization("session-remove-race");
+    const removed = await createMember(
+      removalOrganization.id,
+      "OWNER",
+      "session-remove-race",
+    );
+    await createMember(
+      removalOrganization.id,
+      "OWNER",
+      "session-remove-race-backup",
+    );
+    const removalHash = "a".repeat(64);
+    await store.createUserSessionAndAudit(
+      removalOrganization.id,
+      createInput(removed, removalHash),
+      { actorUserId: removed.id },
+    );
+    const [logout, removal] = await Promise.all([
+      store.revokeUserSessionAndAudit(
+        removed.id,
+        removalOrganization.id,
+        removalHash,
+        { actorUserId: removed.id },
+      ),
+      store.removeMembershipAndAudit(removalOrganization.id, removed.id, {
+        reason: "Concurrent session removal",
+      }),
+    ]);
+    expect(removal).toEqual({ updated: true });
+    expect(logout.revoked === true || logout.reason === "NOT_FOUND").toBe(true);
+
+    const [disableAlpha, disableBeta] = await Promise.all([
+      createOrganization("session-disable-race-alpha"),
+      createOrganization("session-disable-race-beta"),
+    ]);
+    const disabled = await createUser(
+      `session-disable-race-${randomUUID()}@example.test`,
+    );
+    await prisma.membership.createMany({
+      data: [
+        {
+          organizationId: disableAlpha.id,
+          userId: disabled.id,
+          role: "OWNER",
+        },
+        {
+          organizationId: disableBeta.id,
+          userId: disabled.id,
+          role: "OWNER",
+        },
+      ],
+    });
+    await Promise.all([
+      createMember(
+        disableAlpha.id,
+        "OWNER",
+        "session-disable-race-alpha-backup",
+      ),
+      createMember(disableBeta.id, "OWNER", "session-disable-race-beta-backup"),
+    ]);
+    const disableHash = "b".repeat(64);
+    const [disableIssuance, disable] = await Promise.all([
+      store.createUserSessionAndAudit(
+        disableAlpha.id,
+        createInput(disabled, disableHash),
+        { actorUserId: disabled.id },
+      ),
+      store.disableUserAndAudit(disabled.id, {
+        reason: "Concurrent multi-tenant disable",
+      }),
+    ]);
+    expect(disable).toMatchObject({ updated: true });
+    expect(
+      disableIssuance.created === true ||
+        disableIssuance.reason === "FORBIDDEN",
+    ).toBe(true);
+    await expect(
+      store.findActiveUserSession(disabled.id, disableAlpha.id, disableHash),
+    ).resolves.toBeNull();
+  });
+
+  it("rejects a multi-tenant disable atomically when any tenant would be orphaned", async () => {
+    const [alpha, beta] = await Promise.all([
+      createOrganization("owner-continuity-alpha"),
+      createOrganization("owner-continuity-beta"),
+    ]);
+    const target = await createUser(
+      `owner-continuity-target-${randomUUID()}@example.test`,
+    );
+    await prisma.membership.createMany({
+      data: [
+        { organizationId: alpha.id, userId: target.id, role: "OWNER" },
+        { organizationId: beta.id, userId: target.id, role: "OWNER" },
+      ],
+    });
+    await createMember(alpha.id, "OWNER", "owner-continuity-alpha-backup");
+
+    await expect(
+      store.disableUserAndAudit(target.id, {
+        reason: "One tenant has no replacement",
+      }),
+    ).resolves.toEqual({
+      updated: false,
+      reason: "OWNER_CONTINUITY_REQUIRED",
+    });
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: target.id } }),
+    ).resolves.toMatchObject({ disabledAt: null, authenticationEpoch: 0 });
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          organizationId: { in: [alpha.id, beta.id] },
+          action: "identity.user_disabled",
+        },
+      }),
+    ).toBe(0);
+  });
+
+  it("orders concurrent multi-tenant disables without deadlock or orphaning", async () => {
+    const [alpha, beta] = await Promise.all([
+      createOrganization("owner-disable-race-alpha"),
+      createOrganization("owner-disable-race-beta"),
+    ]);
+    const [first, second] = await Promise.all([
+      createUser(`owner-disable-race-first-${randomUUID()}@example.test`),
+      createUser(`owner-disable-race-second-${randomUUID()}@example.test`),
+    ]);
+    await prisma.membership.createMany({
+      data: [first, second].flatMap((user) => [
+        { organizationId: alpha.id, userId: user.id, role: "OWNER" as const },
+        { organizationId: beta.id, userId: user.id, role: "OWNER" as const },
+      ]),
+    });
+
+    const results = await queueOwnerContinuityOperations(
+      [alpha.id, beta.id].sort()[0]!,
+      [
+        () =>
+          store.disableUserAndAudit(first.id, {
+            reason: "Concurrent disable",
+          }),
+        () =>
+          store.disableUserAndAudit(second.id, {
+            reason: "Concurrent disable",
+          }),
+      ],
+    );
+    expect(results.filter((result) => result.updated)).toHaveLength(1);
+    expect(results.filter((result) => !result.updated)).toEqual([
+      { updated: false, reason: "OWNER_CONTINUITY_REQUIRED" },
+    ]);
+    const remainingOwners = await prisma.membership.findMany({
+      where: {
+        organizationId: { in: [alpha.id, beta.id] },
+        role: "OWNER",
+        user: { disabledAt: null },
+      },
+      orderBy: { organizationId: "asc" },
+    });
+    expect(remainingOwners.map(({ organizationId }) => organizationId)).toEqual(
+      [alpha.id, beta.id].sort(),
+    );
+    expect(new Set(remainingOwners.map(({ userId }) => userId))).toHaveLength(
+      1,
+    );
+  });
+
   it("serializes session issuance against password reset without reviving a request", async () => {
     const organization = await createOrganization("identity-reset-race");
     const actor = await createMember(
@@ -3078,6 +3562,11 @@ describe("PrismaStore PostgreSQL integration", () => {
       "OWNER",
       "identity-audit-rollback",
     );
+    await createMember(
+      organization.id,
+      "OWNER",
+      "identity-audit-rollback-backup",
+    );
     const tokenHash = "5".repeat(64);
     await prisma.userSession.create({
       data: {
@@ -3098,6 +3587,21 @@ describe("PrismaStore PostgreSQL integration", () => {
           reason: "Rejected audit",
         }),
       ).rejects.toThrow();
+      await expect(
+        store.changeMembershipRoleAndAudit(organization.id, actor.id, "ADMIN", {
+          reason: "Rejected role audit",
+        }),
+      ).rejects.toThrow();
+      await expect(
+        store.disableUserAndAudit(actor.id, {
+          reason: "Rejected disable audit",
+        }),
+      ).rejects.toThrow();
+      await expect(
+        store.removeMembershipAndAudit(organization.id, actor.id, {
+          reason: "Rejected removal audit",
+        }),
+      ).rejects.toThrow();
     } finally {
       await prisma.$executeRawUnsafe(
         'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_identity_audits"',
@@ -3108,10 +3612,21 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).resolves.toMatchObject({
       passwordHash: actor.passwordHash,
       authenticationEpoch: 0,
+      disabledAt: null,
     });
     await expect(
       prisma.userSession.findUniqueOrThrow({ where: { tokenHash } }),
     ).resolves.toMatchObject({ revokedAt: null });
+    await expect(
+      prisma.membership.findUniqueOrThrow({
+        where: {
+          organizationId_userId: {
+            organizationId: organization.id,
+            userId: actor.id,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ role: "OWNER", authorizationEpoch: 0 });
   });
 
   it("rechecks release capabilities from locked current memberships before writes", async () => {
@@ -3712,6 +4227,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         role: "OWNER",
       },
     });
+    await createMember(organization.id, "OWNER", "release-reactivation-backup");
     const screen = await store.createScreen(organization.id, {
       name: "Reactivation screen",
       location: "",

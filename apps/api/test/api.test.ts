@@ -750,6 +750,12 @@ describe("authentication and organization RBAC", () => {
     expect(r.statusCode).toBe(404);
   });
   it("does not revive sessions after disablement or a role demote-restore cycle", async () => {
+    store.users.push({
+      ...store.users[0]!,
+      id: "00000000-0000-4000-8000-000000000003",
+      email: "backup-owner@example.test",
+      name: "Backup owner",
+    });
     await store.disableUserAndAudit(store.users[0]!.id, {
       reason: "Test offboarding",
     });
