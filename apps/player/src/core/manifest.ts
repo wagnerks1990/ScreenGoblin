@@ -181,6 +181,9 @@ function normalizeSignedPayload(value: unknown): PlayerManifest {
       ? { playbackEndsAt: wire.playbackEndsAt }
       : {}),
     screenId: wire.screenId,
+    ...(wire.requestChallengeId !== undefined
+      ? { requestChallengeId: wire.requestChallengeId }
+      : {}),
     priority: wire.priority,
     // Pre-0.1 signed envelopes did not carry an explicit withdrawal marker.
     withdrawn: wire.withdrawn ?? false,
@@ -297,6 +300,14 @@ export class ManifestManager {
     if (Date.parse(candidate.validUntil) <= Date.now())
       throw new ManifestError("Manifest has already expired");
 
+    const signedActiveAtStage = await this.store.getActiveManifest();
+    const activeAtStage = await verifySignedPlayerManifest(
+      signedActiveAtStage,
+      trust,
+    );
+    this.assertStagingGeneration(stagingGeneration);
+    this.assertNotOlderThanActive(candidate, activeAtStage);
+
     // Remove crash leftovers before reserving space for another release. The
     // complete staging operation is serialized so a later collection cannot
     // delete files an earlier release has downloaded but not activated yet.
@@ -369,6 +380,28 @@ export class ManifestManager {
       throw new ManifestError("Manifest staging was cancelled");
   }
 
+  private assertNotOlderThanActive(
+    candidate: PlayerManifest,
+    active: PlayerManifest | undefined,
+  ): void {
+    if (!active) return;
+    const candidateGeneratedAt = Date.parse(candidate.generatedAt);
+    const activeGeneratedAt = Date.parse(active.generatedAt);
+    if (candidateGeneratedAt < activeGeneratedAt)
+      throw new ManifestError(
+        "Manifest generation time is older than the active release",
+      );
+    if (
+      candidateGeneratedAt === activeGeneratedAt &&
+      candidate.version !== active.version &&
+      (candidate.requestChallengeId !== undefined ||
+        active.requestChallengeId !== undefined)
+    )
+      throw new ManifestError(
+        "Manifest generation time is ambiguous with the active release",
+      );
+  }
+
   private enqueueState<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.stateTail.then(operation);
     this.stateTail = result.then(
@@ -408,6 +441,7 @@ export class ManifestManager {
     const active = await verifySignedPlayerManifest(signedActive, trust);
     this.assertStagingGeneration(stagingGeneration);
     if (signedActive && !active) await this.store.clearManifests();
+    this.assertNotOlderThanActive(candidate, active);
     this.assertStagingGeneration(stagingGeneration);
     await this.store.activateManifest(signedCandidate);
     return candidate.withdrawn || playbackEnded ? undefined : candidate;

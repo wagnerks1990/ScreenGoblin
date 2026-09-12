@@ -43,6 +43,15 @@ clear with its audit event in one transaction. Production remains hard-disabled
 pending strong re-authentication, distinct-person approval, delivery
 acknowledgement, recovery, and tabletop evidence.
 
+Proof-v1 manifest responses additionally sign the one-use challenge ID
+consumed for that request, and the Player requires an exact match before
+acceptance. Online activation rejects signed generation times older than the
+persisted active envelope and rejects a different semantic version at the same
+generation timestamp, while leaving explicit local rollback available. A
+privileged local attacker who can replace both application state and cached
+envelopes may still roll state back; rollback-resistant native storage remains
+a release gate.
+
 ## Container posture
 
 Only ports 80/443 are published. Data services use an internal network. Application/static containers run read-only with dropped Linux capabilities and `no-new-privileges`; persistent data uses named volumes. Secrets are injected at runtime and must move from an environment file to a secret manager for production. Pin images by digest and generate an SBOM for release candidates.

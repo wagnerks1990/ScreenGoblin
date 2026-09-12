@@ -19,6 +19,14 @@ vi.mock("./device", () => ({
   signDeviceChallenge: native.signDeviceChallenge,
 }));
 
+vi.mock("./crypto", async () => {
+  const actual = await vi.importActual<typeof import("./crypto")>("./crypto");
+  return {
+    ...actual,
+    verifyManifestSignature: vi.fn().mockResolvedValue(true),
+  };
+});
+
 import { PlayerApi } from "./api";
 import { sha256Hex, utf8 } from "./crypto";
 
@@ -58,11 +66,12 @@ const challenge = (suffix: string) => ({
   expiresAt: "2099-09-12T00:01:00.000Z",
 });
 
-const manifest = () => ({
+const manifest = (requestChallengeId = challengeIds["manifest-2"]!) => ({
   version: "manifest-1",
   generatedAt: "2026-09-11T00:00:00.000Z",
   validUntil: "2026-09-11T00:05:00.000Z",
   screenId: proofCredentials.screenId,
+  requestChallengeId,
   priority: "normal" as const,
   items: [
     {
@@ -585,6 +594,27 @@ describe("PlayerApi proof-v1", () => {
       second.challenge,
       native.identity.keyId,
     );
+  });
+
+  it("rejects a signed manifest bound to a different request challenge", async () => {
+    const issued = challenge("manifest-1");
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(Response.json(issued))
+        .mockResolvedValueOnce(
+          Response.json(manifest(challengeIds["manifest-2"])),
+        ),
+    );
+
+    await expect(
+      new PlayerApi(proofCredentials.apiBaseUrl, proofCredentials).manifest(),
+    ).rejects.toMatchObject({
+      kind: "protocol",
+      retryable: false,
+      message: "Manifest response is not bound to its request challenge",
+    });
   });
 
   it("binds heartbeat proof to the exact canonical body and never replays it", async () => {
