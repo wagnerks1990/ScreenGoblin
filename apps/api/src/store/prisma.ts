@@ -1,7 +1,9 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import type {
+  ActiveOrdinaryRelease,
   AuditRecord,
   DataStore,
+  DeleteResult,
   EmergencyRecord,
   MediaRecord,
   PairingRecord,
@@ -9,10 +11,25 @@ import type {
   PairingCreateAuditContext,
   PairingCreateResult,
   PlaylistRecord,
+  PublishedReleaseRecord,
+  ReleaseAssignmentRecord,
+  ReleaseAuditContext,
+  ReleasePublicationPolicy,
   ScheduleRecord,
+  SchedulePublicationInput,
+  SchedulePublicationResult,
+  ScheduleWithdrawalResult,
   ScreenRecord,
   SessionUser,
 } from "../domain/types.js";
+import {
+  assignmentSnapshotDigest,
+  canonicalAssignmentSnapshot,
+  canonicalReleaseSnapshot,
+  ReleaseSnapshotError,
+  releaseSnapshotDigest,
+} from "../releases/canonical.js";
+import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
 
 const iso = (v: Date | null | undefined) => v?.toISOString();
@@ -137,6 +154,72 @@ const emergencyDto = (x: Record<string, unknown>): EmergencyRecord => ({
   createdAt: iso(x.createdAt as Date)!,
 });
 
+const publishedReleaseDto = (
+  x: Record<string, unknown>,
+): PublishedReleaseRecord => ({
+  id: String(x.id),
+  organizationId: String(x.organizationId),
+  sourcePlaylistId: String(x.sourcePlaylistId),
+  sourcePlaylistUpdatedAt: iso(x.sourcePlaylistUpdatedAt as Date)!,
+  playlistName: String(x.sourcePlaylistName),
+  playlistDescription: String(x.sourcePlaylistDescription),
+  digestSha256: String(x.digestSha256),
+  items: ((x.items ?? []) as Array<Record<string, unknown>>).map((item) => ({
+    id: String(item.sourcePlaylistItemId),
+    asset: {
+      id: String(item.sourceAssetId),
+      name: String(item.assetName),
+      kind: enumLower<MediaRecord["kind"]>(String(item.assetKind)),
+      mimeType: String(item.assetMimeType),
+      url: String(item.assetUrl),
+      checksumSha256: String(item.assetChecksumSha256),
+      sizeBytes: safeInteger(item.assetSizeBytes, "assetSizeBytes"),
+      createdAt: iso(item.assetCreatedAt as Date)!,
+      ...(item.assetExpiresAt
+        ? { expiresAt: iso(item.assetExpiresAt as Date) }
+        : {}),
+    },
+    position: Number(item.position),
+    durationSeconds: Number(item.durationSeconds),
+  })),
+  createdById: String(x.createdById),
+  createdAt: iso(x.createdAt as Date)!,
+});
+
+const releaseAssignmentDto = (
+  x: Record<string, unknown>,
+): ReleaseAssignmentRecord => ({
+  id: String(x.id),
+  organizationId: String(x.organizationId),
+  releaseId: String(x.releaseId),
+  scheduleId: String(x.scheduleId),
+  screenIds: ((x.targets ?? []) as Array<{ screenId: string }>)
+    .map((target) => target.screenId)
+    .sort(),
+  state: String(x.state) as ReleaseAssignmentRecord["state"],
+  schedule: {
+    name: String(x.scheduleName),
+    priority: enumLower<ScheduleRecord["priority"]>(String(x.priority)),
+    startsAt: iso(x.startsAt as Date)!,
+    ...(x.endsAt ? { endsAt: iso(x.endsAt as Date) } : {}),
+    timezone: String(x.timezone),
+    daysOfWeek: [...(x.daysOfWeek as number[])],
+    ...(x.dailyStartMinutes != null
+      ? { dailyStartMinutes: Number(x.dailyStartMinutes) }
+      : {}),
+    ...(x.dailyEndMinutes != null
+      ? { dailyEndMinutes: Number(x.dailyEndMinutes) }
+      : {}),
+    enabled: Boolean(x.enabled),
+  },
+  digestSha256: String(x.digestSha256),
+  ...(x.previousAssignmentId
+    ? { previousAssignmentId: String(x.previousAssignmentId) }
+    : {}),
+  createdById: String(x.createdById),
+  createdAt: iso(x.createdAt as Date)!,
+});
+
 const pairingDto = (x: {
   id: string;
   organizationId: string;
@@ -156,6 +239,12 @@ const pairingDto = (x: {
 const isUniqueConstraintError = (error: unknown) =>
   error instanceof Prisma.PrismaClientKnownRequestError &&
   error.code === "P2002";
+const isForeignKeyConstraintError = (error: unknown) =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  error.code === "P2003";
+const isRetryableWriteConflict = (error: unknown) =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  error.code === "P2034";
 
 export class PrismaStore implements DataStore {
   constructor(readonly prisma = new PrismaClient()) {}
@@ -544,11 +633,16 @@ export class PrismaStore implements DataStore {
     });
     return x ? mediaDto(x) : null;
   }
-  async deleteMedia(org: string, id: string) {
-    const r = await this.prisma.mediaAsset.deleteMany({
-      where: { id, organizationId: org },
-    });
-    return r.count > 0;
+  async deleteMedia(org: string, id: string): Promise<DeleteResult> {
+    try {
+      const r = await this.prisma.mediaAsset.deleteMany({
+        where: { id, organizationId: org },
+      });
+      return r.count > 0 ? "DELETED" : "NOT_FOUND";
+    } catch (error) {
+      if (isForeignKeyConstraintError(error)) return "IN_USE";
+      throw error;
+    }
   }
   async listPlaylists(org: string) {
     return (
@@ -587,11 +681,16 @@ export class PrismaStore implements DataStore {
     });
     return x ? playlistDto(x) : null;
   }
-  async deletePlaylist(org: string, id: string) {
-    const r = await this.prisma.playlist.deleteMany({
-      where: { id, organizationId: org },
-    });
-    return r.count > 0;
+  async deletePlaylist(org: string, id: string): Promise<DeleteResult> {
+    try {
+      const r = await this.prisma.playlist.deleteMany({
+        where: { id, organizationId: org },
+      });
+      return r.count > 0 ? "DELETED" : "NOT_FOUND";
+    } catch (error) {
+      if (isForeignKeyConstraintError(error)) return "IN_USE";
+      throw error;
+    }
   }
   async listSchedules(org: string) {
     return (
@@ -638,6 +737,423 @@ export class PrismaStore implements DataStore {
       where: { id, organizationId: org },
     });
     return r.count > 0;
+  }
+  async publishScheduleAndAudit(
+    org: string,
+    data: SchedulePublicationInput,
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+  ): Promise<SchedulePublicationResult> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const actorMembership = await tx.membership.findUnique({
+              where: {
+                organizationId_userId: {
+                  organizationId: org,
+                  userId: audit.actorUserId,
+                },
+              },
+              select: { id: true },
+            });
+            if (!actorMembership)
+              throw new Error("Release actor is not an organization member");
+            const playlist = await tx.playlist.findFirst({
+              where: { id: data.playlistId, organizationId: org },
+              include: {
+                items: {
+                  orderBy: [{ position: "asc" }, { id: "asc" }],
+                  include: { asset: true },
+                },
+              },
+            });
+            if (!playlist)
+              return { published: false, reason: "PLAYLIST_NOT_FOUND" };
+
+            const screenIds = [...new Set(data.screenIds)].sort();
+            if (screenIds.length === 0)
+              return { published: false, reason: "SCREEN_NOT_FOUND" };
+            const screens = await tx.screen.findMany({
+              where: { organizationId: org, id: { in: screenIds } },
+              select: { id: true },
+            });
+            if (screens.length !== screenIds.length)
+              return { published: false, reason: "SCREEN_NOT_FOUND" };
+
+            const playlistRecord = playlistDto(playlist);
+            const assets = playlist.items.map((item) => mediaDto(item.asset));
+            if (
+              assets.some(
+                (asset) =>
+                  !mediaUrlMatchesAllowedOrigin(
+                    asset.url,
+                    policy.mediaAllowedOrigins,
+                  ),
+              )
+            )
+              return { published: false, reason: "ASSET_NOT_ALLOWED" };
+
+            let snapshot;
+            try {
+              snapshot = canonicalReleaseSnapshot(playlistRecord, assets);
+            } catch (error) {
+              if (error instanceof ReleaseSnapshotError)
+                return { published: false, reason: error.reason };
+              throw error;
+            }
+            const digestSha256 = releaseSnapshotDigest(snapshot);
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`release:${org}:${digestSha256}`}, 0))`;
+            let release = await tx.publishedRelease.findUnique({
+              where: {
+                organizationId_digestSha256: {
+                  organizationId: org,
+                  digestSha256,
+                },
+              },
+              include: { items: { orderBy: { position: "asc" } } },
+            });
+            if (!release) {
+              release = await tx.publishedRelease.create({
+                data: {
+                  organizationId: org,
+                  sourcePlaylistId: snapshot.sourcePlaylistId,
+                  sourcePlaylistName: snapshot.playlistName,
+                  sourcePlaylistDescription: snapshot.playlistDescription,
+                  sourcePlaylistUpdatedAt: new Date(
+                    snapshot.sourcePlaylistUpdatedAt,
+                  ),
+                  digestSha256,
+                  createdById: audit.actorUserId,
+                  items: {
+                    create: snapshot.items.map((item) => ({
+                      sourcePlaylistItemId: item.id,
+                      sourceAssetId: item.asset.id,
+                      assetName: item.asset.name,
+                      assetKind: item.asset.kind.toUpperCase() as
+                        "IMAGE" | "VIDEO" | "WEB" | "TEMPLATE",
+                      assetMimeType: item.asset.mimeType,
+                      assetUrl: item.asset.url,
+                      assetChecksumSha256: item.asset.checksumSha256,
+                      assetSizeBytes: BigInt(item.asset.sizeBytes),
+                      assetCreatedAt: new Date(item.asset.createdAt),
+                      assetExpiresAt: item.asset.expiresAt
+                        ? new Date(item.asset.expiresAt)
+                        : null,
+                      position: item.position,
+                      durationSeconds: item.durationSeconds,
+                    })),
+                  },
+                },
+                include: { items: { orderBy: { position: "asc" } } },
+              });
+            }
+
+            const frozenSchedule = {
+              name: data.name,
+              priority: data.priority,
+              startsAt: data.startsAt,
+              ...(data.endsAt ? { endsAt: data.endsAt } : {}),
+              timezone: data.timezone,
+              daysOfWeek: [...data.daysOfWeek],
+              ...(data.dailyStartMinutes !== undefined
+                ? { dailyStartMinutes: data.dailyStartMinutes }
+                : {}),
+              ...(data.dailyEndMinutes !== undefined
+                ? { dailyEndMinutes: data.dailyEndMinutes }
+                : {}),
+              enabled: data.enabled,
+            };
+            const assignmentDigest = assignmentSnapshotDigest(
+              canonicalAssignmentSnapshot({
+                releaseDigestSha256: digestSha256,
+                state: "ASSIGNED",
+                schedule: frozenSchedule,
+                screenIds,
+              }),
+            );
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`assignment:${org}:${assignmentDigest}`}, 0))`;
+            const existingAssignment = await tx.releaseAssignment.findFirst({
+              where: {
+                organizationId: org,
+                digestSha256: assignmentDigest,
+                state: "ASSIGNED",
+                nextAssignments: { none: {} },
+              },
+              include: {
+                targets: true,
+                schedule: { include: { targets: true } },
+                release: {
+                  include: { items: { orderBy: { position: "asc" } } },
+                },
+              },
+            });
+            if (existingAssignment) {
+              return {
+                published: true,
+                schedule: {
+                  ...scheduleDto(existingAssignment.schedule),
+                  releaseId: existingAssignment.releaseId,
+                  assignmentId: existingAssignment.id,
+                },
+                release: publishedReleaseDto(existingAssignment.release),
+                assignment: releaseAssignmentDto(existingAssignment),
+              };
+            }
+            const schedule = await tx.schedule.create({
+              data: {
+                organizationId: org,
+                playlistId: data.playlistId,
+                name: data.name,
+                priority: data.priority.toUpperCase() as
+                  "NORMAL" | "CAMPAIGN" | "PRIORITY" | "EMERGENCY",
+                startsAt: new Date(data.startsAt),
+                endsAt: data.endsAt ? new Date(data.endsAt) : null,
+                timezone: data.timezone,
+                daysOfWeek: data.daysOfWeek,
+                dailyStartMinutes: data.dailyStartMinutes ?? null,
+                dailyEndMinutes: data.dailyEndMinutes ?? null,
+                enabled: data.enabled,
+                targets: {
+                  create: screenIds.map((screenId) => ({ screenId })),
+                },
+              },
+              include: { targets: true },
+            });
+            const assignment = await tx.releaseAssignment.create({
+              data: {
+                organizationId: org,
+                releaseId: release.id,
+                scheduleId: schedule.id,
+                state: "ASSIGNED",
+                digestSha256: assignmentDigest,
+                createdById: audit.actorUserId,
+                scheduleName: frozenSchedule.name,
+                priority: frozenSchedule.priority.toUpperCase() as
+                  "NORMAL" | "CAMPAIGN" | "PRIORITY" | "EMERGENCY",
+                startsAt: new Date(frozenSchedule.startsAt),
+                endsAt: frozenSchedule.endsAt
+                  ? new Date(frozenSchedule.endsAt)
+                  : null,
+                timezone: frozenSchedule.timezone,
+                daysOfWeek: frozenSchedule.daysOfWeek,
+                dailyStartMinutes: frozenSchedule.dailyStartMinutes ?? null,
+                dailyEndMinutes: frozenSchedule.dailyEndMinutes ?? null,
+                enabled: frozenSchedule.enabled,
+                targets: {
+                  create: screenIds.map((screenId) => ({
+                    screenId,
+                    liveScreenId: screenId,
+                    liveScreenOrganizationId: org,
+                  })),
+                },
+              },
+              include: { targets: true },
+            });
+            await tx.auditEvent.create({
+              data: {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actorType: "user",
+                action: "release.published",
+                entityType: "published_release",
+                entityId: release.id,
+                ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                metadata: {
+                  scheduleId: schedule.id,
+                  assignmentId: assignment.id,
+                  digestSha256,
+                  assignmentDigestSha256: assignmentDigest,
+                  screenCount: screenIds.length,
+                },
+              },
+            });
+
+            return {
+              published: true,
+              schedule: {
+                ...scheduleDto(schedule),
+                releaseId: release.id,
+                assignmentId: assignment.id,
+              },
+              release: publishedReleaseDto(release),
+              assignment: releaseAssignmentDto(assignment),
+            };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        );
+      } catch (error) {
+        if (
+          attempt < 2 &&
+          (isUniqueConstraintError(error) || isRetryableWriteConflict(error))
+        )
+          continue;
+        throw error;
+      }
+    }
+    throw new Error("Publication retry budget exhausted");
+  }
+  async withdrawScheduleAndAudit(
+    org: string,
+    scheduleId: string,
+    audit: ReleaseAuditContext,
+  ): Promise<ScheduleWithdrawalResult> {
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const actorMembership = await tx.membership.findUnique({
+            where: {
+              organizationId_userId: {
+                organizationId: org,
+                userId: audit.actorUserId,
+              },
+            },
+            select: { id: true },
+          });
+          if (!actorMembership)
+            throw new Error("Release actor is not an organization member");
+          const schedule = await tx.schedule.findFirst({
+            where: { id: scheduleId, organizationId: org },
+            select: { id: true },
+          });
+          if (!schedule) return { withdrawn: false, reason: "NOT_FOUND" };
+          const previous = await tx.releaseAssignment.findFirst({
+            where: {
+              organizationId: org,
+              scheduleId,
+              nextAssignments: { none: {} },
+            },
+            include: { targets: true, release: true },
+          });
+          if (!previous) return { withdrawn: false, reason: "NOT_FOUND" };
+          if (previous.state === "WITHDRAWN")
+            return { withdrawn: false, reason: "ALREADY_WITHDRAWN" };
+
+          const previousDto = releaseAssignmentDto(previous);
+          const digestSha256 = assignmentSnapshotDigest(
+            canonicalAssignmentSnapshot({
+              releaseDigestSha256: previous.release.digestSha256,
+              state: "WITHDRAWN",
+              schedule: previousDto.schedule,
+              screenIds: previousDto.screenIds,
+              previousAssignmentId: previous.id,
+            }),
+          );
+          const assignment = await tx.releaseAssignment.create({
+            data: {
+              organizationId: org,
+              releaseId: previous.releaseId,
+              scheduleId,
+              state: "WITHDRAWN",
+              digestSha256,
+              previousAssignmentId: previous.id,
+              createdById: audit.actorUserId,
+              scheduleName: previous.scheduleName,
+              priority: previous.priority,
+              startsAt: previous.startsAt,
+              endsAt: previous.endsAt,
+              timezone: previous.timezone,
+              daysOfWeek: previous.daysOfWeek,
+              dailyStartMinutes: previous.dailyStartMinutes,
+              dailyEndMinutes: previous.dailyEndMinutes,
+              enabled: previous.enabled,
+              targets: {
+                create: previous.targets.map((target) => ({
+                  screenId: target.screenId,
+                  liveScreenId: target.liveScreenId,
+                  liveScreenOrganizationId: target.liveScreenOrganizationId,
+                })),
+              },
+            },
+            include: { targets: true },
+          });
+          await tx.auditEvent.create({
+            data: {
+              organizationId: org,
+              actorUserId: audit.actorUserId,
+              actorType: "user",
+              action: "release.withdrawn",
+              entityType: "release_assignment",
+              entityId: assignment.id,
+              ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+              ...(audit.requestId ? { requestId: audit.requestId } : {}),
+              metadata: {
+                scheduleId,
+                releaseId: previous.releaseId,
+                previousAssignmentId: previous.id,
+                assignmentDigestSha256: digestSha256,
+                screenCount: previous.targets.length,
+              },
+            },
+          });
+          return {
+            withdrawn: true,
+            assignment: releaseAssignmentDto(assignment),
+          };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      if (isUniqueConstraintError(error))
+        return { withdrawn: false, reason: "ALREADY_WITHDRAWN" };
+      throw error;
+    }
+  }
+  async activeOrdinaryReleases(
+    org: string,
+    screenId: string,
+    at: string,
+  ): Promise<ActiveOrdinaryRelease[]> {
+    const targetedScheduleIds = (
+      await this.prisma.releaseAssignmentTarget.findMany({
+        where: { organizationId: org, screenId },
+        select: { assignment: { select: { scheduleId: true } } },
+        distinct: ["assignmentId"],
+      })
+    ).map((target) => target.assignment.scheduleId);
+    if (targetedScheduleIds.length === 0) return [];
+    const assignments = await this.prisma.releaseAssignment.findMany({
+      where: {
+        organizationId: org,
+        scheduleId: { in: [...new Set(targetedScheduleIds)] },
+        nextAssignments: { none: {} },
+      },
+      include: {
+        targets: true,
+        release: { include: { items: { orderBy: { position: "asc" } } } },
+      },
+    });
+    const instant = new Date(at);
+    return assignments.flatMap((assignment) => {
+      const assignmentDto = releaseAssignmentDto(assignment);
+      if (
+        assignmentDto.state !== "ASSIGNED" ||
+        !assignmentDto.screenIds.includes(screenId) ||
+        !assignmentDto.schedule.enabled ||
+        assignmentDto.schedule.startsAt > at ||
+        (assignmentDto.schedule.endsAt && assignmentDto.schedule.endsAt <= at)
+      )
+        return [];
+      const scheduleForWindow: ScheduleRecord = {
+        id: assignment.scheduleId,
+        organizationId: org,
+        playlistId: assignment.release.sourcePlaylistId,
+        ...assignmentDto.schedule,
+        screenIds: assignmentDto.screenIds,
+        releaseId: assignment.releaseId,
+        assignmentId: assignment.id,
+        createdAt: assignmentDto.createdAt,
+        updatedAt: assignmentDto.createdAt,
+      };
+      if (!matchesScheduleWindow(scheduleForWindow, instant)) return [];
+      return [
+        {
+          release: publishedReleaseDto(assignment.release),
+          assignment: assignmentDto,
+        },
+      ];
+    });
   }
   async activeSchedules(org: string, screenId: string, at: string) {
     const d = new Date(at);
