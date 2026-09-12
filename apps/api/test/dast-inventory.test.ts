@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildApp } from "../src/app.js";
+import { BROWSER_CORS_METHODS, buildApp } from "../src/app.js";
 import { MemoryStore } from "../src/store/memory.js";
 
 interface InventoryRoute {
@@ -13,6 +13,7 @@ interface InventoryRoute {
 describe("runtime DAST API inventory", () => {
   it("matches every registered public API route and the live health route", async () => {
     const registered = new Set<string>();
+    const registeredMethods = new Set<string>();
     const app = await buildApp({
       store: new MemoryStore(),
       jwtSecret: "dast-inventory-test-secret-at-least-thirty-two-characters",
@@ -29,8 +30,10 @@ describe("runtime DAST API inventory", () => {
           if (normalizedMethod === "HEAD" || normalizedMethod === "OPTIONS")
             continue;
           if (route.url === "/health/ready") continue;
-          if (route.url === "/health/live" || route.url.startsWith("/api/"))
+          if (route.url === "/health/live" || route.url.startsWith("/api/")) {
             registered.add(`${normalizedMethod} ${route.url}`);
+            registeredMethods.add(normalizedMethod);
+          }
         }
       },
     });
@@ -57,6 +60,12 @@ describe("runtime DAST API inventory", () => {
           .map((route) => `${route.method} ${route.template}`),
       );
       expect([...inventoried].sort()).toEqual([...registered].sort());
+      expect(new Set(BROWSER_CORS_METHODS).size).toBe(
+        BROWSER_CORS_METHODS.length,
+      );
+      expect([...BROWSER_CORS_METHODS].sort()).toEqual(
+        [...new Set([...registeredMethods, "HEAD", "OPTIONS"])].sort(),
+      );
     } finally {
       await app.close();
     }
