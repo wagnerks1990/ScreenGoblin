@@ -21,6 +21,8 @@ targets, and pairing links, migration-safe cascading/detaching deletes,
 database unique constraints, safe-range `BIGINT` conversion, case-insensitive
 email lookup, deterministic compatibility membership selection, and
 individually revocable user-session races, rollback, expiry, and tenant scope.
+It also verifies serialized failed-login telemetry inserts, retention/cap
+pruning, newest-event preservation, and database rejection of non-HMAC keys.
 
 Known contract gaps are intentionally not hidden by the harness:
 

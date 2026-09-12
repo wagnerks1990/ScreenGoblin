@@ -79,6 +79,17 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
   organization, and role state. `POST /auth/logout` revokes only the presented
   session and records the revocation atomically; other sessions remain active.
   Expired rows for the same user and organization are pruned during later login.
+- Failed login attempts for known and unknown accounts produce the same generic
+  credential response and one tenant-neutral security event. Events contain
+  only deployment-secret, domain-separated HMAC account/source keys, a bounded
+  reason, and server time; raw email, password, and source IP are never stored.
+  Event persistence is deliberately fail-safe: if the authoritative store
+  cannot record an invalid-credential or rate-limit rejection, login returns
+  the same generic `503 AUTH_TELEMETRY_UNAVAILABLE` for known and unknown
+  accounts instead of silently losing telemetry. Inserts prune events older
+  than 30 days and cap the table at 10,000 newest rows. Pruning is
+  insertion-triggered, so a dormant deployment may retain aged rows until the
+  next failed or rate-limited login.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
 - Media upload/scanning/transcoding and private object delivery are intentionally
   adapter boundaries. The prototype registers only pre-provisioned allowlisted

@@ -22,6 +22,11 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   recheck that exact session's expiry/revocation and the live user, membership,
   organization, and role. Logout revokes only the presented session and commits
   that change with its audit event; never restore stateless acceptance.
+- Failed-login telemetry must cover known and unknown accounts and rate-limit
+  rejections without storing raw email, password, or source IP. Use
+  deployment-secret, domain-separated HMAC account/source keys and identical
+  generic responses. Telemetry persistence fails safe; inserts enforce the
+  30-day and 10,000-row bounds. Do not silently downgrade this to best effort.
 - Enrollment is a two-stage, transcript-bound challenge exchange. Android installation ID equals the server-derived SHA-256 SPKI key ID; an identical successful final claim is idempotently recoverable. A reported Keystore security level is not attestation, and a stolen pairing code remains first-winner authority.
 - Device revocation is an OWNER/ADMIN capability revalidated transactionally with the credential/screen change, outstanding-challenge invalidation, and one audit record. Revocation blocks online proof use but cannot recall or erase content from an offline player.
 - Targeted re-enrollment is a manual, zero-overlap recovery protocol for an

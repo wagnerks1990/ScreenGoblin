@@ -40,6 +40,16 @@ Do not run the bootstrap profile as part of normal startup. It refuses to reset 
 
 Monitor API readiness and latency, HTTP 5xx/429 rates, failed logins, pairing failures, database/storage capacity, backup freshness, manifest build failures, offline/fallback screen counts, stale heartbeats, and command acknowledgement latency. Route emergency activation and authorization anomalies to a staffed channel.
 
+Failed-login rows are tenant-neutral and contain only opaque HMAC account/source
+keys, reason, and server time. They intentionally contain no raw email,
+password, or source IP and require a trusted offline correlation/export process
+before incident use. Alert on `AUTH_TELEMETRY_UNAVAILABLE`: login telemetry is
+fail-safe, so a rejected telemetry write returns 503 instead of allowing an
+unrecorded credential failure. The newest 10,000 rows are retained and rows
+older than 30 days are pruned on the next insert; a dormant database therefore
+needs a separately approved retention job if exact-time deletion is required.
+Do not treat this bounded local table as a SIEM or durable long-term archive.
+
 Container logs:
 
 ```bash

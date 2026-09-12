@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Add authoritative, privacy-preserving failed-login telemetry for known and
+  unknown accounts and rate-limit rejections. Store only domain-separated HMAC
+  account/source keys, bounded reasons, and server time; keep credential
+  responses indistinguishable. Telemetry persistence fails safe, while
+  insertion-triggered pruning enforces a 30-day and 10,000-row bound.
+
 - Add blocking, checksum-verified repository secret and IaC/configuration scans plus an exact dependency-license policy. Require every non-link lock entry to have exact identity/version/license; validate HTTPS, file, and git locators, inherit only exact package-version provenance, and explicitly inventory entries whose lockfile locator is absent. Reject broad, stale, malformed, or unused exceptions; retain successful sanitized SARIF/license evidence with a verified checksum manifest. These static controls do not provide DAST or production-runtime coverage.
 
 - Require `PUBLIC_API_URL` to be a canonical credential-free HTTPS origin

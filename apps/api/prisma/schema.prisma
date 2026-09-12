@@ -62,6 +62,11 @@ enum DeviceAuthOperation {
   MANIFEST
 }
 
+enum LoginFailureReason {
+  INVALID_CREDENTIALS
+  RATE_LIMITED
+}
+
 model Organization {
   id                   String                @id @default(cuid())
   name                 String
@@ -110,6 +115,18 @@ model Membership {
 
   @@unique([organizationId, userId])
   @@index([userId])
+}
+
+model LoginFailureEvent {
+  id         String             @id @default(cuid())
+  accountKey String
+  sourceKey  String
+  reason     LoginFailureReason
+  occurredAt DateTime           @default(now())
+
+  @@index([accountKey, occurredAt])
+  @@index([sourceKey, occurredAt])
+  @@index([occurredAt])
 }
 
 model UserSession {

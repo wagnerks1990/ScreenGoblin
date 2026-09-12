@@ -10,6 +10,8 @@ import type {
   DeviceProofVerifier,
   EmergencyRecord,
   HeartbeatUpdateInput,
+  LoginFailureInput,
+  LoginFailureRecord,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
@@ -34,6 +36,10 @@ import type {
   UserSessionCreateInput,
   UserSessionRecord,
 } from "../domain/types.js";
+import {
+  LOGIN_FAILURE_MAX_RECORDS,
+  LOGIN_FAILURE_RETENTION_MS,
+} from "../domain/types.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
 import {
   assignmentSnapshotDigest,
@@ -54,6 +60,7 @@ const now = () => new Date().toISOString();
 export class MemoryStore implements DataStore {
   users: SessionUser[] = [];
   userSessions: UserSessionRecord[] = [];
+  loginFailures: LoginFailureRecord[] = [];
   screens: ScreenRecord[] = [];
   media: MediaRecord[] = [];
   playlists: PlaylistRecord[] = [];
@@ -98,6 +105,26 @@ export class MemoryStore implements DataStore {
         a.organizationId.localeCompare(b.organizationId),
       )[0] ?? null
     );
+  }
+  async recordLoginFailure(input: LoginFailureInput) {
+    if (
+      !/^[0-9a-f]{64}$/.test(input.accountKey) ||
+      !/^[0-9a-f]{64}$/.test(input.sourceKey)
+    )
+      throw new Error("Login failure identifiers must be opaque SHA-256 HMACs");
+    const occurredAt = now();
+    const cutoff = new Date(
+      Date.parse(occurredAt) - LOGIN_FAILURE_RETENTION_MS,
+    ).toISOString();
+    const retained = this.loginFailures
+      .filter((event) => event.occurredAt >= cutoff)
+      .sort(
+        (left, right) =>
+          left.occurredAt.localeCompare(right.occurredAt) ||
+          left.id.localeCompare(right.id),
+      )
+      .slice(-(LOGIN_FAILURE_MAX_RECORDS - 1));
+    this.loginFailures = [...retained, { id: id(), ...input, occurredAt }];
   }
   async findSessionUser(userId: string, organizationId: string) {
     return (

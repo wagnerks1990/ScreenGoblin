@@ -13,6 +13,7 @@ import type {
   DeviceProofVerifier,
   EmergencyRecord,
   HeartbeatUpdateInput,
+  LoginFailureInput,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
@@ -36,6 +37,10 @@ import type {
   SessionUser,
   UserMutationAuditContext,
   UserSessionCreateInput,
+} from "../domain/types.js";
+import {
+  LOGIN_FAILURE_MAX_RECORDS,
+  LOGIN_FAILURE_RETENTION_MS,
 } from "../domain/types.js";
 import {
   assignmentSnapshotDigest,
@@ -436,6 +441,41 @@ export class PrismaStore implements DataStore {
           role: m.role,
         } satisfies SessionUser)
       : null;
+  }
+  async recordLoginFailure(input: LoginFailureInput) {
+    if (
+      !/^[0-9a-f]{64}$/.test(input.accountKey) ||
+      !/^[0-9a-f]{64}$/.test(input.sourceKey)
+    )
+      throw new Error("Login failure identifiers must be opaque SHA-256 HMACs");
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(474696137)`;
+      const [clock] = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
+        SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+      if (!clock) throw new Error("Database clock is unavailable");
+      const cutoff = new Date(
+        clock.databaseNow.getTime() - LOGIN_FAILURE_RETENTION_MS,
+      );
+      await tx.loginFailureEvent.deleteMany({
+        where: { occurredAt: { lt: cutoff } },
+      });
+      await tx.$executeRaw`
+        DELETE FROM "LoginFailureEvent"
+        WHERE "id" IN (
+          SELECT "id"
+          FROM "LoginFailureEvent"
+          ORDER BY "occurredAt" DESC, "id" DESC
+          OFFSET ${LOGIN_FAILURE_MAX_RECORDS - 1}
+        )`;
+      await tx.loginFailureEvent.create({
+        data: {
+          accountKey: input.accountKey,
+          sourceKey: input.sourceKey,
+          reason: input.reason,
+          occurredAt: clock.databaseNow,
+        },
+      });
+    });
   }
   async findSessionUser(userId: string, organizationId: string) {
     const x = await this.prisma.user.findFirst({
