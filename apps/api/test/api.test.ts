@@ -3,9 +3,13 @@ import { hash } from "bcryptjs";
 import { buildApp } from "../src/app.js";
 import { MemoryStore } from "../src/store/memory.js";
 import type { FastifyInstance } from "fastify";
-import { MemoryRateLimitBudget } from "../src/utils/rate-limit.js";
+import {
+  MemoryRateLimitBudget,
+  opaqueSecurityEventKey,
+} from "../src/utils/rate-limit.js";
 import { MEDIA_MAX_ASSET_BYTES } from "@screengoblin/contracts";
 import { randomToken, sha256 } from "../src/utils/crypto.js";
+import { LOGIN_FAILURE_MAX_RECORDS } from "../src/domain/types.js";
 import type { SessionUser } from "../src/domain/types.js";
 
 const secret = "test-secret-that-is-longer-than-thirty-two-characters";
@@ -249,6 +253,105 @@ describe("authentication and organization RBAC", () => {
     expect(r.json().accessToken).toBeTypeOf("string");
     expect(r.body).not.toContain("passwordHash");
   });
+  it("records indistinguishable known and unknown failures without raw identifiers", async () => {
+    const attempt = (email: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: { email, password: "incorrect password" },
+      });
+    const knownEmail = "admin@example.test";
+    const unknownEmail = "missing@example.test";
+    const [known, unknown] = await Promise.all([
+      attempt(knownEmail),
+      attempt(unknownEmail),
+    ]);
+    expect(known.statusCode).toBe(401);
+    expect(unknown.statusCode).toBe(401);
+    expect(known.json().error).toEqual(unknown.json().error);
+    expect(store.loginFailures).toHaveLength(2);
+    expect(store.loginFailures.map((event) => event.reason)).toEqual([
+      "INVALID_CREDENTIALS",
+      "INVALID_CREDENTIALS",
+    ]);
+    expect(store.loginFailures.map((event) => event.accountKey).sort()).toEqual(
+      [
+        opaqueSecurityEventKey(
+          secret,
+          "login-failure-account",
+          knownEmail,
+        ),
+        opaqueSecurityEventKey(
+          secret,
+          "login-failure-account",
+          unknownEmail,
+        ),
+      ].sort(),
+    );
+    expect(
+      new Set(store.loginFailures.map((event) => event.sourceKey)).size,
+    ).toBe(1);
+    const stored = JSON.stringify(store.loginFailures);
+    expect(stored).not.toContain(knownEmail);
+    expect(stored).not.toContain(unknownEmail);
+    expect(stored).not.toContain("127.0.0.1");
+    expect(stored).not.toContain("incorrect password");
+  });
+
+  it("fails sign-in closed and uniformly when failure telemetry is unavailable", async () => {
+    store.recordLoginFailure = async () => {
+      throw new Error("telemetry unavailable");
+    };
+    const attempt = (email: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: { email, password: "incorrect password" },
+      });
+    const [known, unknown] = await Promise.all([
+      attempt("admin@example.test"),
+      attempt("missing@example.test"),
+    ]);
+    expect(known.statusCode).toBe(503);
+    expect(unknown.statusCode).toBe(503);
+    expect(known.json().error).toEqual(unknown.json().error);
+    expect(known.json().error.code).toBe("AUTH_TELEMETRY_UNAVAILABLE");
+  });
+
+  it("bounds in-memory failure retention while preserving the newest event", async () => {
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+    store.loginFailures.push({
+      id: "expired-login-failure",
+      accountKey: "a".repeat(64),
+      sourceKey: "b".repeat(64),
+      reason: "INVALID_CREDENTIALS",
+      occurredAt: old,
+    });
+    for (let index = 0; index < LOGIN_FAILURE_MAX_RECORDS; index += 1) {
+      store.loginFailures.push({
+        id: `bounded-${index.toString().padStart(5, "0")}`,
+        accountKey: "a".repeat(64),
+        sourceKey: "b".repeat(64),
+        reason: "INVALID_CREDENTIALS",
+        occurredAt: new Date().toISOString(),
+      });
+    }
+    await store.recordLoginFailure({
+      accountKey: "c".repeat(64),
+      sourceKey: "d".repeat(64),
+      reason: "RATE_LIMITED",
+    });
+    expect(store.loginFailures).toHaveLength(LOGIN_FAILURE_MAX_RECORDS);
+    expect(
+      store.loginFailures.some((event) => event.id === "expired-login-failure"),
+    ).toBe(false);
+    expect(store.loginFailures.at(-1)).toMatchObject({
+      accountKey: "c".repeat(64),
+      sourceKey: "d".repeat(64),
+      reason: "RATE_LIMITED",
+    });
+  });
+
   it("stores only a hash of the bounded session identity and prunes expiry", async () => {
     store.userSessions.push({
       id: "expired-session",
@@ -394,6 +497,13 @@ describe("authentication and organization RBAC", () => {
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.json().error.code).toBe("RATE_LIMITED");
+    expect(store.loginFailures).toHaveLength(11);
+    expect(
+      store.loginFailures.filter((event) => event.reason === "RATE_LIMITED"),
+    ).toHaveLength(1);
+    expect(
+      new Set(store.loginFailures.map((event) => event.accountKey)).size,
+    ).toBe(1);
   });
   it("denies a viewer mutation", async () => {
     const viewer = issueTestToken(store.users[1]!);

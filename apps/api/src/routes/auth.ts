@@ -1,11 +1,13 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { compare } from "bcryptjs";
 import { z } from "zod";
+import type { LoginFailureReason } from "../domain/types.js";
 import { ApiError } from "../utils/http.js";
 import { randomToken, sha256 } from "../utils/crypto.js";
 import {
   enforceRateLimitBudget,
   opaqueRateLimitKey,
+  opaqueSecurityEventKey,
 } from "../utils/rate-limit.js";
 
 // Cost-12 bcrypt hash used only to equalize failed-login work when the account
@@ -24,21 +26,37 @@ const loginSchema = z
   })
   .strict();
 export const authRoutes: FastifyPluginAsync = async (app) => {
+  const recordLoginFailure = async (
+    request: FastifyRequest,
+    email: string,
+    reason: LoginFailureReason,
+  ) => {
+    try {
+      await app.store.recordLoginFailure({
+        accountKey: opaqueSecurityEventKey(
+          app.config.pairingCodePepper,
+          "login-failure-account",
+          email,
+        ),
+        sourceKey: opaqueSecurityEventKey(
+          app.config.pairingCodePepper,
+          "login-failure-source",
+          request.ip,
+        ),
+        reason,
+      });
+    } catch {
+      throw new ApiError(
+        503,
+        "AUTH_TELEMETRY_UNAVAILABLE",
+        "Sign-in is temporarily unavailable",
+      );
+    }
+  };
+
   app.post(
     "/auth/login",
     {
-      config: {
-        rateLimit: {
-          max: 10,
-          timeWindow: "1 minute",
-          keyGenerator: (request) =>
-            opaqueRateLimitKey(
-              app.config.pairingCodePepper,
-              "login-source",
-              request.ip,
-            ),
-        },
-      },
       preHandler: async (request) => {
         const email =
           typeof request.body === "object" &&
@@ -47,15 +65,30 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           typeof request.body.email === "string"
             ? request.body.email.trim().toLowerCase()
             : "invalid";
-        await enforceRateLimitBudget(
-          app.rateLimitBudget,
-          opaqueRateLimitKey(
-            app.config.pairingCodePepper,
-            "login-account",
-            email,
-          ),
-          10,
-        );
+        try {
+          await enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "login-source",
+              request.ip,
+            ),
+            10,
+          );
+          await enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "login-account",
+              email,
+            ),
+            10,
+          );
+        } catch (error) {
+          if (error instanceof ApiError && error.code === "RATE_LIMITED")
+            await recordLoginFailure(request, email, "RATE_LIMITED");
+          throw error;
+        }
       },
     },
     async (request) => {
@@ -65,12 +98,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         input.password,
         user?.passwordHash ?? DUMMY_PASSWORD_HASH,
       );
-      if (!user || !passwordValid)
+      if (!user || !passwordValid) {
+        await recordLoginFailure(request, input.email, "INVALID_CREDENTIALS");
         throw new ApiError(
           401,
           "INVALID_CREDENTIALS",
           "Email or password is incorrect",
         );
+      }
       const sessionId = randomToken();
       const expiresAt = new Date(
         Date.now() + SESSION_LIFETIME_SECONDS * 1000,
@@ -99,12 +134,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           requestId: request.id,
         },
       );
-      if (!created.created)
+      if (!created.created) {
+        await recordLoginFailure(request, input.email, "INVALID_CREDENTIALS");
         throw new ApiError(
           401,
           "INVALID_CREDENTIALS",
           "Email or password is incorrect",
         );
+      }
       return {
         accessToken,
         tokenType: "Bearer",

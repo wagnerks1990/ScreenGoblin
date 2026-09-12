@@ -19,6 +19,15 @@ export const opaqueRateLimitKey = (
     .update(`screengoblin-rate-limit-v1\0${dimension}\0${value}`)
     .digest("base64url")}`;
 
+export const opaqueSecurityEventKey = (
+  secret: string,
+  dimension: string,
+  value: string,
+): string =>
+  createHmac("sha256", secret)
+    .update(`screengoblin-security-event-v1\0${dimension}\0${value}`)
+    .digest("hex");
+
 export class MemoryRateLimitBudget implements RateLimitBudget {
   private readonly counters = new Map<
     string,

@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaStore } from "../src/store/prisma.js";
+import { LOGIN_FAILURE_MAX_RECORDS } from "../src/domain/types.js";
+import { opaqueSecurityEventKey } from "../src/utils/rate-limit.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -175,7 +177,7 @@ beforeEach(async () => {
   // This job owns an isolated CI database. CASCADE keeps cleanup compatible
   // with new tenant-owned tables while retaining the migrated schema itself.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "Organization", "User", "DeviceKeyTombstone" RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE "Organization", "User", "DeviceKeyTombstone", "LoginFailureEvent" RESTART IDENTITY CASCADE',
   );
 });
 
@@ -1817,6 +1819,82 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(
       store.findSessionUser(user.id, beta.id),
     ).resolves.toMatchObject({ organizationId: beta.id, role: "VIEWER" });
+  });
+
+  it("serializes and bounds opaque failed-login telemetry", async () => {
+    const accountKey = opaqueSecurityEventKey(
+      "integration-telemetry-secret",
+      "login-failure-account",
+      "unknown@example.test",
+    );
+    const sourceKey = opaqueSecurityEventKey(
+      "integration-telemetry-secret",
+      "login-failure-source",
+      "192.0.2.1",
+    );
+    await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        store.recordLoginFailure({
+          accountKey,
+          sourceKey,
+          reason: index === 7 ? "RATE_LIMITED" : "INVALID_CREDENTIALS",
+        }),
+      ),
+    );
+    expect(await prisma.loginFailureEvent.count()).toBe(8);
+    expect(
+      await prisma.loginFailureEvent.count({
+        where: { accountKey, sourceKey },
+      }),
+    ).toBe(8);
+
+    await prisma.loginFailureEvent.create({
+      data: {
+        accountKey: "a".repeat(64),
+        sourceKey: "b".repeat(64),
+        reason: "INVALID_CREDENTIALS",
+        occurredAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+      },
+    });
+    await prisma.loginFailureEvent.createMany({
+      data: Array.from({ length: LOGIN_FAILURE_MAX_RECORDS }, (_, index) => ({
+        accountKey: "c".repeat(64),
+        sourceKey: "d".repeat(64),
+        reason: "INVALID_CREDENTIALS" as const,
+        occurredAt: new Date(Date.now() - 60_000 + index),
+      })),
+    });
+    const newestAccountKey = "e".repeat(64);
+    await store.recordLoginFailure({
+      accountKey: newestAccountKey,
+      sourceKey: "f".repeat(64),
+      reason: "RATE_LIMITED",
+    });
+    expect(await prisma.loginFailureEvent.count()).toBe(
+      LOGIN_FAILURE_MAX_RECORDS,
+    );
+    expect(
+      await prisma.loginFailureEvent.count({
+        where: {
+          occurredAt: {
+            lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+          },
+        },
+      }),
+    ).toBe(0);
+    await expect(
+      prisma.loginFailureEvent.findFirst({
+        where: { accountKey: newestAccountKey },
+      }),
+    ).resolves.not.toBeNull();
+
+    await expect(
+      store.recordLoginFailure({
+        accountKey: "unknown@example.test",
+        sourceKey,
+        reason: "INVALID_CREDENTIALS",
+      }),
+    ).rejects.toThrow("opaque");
   });
 
   it("tracks, prunes, and independently revokes user sessions", async () => {

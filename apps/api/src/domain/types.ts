@@ -11,6 +11,21 @@ export interface SessionUser {
   role: Role;
   disabledAt?: string;
 }
+export const LOGIN_FAILURE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const LOGIN_FAILURE_MAX_RECORDS = 10_000;
+
+export type LoginFailureReason = "INVALID_CREDENTIALS" | "RATE_LIMITED";
+
+export interface LoginFailureRecord {
+  id: string;
+  accountKey: string;
+  sourceKey: string;
+  reason: LoginFailureReason;
+  occurredAt: string;
+}
+
+export type LoginFailureInput = Omit<LoginFailureRecord, "id" | "occurredAt">;
+
 export interface UserSessionRecord {
   id: string;
   organizationId: string;
@@ -462,6 +477,7 @@ export interface DataStore {
   ping(): Promise<void>;
   close?(): Promise<void>;
   findUserByEmail(email: string): Promise<SessionUser | null>;
+  recordLoginFailure(input: LoginFailureInput): Promise<void>;
   findSessionUser(
     userId: string,
     organizationId: string,

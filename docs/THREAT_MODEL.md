@@ -50,6 +50,18 @@ membership, organization, and role state. Current-session logout commits the
 revocation and audit event atomically without revoking other sessions. External
 IdP, SSO, MFA, and step-up authentication remain pre-production requirements.
 
+Known and unknown invalid credentials take the same password-verification and
+response path and create tenant-neutral failure telemetry keyed only by
+deployment-secret, domain-separated HMACs of normalized account and request
+source. Rate-limit rejections use the same opaque keys. No raw email, password,
+or IP address is stored. Telemetry writes fail safe with an
+`AUTH_TELEMETRY_UNAVAILABLE` response rather than permitting an unrecorded
+failure; the response is identical for known and unknown accounts. The local
+store retains at most the newest 10,000 rows and removes rows older than 30 days
+during later inserts. This insertion-triggered retention is not a SIEM, alerting
+pipeline, or immediate deletion scheduler, and sustained attacks can churn the
+bounded window.
+
 The isolated non-production emergency fixture path rechecks current emergency
 capabilities, locks organization-scoped targets, and commits each activation or
 clear with its audit event in one transaction. Production remains hard-disabled
