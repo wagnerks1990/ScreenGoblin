@@ -213,6 +213,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Fixed
 
+- Make the prototype Settings page explicitly read-only. Remove editable
+  workspace defaults, content-approval and proof-of-play toggles, and the false
+  save affordance so the Console does not imply that unavailable governance or
+  playback-verification controls are persisted or enforced.
+
 - Omit the JSON content type from bodyless Console mutations so strict API
   parsing accepts pairing-code creation instead of rejecting an empty JSON body.
 
