@@ -249,10 +249,14 @@ without recreating the screen or changing its assignments:
    therefore never install a replacement credential.
 5. Activation revalidates membership and the grant's captured credential
    generation, then atomically creates and attaches the globally new credential,
-   updates device-reported screen metadata, clears the screen revocation marker,
+   updates replacement identity metadata, clears the screen revocation marker,
    consumes the grant, cancels competing candidates, and appends one audit
    event. The stable screen ID, name, location, tags, schedules, and release
-   assignments are preserved.
+   assignments are preserved. Revocation, replacement request, and activation
+   keep the screen offline and clear the detached identity's last-seen,
+   playback, uptime, storage, and network snapshot. Activation is not a
+   heartbeat; only the first authenticated heartbeat from the replacement
+   credential marks the screen online with replacement telemetry.
 6. The Player repeats the identical final proof. While approval is pending it
    continues to receive `202`; after activation it receives the ordinary proof
    credential response without another cutover or audit event.

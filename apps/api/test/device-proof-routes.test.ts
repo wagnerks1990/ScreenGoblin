@@ -337,6 +337,89 @@ describe("proof-v1 device routes", () => {
     expect(replay.json().error.code).toBe("DEVICE_UNAUTHORIZED");
   });
 
+  it("rechecks proof expiry and credential attachment after an awaited verifier", async () => {
+    for (const mutation of ["expire", "revoke"] as const) {
+      const fixture = await pairingFixture();
+      const { credentials } = await pair(fixture);
+      const screenId = String(credentials.screenId);
+      const credential = store.deviceCredentials.find(
+        (candidate) => candidate.screenId === screenId,
+      )!;
+      const challengeHashSha256 = sha256(`challenge-${mutation}`);
+      const requestDigestSha256 = sha256(`request-${mutation}`);
+      const challenge = await store.issueDeviceAuthChallenge({
+        screenId,
+        keyId: credential.keyId,
+        challengeHashSha256,
+        operation: "heartbeat",
+        requestDigestSha256,
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      });
+      if (!challenge) throw new Error("challenge was not issued");
+      let enterVerifier!: () => void;
+      let releaseVerifier!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enterVerifier = resolve;
+      });
+      const barrier = new Promise<void>((resolve) => {
+        releaseVerifier = resolve;
+      });
+      const pending = store.heartbeatWithDeviceProof(
+        {
+          credentialId: credential.id,
+          challengeId: challenge.id,
+          challengeHashSha256,
+          operation: "heartbeat",
+          requestDigestSha256,
+        },
+        {
+          playerVersion: "must-not-commit",
+          manifestVersion: "must-not-commit",
+          nowPlayingAssetId: "must-not-commit",
+          uptimeSeconds: 999,
+          freeStorageBytes: 999,
+          networkType: "must-not-commit",
+        },
+        async () => {
+          enterVerifier();
+          await barrier;
+          return true;
+        },
+      );
+      await entered;
+      if (mutation === "expire") {
+        store.deviceAuthChallenges.find(
+          (candidate) => candidate.id === challenge.id,
+        )!.expiresAt = new Date(0).toISOString();
+      } else {
+        await store.revokeDeviceCredentialAndAudit("org-a", screenId, {
+          actorUserId: store.users[0]!.id,
+        });
+      }
+      releaseVerifier();
+      await expect(pending).resolves.toEqual({
+        authenticated: false,
+        reason: "INVALID_PROOF",
+      });
+      if (mutation === "expire")
+        expect(
+          store.deviceAuthChallenges.find(
+            (candidate) => candidate.id === challenge.id,
+          )?.consumedAt,
+        ).toBeUndefined();
+      expect(
+        store.screens.find((screen) => screen.id === screenId),
+      ).not.toMatchObject({
+        playerVersion: "must-not-commit",
+        manifestVersion: "must-not-commit",
+        nowPlayingAssetId: "must-not-commit",
+        uptimeSeconds: 999,
+        freeStorageBytes: 999,
+        networkType: "must-not-commit",
+      });
+    }
+  });
+
   it("serves a manifest with proof, revokes once, and returns dummy challenges afterward", async () => {
     const fixture = await pairingFixture();
     const { payload: pairingPayload, credentials } = await pair(fixture);
@@ -413,8 +496,40 @@ describe("proof-v1 device routes", () => {
   });
 
   it("stages targeted re-enrollment until the exact proved candidate is activated", async () => {
-    const original = await pair(await pairingFixture());
+    const originalFixture = await pairingFixture();
+    const original = await pair(originalFixture);
     const screenId = String(original.credentials.screenId);
+    const oldHeartbeat = {
+      installationId: originalFixture.identity.keyId,
+      playerVersion: "old-player",
+      manifestVersion: "old-manifest",
+      nowPlayingAssetId: "old-asset",
+      uptimeSeconds: 900,
+      freeStorageBytes: 123_456,
+      networkType: "old-network",
+      occurredAt: new Date().toISOString(),
+    };
+    const oldChallenge = await issueChallenge(
+      screenId,
+      originalFixture.identity.keyId,
+      "heartbeat",
+      canonicalHeartbeatDigest(oldHeartbeat),
+    );
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/v1/device/heartbeat",
+          headers: proofHeaders(
+            screenId,
+            originalFixture.identity.keyId,
+            oldChallenge,
+            originalFixture.privateKey,
+          ),
+          payload: oldHeartbeat,
+        })
+      ).statusCode,
+    ).toBe(200);
     const requestGrant = await app.inject({
       method: "POST",
       url: `/api/v1/screens/${screenId}/device-reenrollment`,
@@ -429,6 +544,16 @@ describe("proof-v1 device routes", () => {
       generation: number;
     }>();
     expect(firstGrant.generation).toBe(1);
+    expect(store.screens[0]).toMatchObject({ status: "offline" });
+    for (const field of [
+      "lastSeenAt",
+      "manifestVersion",
+      "nowPlayingAssetId",
+      "uptimeSeconds",
+      "freeStorageBytes",
+      "networkType",
+    ])
+      expect(store.screens[0]).not.toHaveProperty(field);
     const replacementGrant = await app.inject({
       method: "POST",
       url: `/api/v1/screens/${screenId}/device-reenrollment`,
@@ -550,12 +675,63 @@ describe("proof-v1 device routes", () => {
       keyId: replacementKeyId,
       status: "activated",
     });
+    expect(store.screens[0]).toMatchObject({
+      status: "offline",
+      installationId: replacementKeyId,
+      playerVersion: "0.2.0",
+    });
+    for (const field of [
+      "lastSeenAt",
+      "manifestVersion",
+      "nowPlayingAssetId",
+      "uptimeSeconds",
+      "freeStorageBytes",
+      "networkType",
+    ])
+      expect(store.screens[0]).not.toHaveProperty(field);
     const final = await prove();
     expect(final.statusCode).toBe(201);
     expect(final.json()).toMatchObject({
       authMode: "proof-v1",
       screenId,
       keyId: replacementKeyId,
+    });
+    const replacementHeartbeat = {
+      installationId: replacementKeyId,
+      playerVersion: "0.2.1",
+      manifestVersion: "replacement-manifest",
+      nowPlayingAssetId: "replacement-asset",
+      uptimeSeconds: 1,
+      freeStorageBytes: 654_321,
+      networkType: "replacement-network",
+      occurredAt: new Date(Date.now() + 1).toISOString(),
+    };
+    const replacementChallenge = await issueChallenge(
+      screenId,
+      replacementKeyId,
+      "heartbeat",
+      canonicalHeartbeatDigest(replacementHeartbeat),
+    );
+    const replacementHeartbeatResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/heartbeat",
+      headers: proofHeaders(
+        screenId,
+        replacementKeyId,
+        replacementChallenge,
+        privateKey,
+      ),
+      payload: replacementHeartbeat,
+    });
+    expect(replacementHeartbeatResponse.statusCode).toBe(200);
+    expect(store.screens[0]).toMatchObject({
+      status: "online",
+      manifestVersion: "replacement-manifest",
+      nowPlayingAssetId: "replacement-asset",
+      uptimeSeconds: 1,
+      freeStorageBytes: 654_321,
+      networkType: "replacement-network",
+      lastSeenAt: expect.any(String),
     });
 
     const laterGrant = await app.inject({

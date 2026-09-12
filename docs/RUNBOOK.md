@@ -49,6 +49,16 @@ same key is presented after expiry; the remaining key tombstones are
 retained with release and audit history and must not be manually pruned or
 reused. Restore validation includes a representative ledger relationship.
 
+The device operational-truth migration clears stale heartbeat/playback fields
+and marks screens offline when an explicit credential-revocation marker exists.
+It also heals legacy replacement activations only when the stored last-seen
+timestamp exactly equals the bound candidate's activation timestamp: the exact
+tuple written by the older synthetic activation path. It deliberately makes no
+clock-order inference; any unequal authenticated-heartbeat timestamp is left
+online. The guarded update is idempotent and does not churn already-healed
+screens' `updatedAt`. Verify offline counts after rollout; the backfill does not
+contact or erase an offline Player.
+
 Do not run the bootstrap profile as part of normal startup. It refuses to reset an existing owner password or grant owner to an existing unrelated user. Remove bootstrap credentials after the first successful login.
 
 ## Observe

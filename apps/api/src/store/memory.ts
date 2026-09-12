@@ -866,6 +866,42 @@ export class MemoryStore implements DataStore {
       )
     )
       return { created: false as const, reason: "CODE_COLLISION" as const };
+    const priorCredential = this.deviceCredentials.find(
+      (credential) =>
+        credential.organizationId === org &&
+        credential.screenId === screenId &&
+        !credential.detached,
+    );
+    const generation = (screen.credentialGeneration ?? 0) + 1;
+    const pairing: PairingRecord = {
+      id: id(),
+      organizationId: org,
+      codeHash,
+      expiresAt,
+      status: "PENDING",
+      purpose: "REENROLL",
+      targetScreenId: screenId,
+      targetScreenReferenceId: screenId,
+      expectedGeneration: generation,
+      authorizedByUserId: audit.actorUserId,
+      requestReason: reason,
+      ...(priorCredential ? { priorCredentialId: priorCredential.id } : {}),
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "device.reenrollment.requested",
+      entityType: "screen",
+      entityId: screenId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        grantId: pairing.id,
+        expectedGeneration: pairing.expectedGeneration,
+        reason,
+      },
+    });
     for (const p of this.pairings) {
       if (p.targetScreenId === screenId && p.status === "PENDING") {
         p.status = "REVOKED";
@@ -893,45 +929,16 @@ export class MemoryStore implements DataStore {
     }
     screen.credentialRevokedAt = timestamp;
     screen.deviceTokenHash = undefined;
-    screen.credentialGeneration = (screen.credentialGeneration ?? 0) + 1;
-    const priorCredential = this.deviceCredentials.find(
-      (c) =>
-        c.organizationId === org &&
-        c.screenId === screenId &&
-        c.revokedAt === timestamp,
-    );
-    const pairing: PairingRecord = {
-      id: id(),
-      organizationId: org,
-      codeHash,
-      expiresAt,
-      status: "PENDING",
-      purpose: "REENROLL",
-      targetScreenId: screenId,
-      targetScreenReferenceId: screenId,
-      expectedGeneration: screen.credentialGeneration,
-      authorizedByUserId: audit.actorUserId,
-      requestReason: reason,
-      ...(priorCredential ? { priorCredentialId: priorCredential.id } : {}),
-    };
+    screen.credentialGeneration = generation;
+    screen.status = "offline";
+    delete screen.lastSeenAt;
+    delete screen.manifestVersion;
+    delete screen.nowPlayingAssetId;
+    delete screen.uptimeSeconds;
+    delete screen.freeStorageBytes;
+    delete screen.networkType;
     this.pairings.push(pairing);
-    this.audits.push(
-      this.buildAuditRecord({
-        organizationId: org,
-        actorUserId: audit.actorUserId,
-        actorType: "user",
-        action: "device.reenrollment.requested",
-        entityType: "screen",
-        entityId: screenId,
-        ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-        ...(audit.requestId ? { requestId: audit.requestId } : {}),
-        metadata: {
-          grantId: pairing.id,
-          expectedGeneration: pairing.expectedGeneration,
-          reason,
-        },
-      }),
-    );
+    this.audits.push(auditRecord);
     return { created: true as const, pairing };
   }
   async getReenrollmentStatus(
@@ -1066,6 +1073,23 @@ export class MemoryStore implements DataStore {
         : {}),
       createdAt: timestamp,
     };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "device.reenrollment.activated",
+      entityType: "screen",
+      entityId: screenId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        grantId: grant.id,
+        candidateId,
+        credentialId: credential.id,
+        keyId: credential.keyId,
+        reason: grant.requestReason,
+      },
+    });
     Object.assign(screen, {
       installationId: attempt.installationId,
       model: attempt.model,
@@ -1074,10 +1098,15 @@ export class MemoryStore implements DataStore {
       credentialRevokedAt: undefined,
       deviceTokenHash: undefined,
       credentialGeneration: (screen.credentialGeneration ?? 0) + 1,
-      status: "online",
-      lastSeenAt: timestamp,
+      status: "offline",
       updatedAt: timestamp,
     });
+    delete screen.lastSeenAt;
+    delete screen.manifestVersion;
+    delete screen.nowPlayingAssetId;
+    delete screen.uptimeSeconds;
+    delete screen.freeStorageBytes;
+    delete screen.networkType;
     this.deviceCredentials.push(credential);
     this.usedDeviceKeyIds.add(credential.keyId);
     attempt.activatedAt = timestamp;
@@ -1090,25 +1119,7 @@ export class MemoryStore implements DataStore {
     for (const p of this.pairings)
       if (p.targetScreenId === screenId && p.status === "PENDING")
         p.status = "REVOKED";
-    this.audits.push(
-      this.buildAuditRecord({
-        organizationId: org,
-        actorUserId: audit.actorUserId,
-        actorType: "user",
-        action: "device.reenrollment.activated",
-        entityType: "screen",
-        entityId: screenId,
-        ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-        ...(audit.requestId ? { requestId: audit.requestId } : {}),
-        metadata: {
-          grantId: grant.id,
-          candidateId,
-          credentialId: credential.id,
-          keyId: credential.keyId,
-          reason: grant.requestReason,
-        },
-      }),
-    );
+    this.audits.push(auditRecord);
     return { activated: true, screen: this.publicScreen(screen), credential };
   }
   async cancelScreenReenrollmentAndAudit(
@@ -1593,6 +1604,7 @@ export class MemoryStore implements DataStore {
         candidate.credentialId === input.credentialId &&
         candidate.organizationId === active?.credential.organizationId,
     );
+    const credentialGeneration = active?.screen.credentialGeneration ?? 0;
     if (
       !active ||
       !challenge ||
@@ -1600,13 +1612,35 @@ export class MemoryStore implements DataStore {
       challenge.expiresAt <= now() ||
       challenge.challengeHashSha256 !== input.challengeHashSha256 ||
       challenge.operation !== input.operation ||
-      challenge.requestDigestSha256 !== input.requestDigestSha256 ||
-      !(await verify({ ...active.credential })) ||
-      challenge.consumedAt
+      challenge.requestDigestSha256 !== input.requestDigestSha256
     )
       return null;
-    challenge.consumedAt = now();
-    return active;
+    if (!(await verify({ ...active.credential }))) return null;
+    const currentActive = this.activeDeviceCredential(input.credentialId);
+    const currentChallenge = this.deviceAuthChallenges.find(
+      (candidate) => candidate.id === input.challengeId,
+    );
+    const consumedAt = now();
+    if (
+      !currentActive ||
+      currentActive.credential !== active.credential ||
+      currentActive.screen !== active.screen ||
+      (currentActive.screen.credentialGeneration ?? 0) !==
+        credentialGeneration ||
+      currentChallenge !== challenge ||
+      (currentActive.credential.expiresAt !== undefined &&
+        currentActive.credential.expiresAt <= consumedAt) ||
+      challenge.credentialId !== input.credentialId ||
+      challenge.organizationId !== currentActive.credential.organizationId ||
+      challenge.consumedAt ||
+      challenge.expiresAt <= consumedAt ||
+      challenge.challengeHashSha256 !== input.challengeHashSha256 ||
+      challenge.operation !== input.operation ||
+      challenge.requestDigestSha256 !== input.requestDigestSha256
+    )
+      return null;
+    challenge.consumedAt = consumedAt;
+    return currentActive;
   }
   async consumeDeviceAuthChallenge(
     input: DeviceProofInput,
@@ -1695,6 +1729,17 @@ export class MemoryStore implements DataStore {
           ? { revoked: false as const, reason: "ALREADY_REVOKED" as const }
           : { revoked: false as const, reason: "NOT_FOUND" as const };
       const reassertedAt = now();
+      const auditRecord = this.buildAuditRecord({
+        organizationId: org,
+        actorUserId: audit.actorUserId,
+        actorType: "user",
+        action: "device.credential.revocation_reasserted",
+        entityType: credential ? "device_credential" : "screen",
+        entityId: credential?.id ?? screenId,
+        ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+        ...(audit.requestId ? { requestId: audit.requestId } : {}),
+        metadata: { screenId, cancelledGrantIds: pending.map((x) => x.id) },
+      });
       for (const grant of pending) {
         grant.status = "REVOKED";
         for (const attempt of this.pairingAttempts)
@@ -1705,17 +1750,13 @@ export class MemoryStore implements DataStore {
       screen.credentialRevokedAt = reassertedAt;
       screen.deviceTokenHash = undefined;
       screen.status = "offline";
-      this.audits.push(
-        this.buildAuditRecord({
-          organizationId: org,
-          actorUserId: audit.actorUserId,
-          actorType: "user",
-          action: "device.credential.revocation_reasserted",
-          entityType: credential ? "device_credential" : "screen",
-          entityId: credential?.id ?? screenId,
-          metadata: { screenId, cancelledGrantIds: pending.map((x) => x.id) },
-        }),
-      );
+      delete screen.lastSeenAt;
+      delete screen.manifestVersion;
+      delete screen.nowPlayingAssetId;
+      delete screen.uptimeSeconds;
+      delete screen.freeStorageBytes;
+      delete screen.networkType;
+      this.audits.push(auditRecord);
       return {
         revoked: true as const,
         ...(credential ? { credential: { ...credential } } : {}),
@@ -1738,6 +1779,13 @@ export class MemoryStore implements DataStore {
     screen.credentialRevokedAt = revokedAt;
     screen.deviceTokenHash = undefined;
     screen.credentialGeneration = (screen.credentialGeneration ?? 0) + 1;
+    screen.status = "offline";
+    delete screen.lastSeenAt;
+    delete screen.manifestVersion;
+    delete screen.nowPlayingAssetId;
+    delete screen.uptimeSeconds;
+    delete screen.freeStorageBytes;
+    delete screen.networkType;
     for (const challenge of this.deviceAuthChallenges) {
       if (
         challenge.credentialId === credential.id &&
