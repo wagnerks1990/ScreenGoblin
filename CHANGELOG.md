@@ -6,6 +6,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Enforce signed normal-playback and emergency deadlines with bounded wall-clock
+  rechecks, resume checks, and an independent maximum-lifetime countdown so
+  forward or backward device clock corrections fail closed.
 - Emit a signed whole-release withdrawal when any frozen playlist item fails
   manifest-time URL, origin, credential, media, expiry, checksum, size, or
   aggregate policy, rather than signing an unapproved partial playlist.

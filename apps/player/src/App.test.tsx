@@ -320,6 +320,64 @@ describe("boot credential validation", () => {
     ).toBeInTheDocument();
   });
 
+  it("stops offline playback immediately after a forward clock correction", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-09-12T00:00:00.000Z"));
+      mocks.recover.mockResolvedValue({
+        ...manifest,
+        playbackEndsAt: "2026-09-12T01:00:00.000Z",
+      });
+      Object.defineProperty(navigator, "onLine", {
+        configurable: true,
+        value: false,
+      });
+
+      render(<App />);
+      expect(await screen.findByText("Playing content")).toBeInTheDocument();
+
+      vi.setSystemTime(new Date("2026-09-12T02:00:00.000Z"));
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+      expect(
+        await screen.findByText("Waiting for a published schedule…"),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("blanks an emergency after a forward clock correction before rollback finishes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-09-12T00:00:00.000Z"));
+      mocks.recover.mockResolvedValue({
+        ...manifest,
+        version: "emergency-v1",
+        priority: "emergency",
+        validUntil: "2026-09-12T01:00:00.000Z",
+      });
+      mocks.rollback.mockReturnValue(new Promise(() => undefined));
+      Object.defineProperty(navigator, "onLine", {
+        configurable: true,
+        value: false,
+      });
+
+      render(<App />);
+      expect(await screen.findByText("Playing content")).toBeInTheDocument();
+
+      vi.setSystemTime(new Date("2026-09-12T02:00:00.000Z"));
+      act(() => window.dispatchEvent(new Event("pageshow")));
+
+      expect(
+        await screen.findByText("Waiting for a published schedule…"),
+      ).toBeInTheDocument();
+      expect(mocks.rollback).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("deletes an expired recovery record before allowing pairing", async () => {
     mocks.getCredentials.mockResolvedValue(undefined);
     mocks.recover.mockResolvedValue(undefined);

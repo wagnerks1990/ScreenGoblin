@@ -92,6 +92,17 @@ uses this fallback, and no client silently downgrades after proof failure.
 
 The manifest includes `version`, `generatedAt`, `validUntil`, `screenId`, `priority`, required signed `withdrawn`, optional signed `playbackEndsAt`, and ordered playlist `items`. Each playlist item contains an `asset` plus `durationSeconds`; the player normalizes that wire shape before staging. A withdrawal is an empty normal release that intentionally clears playback. `validUntil` is the renewable envelope lease; normal last-known-good playback may continue past it during an outage. `playbackEndsAt` is a hard schedule boundary and blanks locally even offline. Image, video, and template checksums are mandatory. URLs should be immutable or short-lived signed URLs whose content bytes stay stable for the URL lifetime.
 
+Hard playback boundaries and emergency `validUntil` use a bounded deadline
+watcher. It checks the wall clock at least every 30 seconds and immediately on
+WebView visibility/page-resume events, so a forward correction cannot retain
+content until the timer calculated from the old clock expires. A separate
+countdown preserves the maximum lifetime calculated when the current playback
+session begins, so moving the wall clock backward cannot extend it. Expired emergency
+content is blanked before asynchronous rollback verification begins. These
+controls fail closed around local corrections but are not a trusted-time source;
+device sleep, firmware clock behavior, and intentionally incorrect initial time
+remain physical-device validation and deployment concerns.
+
 The envelope declares `signatureAlgorithm: Ed25519` and includes `signature`.
 Pairing returns `manifestVerificationKey`; the player pins that public key and
 rejects altered manifests, wrong-screen manifests, unsupported algorithms, and
