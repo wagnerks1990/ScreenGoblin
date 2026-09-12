@@ -290,7 +290,9 @@ describe("authentication and organization RBAC", () => {
       createScreen("Request ID one"),
       createScreen("Request ID two"),
     ]);
-    expect(responses.map((response) => response.statusCode)).toEqual([201, 201]);
+    expect(responses.map((response) => response.statusCode)).toEqual([
+      201, 201,
+    ]);
     const requestIds = store.audits
       .filter((event) => event.action === "screen.created")
       .map((event) => event.requestId);
