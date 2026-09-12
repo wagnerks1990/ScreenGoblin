@@ -1,4 +1,4 @@
-FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS build
+FROM node:26.8-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS build
 WORKDIR /app
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends openssl=3.0.20-1~deb12u2 \
@@ -15,7 +15,7 @@ RUN npm run build -w @screengoblin/contracts \
  && npm run prisma:generate -w @screengoblin/api \
  && npm run build -w @screengoblin/api
 
-FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS production-deps
+FROM node:26.8-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS production-deps
 WORKDIR /app
 COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages/contracts/
@@ -25,7 +25,7 @@ RUN npm ci --omit=dev --ignore-scripts \
 WORKDIR /app/apps/api
 RUN node --input-type=module -e "await import('fastify')"
 
-FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
+FROM node:26.8-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001
 WORKDIR /app
 RUN apt-get update \
