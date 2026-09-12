@@ -81,7 +81,9 @@ test("an owner connects to live fleet data, creates a pairing code, and disconne
 
   await page.goto("/screens");
   await expect(page.getByText("Live API data")).toBeVisible();
-  await expect(page.getByRole("cell", { name: liveScreenName })).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: liveScreenName, exact: true }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Pair a screen" }).click();
   const pairingDialog = page.getByRole("dialog", { name: "Pair a screen" });
@@ -117,7 +119,9 @@ test("a screens 401 clears the live session and never substitutes demo fleet rec
   await ensureLiveScreen(page);
   await page.goto("/screens");
   await expect(page.getByText("Live API data")).toBeVisible();
-  await expect(page.getByRole("cell", { name: liveScreenName })).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: liveScreenName, exact: true }),
+  ).toBeVisible();
 
   await page.route(
     "**/api/v1/screens",
