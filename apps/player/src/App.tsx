@@ -188,14 +188,21 @@ export default function App() {
     setCredentials(value);
   }, []);
   const playbackError = useCallback(async () => {
-    const prior = await manager.rollback(manifest?.version);
-    if (prior) {
-      setManifest(prior);
-      setFallback(true);
-    } else {
+    try {
+      const prior = await manager.rollback(manifest?.version);
+      if (prior) {
+        setManifest(prior);
+        setFallback(true);
+        return;
+      }
       setManifest(undefined);
       playingRef.current = undefined;
       setFatal("Cached playback content is unavailable");
+    } catch {
+      setManifest(undefined);
+      playingRef.current = undefined;
+      setFallback(false);
+      setFatal("Playback recovery failed");
     }
   }, [manifest]);
   const nowPlaying = useCallback((id: string) => {
@@ -236,6 +243,7 @@ export default function App() {
     );
   return (
     <Playback
+      key={manifest.version}
       manifest={manifest}
       assets={assetRepository}
       offline={!online}
