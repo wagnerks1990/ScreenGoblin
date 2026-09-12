@@ -26,7 +26,7 @@ async function fixture(overrides = {}) {
         "node_modules/example": {
           version: "1.2.3",
           resolved: "https://registry.example.invalid/example.tgz",
-          integrity: "sha512-QUFBQQ==",
+          integrity: `sha512-${Buffer.alloc(64).toString("base64")}`,
           license: "MIT",
         },
       },
@@ -76,7 +76,15 @@ test("evidence is deterministic, sanitized, and explicit", async (context) => {
     await readFile(files.trivyIgnoreOutput, "utf8"),
     /Generated from/,
   );
-  assert.doesNotMatch(firstText, /registry\.example|integrity|resolved/);
+  assert.doesNotMatch(firstText, /registry\.example/);
+  assert.ok(
+    first.dependencies.every(
+      (dependency) =>
+        !Object.hasOwn(dependency, "resolved") &&
+        !Object.hasOwn(dependency, "integrity"),
+    ),
+  );
+  assert.equal(first.dependencies[0].provenanceKind, "https-integrity");
 });
 
 test("fails closed on an unknown license", async (context) => {
@@ -87,6 +95,7 @@ test("fails closed on an unknown license", async (context) => {
         "node_modules/example": {
           version: "1.2.3",
           resolved: "https://registry.example.invalid/example.tgz",
+          integrity: `sha512-${Buffer.alloc(64).toString("base64")}`,
           license: "Unknown-Custom",
         },
       },

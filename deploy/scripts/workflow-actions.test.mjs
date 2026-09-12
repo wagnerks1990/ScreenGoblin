@@ -56,7 +56,9 @@ test("security workflows use the reviewed full-SHA action set", async () => {
       new URL(`../../.github/workflows/${workflow}`, import.meta.url),
       "utf8",
     );
-    for (const match of source.matchAll(/^\s*- uses: ([^@\s]+)@([^\n]+)$/gm)) {
+    for (const match of source.matchAll(
+      /^\s*(?:-\s+)?uses: ([^@\s]+)@([^\n]+)$/gm,
+    )) {
       const [, action, pin] = match;
       assert.ok(action);
       assert.ok(pin);

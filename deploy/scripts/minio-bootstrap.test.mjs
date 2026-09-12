@@ -62,10 +62,7 @@ test("renders the tenant bucket policy without utilities absent from the mc imag
     const commands = readFileSync(commandLog, "utf8");
     assert.match(commands, /admin policy create local screengoblin-media-rw/);
     assert.match(commands, /admin user add local test-api test-api-password/);
-    assert.match(
-      commands,
-      /anonymous set download local\/screengoblin-test-media/,
-    );
+    assert.match(commands, /anonymous set none local\/screengoblin-test-media/);
     assert.doesNotMatch(commands, /anonymous set download/);
   } finally {
     rmSync(root, { recursive: true, force: true });
