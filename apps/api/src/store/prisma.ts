@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
+import { CAPABILITIES } from "@screengoblin/contracts";
 import type {
   ActiveOrdinaryRelease,
   AuditRecord,
@@ -29,6 +30,7 @@ import {
   ReleaseSnapshotError,
   releaseSnapshotDigest,
 } from "../releases/canonical.js";
+import { hasCapability } from "../authorization/policy.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
 
@@ -748,17 +750,19 @@ export class PrismaStore implements DataStore {
       try {
         return await this.prisma.$transaction(
           async (tx) => {
-            const actorMembership = await tx.membership.findUnique({
-              where: {
-                organizationId_userId: {
-                  organizationId: org,
-                  userId: audit.actorUserId,
-                },
-              },
-              select: { id: true },
-            });
-            if (!actorMembership)
-              throw new Error("Release actor is not an organization member");
+            const [actorMembership] = await tx.$queryRaw<
+              Array<{ role: string }>
+            >`SELECT m."role"::text AS "role"
+              FROM "Membership" AS m
+              INNER JOIN "User" AS u ON u."id" = m."userId"
+              WHERE m."organizationId" = ${org}
+                AND m."userId" = ${audit.actorUserId}
+                AND u."disabledAt" IS NULL
+              FOR UPDATE OF m, u`;
+            if (
+              !hasCapability(actorMembership?.role, CAPABILITIES.releasePublish)
+            )
+              return { published: false, reason: "FORBIDDEN" };
             const playlist = await tx.playlist.findFirst({
               where: { id: data.playlistId, organizationId: org },
               include: {
@@ -1002,17 +1006,19 @@ export class PrismaStore implements DataStore {
     try {
       return await this.prisma.$transaction(
         async (tx) => {
-          const actorMembership = await tx.membership.findUnique({
-            where: {
-              organizationId_userId: {
-                organizationId: org,
-                userId: audit.actorUserId,
-              },
-            },
-            select: { id: true },
-          });
-          if (!actorMembership)
-            throw new Error("Release actor is not an organization member");
+          const [actorMembership] = await tx.$queryRaw<
+            Array<{ role: string }>
+          >`SELECT m."role"::text AS "role"
+            FROM "Membership" AS m
+            INNER JOIN "User" AS u ON u."id" = m."userId"
+            WHERE m."organizationId" = ${org}
+              AND m."userId" = ${audit.actorUserId}
+              AND u."disabledAt" IS NULL
+            FOR UPDATE OF m, u`;
+          if (
+            !hasCapability(actorMembership?.role, CAPABILITIES.releaseWithdraw)
+          )
+            return { withdrawn: false, reason: "FORBIDDEN" };
           const schedule = await tx.schedule.findFirst({
             where: { id: scheduleId, organizationId: org },
             select: { id: true },
