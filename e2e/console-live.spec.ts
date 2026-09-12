@@ -85,9 +85,15 @@ test("an owner connects to live fleet data, creates a pairing code, and disconne
     page.getByRole("cell", { name: liveScreenName, exact: true }),
   ).toBeVisible();
 
+  const pairingResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url() === `${apiBaseUrl}/pairing-codes`,
+  );
   await page.getByRole("button", { name: "Pair a screen" }).click();
   const pairingDialog = page.getByRole("dialog", { name: "Pair a screen" });
   await expect(pairingDialog).toBeVisible();
+  expect((await pairingResponse).status()).toBe(201);
   await expect
     .poll(async () => {
       const code = await pairingDialog
