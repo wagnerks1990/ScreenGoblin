@@ -6,6 +6,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Require `PUBLIC_API_URL` to be a canonical credential-free HTTPS origin
+  in production, normalize it before constructing the paired device API base,
+  and reject path, query, or fragment configuration before a pairing code can
+  be consumed into an unusable Player endpoint.
 - Replace eight-hour stateless user tokens with one-hour, individually tracked
   sessions. Store only hashes of random session identities, recheck
   expiry/revocation and current membership on every authenticated request, and

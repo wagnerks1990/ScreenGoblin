@@ -30,9 +30,23 @@ describe("production configuration", () => {
     ).toThrow();
   });
 
-  it("accepts a production configuration with separate trust roots", () => {
-    expect(loadConfig(base).PUBLIC_API_URL).toBe(
-      "https://signage.example.test",
+  it("normalizes the public API origin used by pairing responses", () => {
+    expect(
+      loadConfig({
+        ...base,
+        PUBLIC_API_URL: "https://SIGNAGE.EXAMPLE.TEST:443/",
+      }).PUBLIC_API_URL,
+    ).toBe("https://signage.example.test");
+  });
+
+  it.each([
+    "https://user:password@signage.example.test",
+    "https://signage.example.test/api",
+    "https://signage.example.test?tenant=school",
+    "https://signage.example.test#device",
+  ])("rejects non-origin production PUBLIC_API_URL %s", (publicApiUrl) => {
+    expect(() => loadConfig({ ...base, PUBLIC_API_URL: publicApiUrl })).toThrow(
+      /PUBLIC_API_URL/,
     );
   });
 

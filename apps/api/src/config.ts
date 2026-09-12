@@ -34,6 +34,35 @@ const isUnsafeProductionSecret = (value: string) =>
 const isAllZeroSeed = (value: string) =>
   Buffer.from(value, "base64url").every((byte) => byte === 0);
 
+export function parsePublicApiUrl(
+  raw: string,
+  environment: "development" | "test" | "production",
+): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("must be a valid URL");
+  }
+  if (
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash
+  )
+    throw new Error(
+      "must be an origin without credentials, path, query, or fragment",
+    );
+  const localHttp =
+    environment !== "production" &&
+    parsed.protocol === "http:" &&
+    loopbackHostname(parsed.hostname);
+  if (parsed.protocol !== "https:" && !localHttp)
+    throw new Error("must use HTTPS (HTTP is limited to loopback development)");
+  return parsed.origin;
+}
+
 export function parseMediaAllowedOrigins(
   raw: string,
   environment: "development" | "test" | "production",
@@ -113,6 +142,15 @@ const schema = z
   })
   .superRefine((value, context) => {
     try {
+      parsePublicApiUrl(value.PUBLIC_API_URL, value.NODE_ENV);
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        path: ["PUBLIC_API_URL"],
+        message: error instanceof Error ? error.message : "is invalid",
+      });
+    }
+    try {
       parseMediaAllowedOrigins(value.MEDIA_ALLOWED_ORIGINS, value.NODE_ENV);
     } catch (error) {
       context.addIssue({
@@ -141,12 +179,6 @@ const schema = z
         path: ["REDIS_URL"],
         message: "must be a redis:// or rediss:// URL in production",
       });
-    if (new URL(value.PUBLIC_API_URL).protocol !== "https:")
-      context.addIssue({
-        code: "custom",
-        path: ["PUBLIC_API_URL"],
-        message: "must use HTTPS in production",
-      });
     if (isUnsafeProductionSecret(value.JWT_SECRET))
       context.addIssue({
         code: "custom",
@@ -173,5 +205,10 @@ const schema = z
       });
   });
 export type Config = z.infer<typeof schema>;
-export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config =>
-  schema.parse(env);
+export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
+  const parsed = schema.parse(env);
+  return {
+    ...parsed,
+    PUBLIC_API_URL: parsePublicApiUrl(parsed.PUBLIC_API_URL, parsed.NODE_ENV),
+  };
+};
