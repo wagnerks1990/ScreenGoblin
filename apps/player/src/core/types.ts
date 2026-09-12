@@ -30,6 +30,20 @@ export interface PlayerManifest {
   items: PlayerAsset[];
 }
 
+/** Exact server signing bytes retained with the normalized playback view. */
+export interface SignedPlayerManifest {
+  formatVersion: 1;
+  payloadJson: string;
+  signatureAlgorithm: "Ed25519";
+  signature: string;
+  manifest: PlayerManifest;
+}
+
+export interface ManifestTrust {
+  screenId: string;
+  manifestVerificationKey: string;
+}
+
 interface CredentialBase {
   installationId: string;
   screenId: string;
@@ -95,10 +109,13 @@ export interface PlayerStore {
   completePairing(value: Credentials): Promise<void>;
   deletePendingPairing(): Promise<void>;
   clearProvisionedState(): Promise<void>;
-  getActiveManifest(): Promise<PlayerManifest | undefined>;
-  getPreviousManifest(): Promise<PlayerManifest | undefined>;
-  activateManifest(value: PlayerManifest): Promise<void>;
-  rollback(expectedActiveVersion?: string): Promise<PlayerManifest | undefined>;
+  getActiveManifest(): Promise<SignedPlayerManifest | undefined>;
+  getPreviousManifest(): Promise<SignedPlayerManifest | undefined>;
+  activateManifest(value: SignedPlayerManifest): Promise<void>;
+  rollback(
+    expectedActiveVersion?: string,
+  ): Promise<SignedPlayerManifest | undefined>;
+  clearManifests(): Promise<void>;
   clear(): Promise<void>;
 }
 

@@ -97,11 +97,18 @@ Pairing returns `manifestVerificationKey`; the player pins that public key and
 rejects altered manifests, wrong-screen manifests, unsupported algorithms, and
 expired releases before staging. Changing the signing key currently requires
 controlled player re-enrollment; overlap/key-ID rotation is still required.
+The Player stores the exact JSON bytes that were verified, the algorithm, the
+signature, and a normalized playback view in one record. Boot recovery and
+rollback reverify those exact bytes against the currently pinned key and screen,
+then require the normalized view to match. Pre-upgrade unsigned records and
+altered records are removed and produce a blank screen until a fresh signed
+manifest arrives. A missing active marker never revives the previous slot.
 
 The WebView cache-miss path permits at most 128 MiB per asset and 512 MiB per
 manifest, downloads at most two assets concurrently, verifies exact size and
-SHA-256 before activation, and prunes entries outside the active and rollback
-generations. Native incremental hashing, stream-to-disk activation, quota
+SHA-256 before activation, rechecks persistent entries before reuse and
+playback, and prunes entries outside the active and rollback generations.
+Native incremental hashing, stream-to-disk activation, quota
 telemetry, and physical full-disk recovery evidence remain release gates.
 
 The service worker has a separate, content-derived shell cache. The production

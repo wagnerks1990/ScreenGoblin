@@ -33,6 +33,18 @@ export async function verifyManifestSignature(
   signature: string,
   publicKey: string,
 ): Promise<boolean> {
+  return verifyManifestPayloadSignature(
+    JSON.stringify(payload),
+    signature,
+    publicKey,
+  );
+}
+
+export async function verifyManifestPayloadSignature(
+  payloadJson: string,
+  signature: string,
+  publicKey: string,
+): Promise<boolean> {
   try {
     const rawKey = decodeBase64Url(publicKey);
     const rawSignature = decodeBase64Url(signature);
@@ -49,7 +61,7 @@ export async function verifyManifestSignature(
       "Ed25519",
       key,
       new Uint8Array(rawSignature).buffer,
-      new TextEncoder().encode(JSON.stringify(payload)),
+      new TextEncoder().encode(payloadJson),
     );
   } catch {
     return false;

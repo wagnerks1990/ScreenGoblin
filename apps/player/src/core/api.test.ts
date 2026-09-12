@@ -74,13 +74,17 @@ describe("PlayerApi wire contract", () => {
     );
     expect(headers.get("X-Device-Token")).toBe("device-secret");
     expect(headers.get("X-Screen-Id")).toBe("screen-1");
-    expect(result.items).toEqual([
+    expect(result.manifest.items).toEqual([
       expect.objectContaining({
         id: "asset-1",
         kind: "image",
         durationSeconds: 15,
       }),
     ]);
+    const unsigned: Record<string, unknown> = { ...signedManifest() };
+    delete unsigned.signatureAlgorithm;
+    delete unsigned.signature;
+    expect(result.payloadJson).toBe(JSON.stringify(unsigned));
   });
 
   it("rejects a tampered or wrong-screen manifest", async () => {

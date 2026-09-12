@@ -37,10 +37,10 @@ describe("cache asset staging", () => {
   };
 
   beforeEach(() => {
-    cache.match.mockResolvedValue(undefined);
-    cache.put.mockResolvedValue(undefined);
-    cache.delete.mockResolvedValue(true);
-    cache.keys.mockResolvedValue([]);
+    cache.match.mockReset().mockResolvedValue(undefined);
+    cache.put.mockReset().mockResolvedValue(undefined);
+    cache.delete.mockReset().mockResolvedValue(true);
+    cache.keys.mockReset().mockResolvedValue([]);
     vi.stubGlobal("caches", {
       open: vi.fn().mockResolvedValue(cache),
       delete: vi.fn().mockResolvedValue(true),
@@ -252,15 +252,62 @@ describe("cache asset staging", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("reuses an already verified large cache entry without buffering it again", async () => {
+  it("refuses cache reuse above the enforceable verification buffer", async () => {
     const fetchMock = vi.fn();
-    cache.match.mockResolvedValueOnce(response());
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
       new CacheAssetRepository({ maxBufferedAssetBytes: 2 }).prefetch(asset()),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("in-memory staging limit");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rehashes a cache hit before reuse", async () => {
+    const fetchMock = vi.fn();
+    cache.match.mockResolvedValueOnce(response());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new CacheAssetRepository().prefetch(asset());
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(cache.delete).not.toHaveBeenCalled();
+  });
+
+  it("deletes and replaces a corrupt cache hit", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response());
+    cache.match.mockResolvedValueOnce(response("abd"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new CacheAssetRepository().prefetch(asset());
+
+    expect(cache.delete).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(cache.put).toHaveBeenCalledOnce();
+  });
+
+  it("rehashes cached bytes before resolving them for playback", async () => {
+    cache.match.mockResolvedValueOnce(response());
+    const createObjectURL = vi.fn().mockReturnValue("blob:verified");
+    const NativeURL = URL;
+    class MockURL extends NativeURL {
+      static createObjectURL = createObjectURL;
+    }
+    vi.stubGlobal("URL", MockURL);
+
+    await expect(new CacheAssetRepository().resolve(asset())).resolves.toBe(
+      "blob:verified",
+    );
+    expect(createObjectURL).toHaveBeenCalledOnce();
+    expect(cache.delete).not.toHaveBeenCalled();
+  });
+
+  it("deletes corrupt cached bytes instead of resolving them", async () => {
+    cache.match.mockResolvedValueOnce(response("abd"));
+
+    await expect(new CacheAssetRepository().resolve(asset())).rejects.toThrow(
+      "Checksum mismatch",
+    );
+    expect(cache.delete).toHaveBeenCalledOnce();
   });
 
   it("rejects a staging batch whose reservations exceed its aggregate budget", async () => {

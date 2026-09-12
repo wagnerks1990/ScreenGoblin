@@ -158,9 +158,19 @@ export class CacheAssetRepository implements AssetRepository {
     try {
       releaseSlot = await this.acquireDownloadSlot();
       const cache = await caches.open(CACHE_NAME);
-      if (await cache.match(key)) return;
       if (asset.sizeBytes > this.maxBufferedAssetBytes)
         throw new Error(`Asset ${asset.id} exceeds in-memory staging limit`);
+      const cached = await cache.match(key);
+      if (cached) {
+        try {
+          const buffer = await boundedBody(cached, asset);
+          if (await verifySha256(buffer, asset.checksumSha256)) return;
+        } catch {
+          // Treat unreadable persistent bytes as corrupt and replace them from
+          // the signed source below. A cache-key match alone is not integrity.
+        }
+        await cache.delete(key);
+      }
 
       const controller = new AbortController();
       const timeout = setTimeout(
@@ -208,11 +218,21 @@ export class CacheAssetRepository implements AssetRepository {
 
   async resolve(asset: PlayerAsset): Promise<string> {
     if (asset.kind === "web") return asset.url;
-    const response = await (
-      await caches.open(CACHE_NAME)
-    ).match(cacheKey(asset));
+    if (asset.sizeBytes > this.maxBufferedAssetBytes)
+      throw new Error(`Asset ${asset.id} exceeds in-memory playback limit`);
+    const cache = await caches.open(CACHE_NAME);
+    const key = cacheKey(asset);
+    const response = await cache.match(key);
     if (!response) throw new Error(`Cached asset unavailable: ${asset.id}`);
-    return URL.createObjectURL(await response.blob());
+    try {
+      const buffer = await boundedBody(response, asset);
+      if (!(await verifySha256(buffer, asset.checksumSha256)))
+        throw new Error(`Checksum mismatch for ${asset.id}`);
+      return URL.createObjectURL(new Blob([buffer], { type: asset.mimeType }));
+    } catch (error) {
+      await cache.delete(key);
+      throw error;
+    }
   }
 
   async prune(retainedAssets: PlayerAsset[]): Promise<void> {

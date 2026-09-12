@@ -6,6 +6,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Retain the exact Ed25519 manifest signing bytes in both Player cache slots and
+  reverify them against the pinned key and screen before staging, boot recovery,
+  or rollback. Remove legacy/altered records, refuse previous-slot revival when
+  the active marker is missing, and rehash persistent media before reuse and
+  playback.
 - Fail production startup when `EMERGENCY_FEATURE_ENABLED=true`; the incomplete
   emergency path remains available only to isolated non-production fixtures and
   cannot be enabled by a production environment override.
