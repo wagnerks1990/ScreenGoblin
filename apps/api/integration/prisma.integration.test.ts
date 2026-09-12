@@ -91,6 +91,62 @@ const pairProofDevice = async (label: string, byte: number) => {
   return { organization, pairing, attempt, claimInput, ...result };
 };
 
+const stageReenrollmentCandidate = async (
+  label: string,
+  oldKeyByte: number,
+  newKeyByte: number,
+) => {
+  const paired = await pairProofDevice(label, oldKeyByte);
+  const actor = await createUser(`${label}-${randomUUID()}@example.test`);
+  await prisma.membership.create({
+    data: {
+      organizationId: paired.organization.id,
+      userId: actor.id,
+      role: "OWNER",
+    },
+  });
+  const grant = await store.requestScreenReenrollmentAndAudit(
+    paired.organization.id,
+    paired.screen.id,
+    `reenroll-${randomUUID()}`,
+    new Date(Date.now() + 60_000).toISOString(),
+    "Replace failed player hardware",
+    { actorUserId: actor.id },
+  );
+  if (!grant.created) throw new Error("re-enrollment grant was not created");
+  const credential = proofEnrollment(newKeyByte);
+  const challengeHashSha256 = proofHash();
+  const transcriptDigestSha256 = proofHash();
+  const attempt = await store.issuePairingChallenge({
+    codeHash: grant.pairing.codeHash,
+    credential,
+    challengeHashSha256,
+    transcriptDigestSha256,
+    expiresAt: new Date(Date.now() + 30_000).toISOString(),
+  });
+  if (!attempt) throw new Error("re-enrollment challenge was not issued");
+  const candidate = await store.claimPairingWithCredentialAndAudit(
+    {
+      codeHash: grant.pairing.codeHash,
+      pairingAttemptId: attempt.id,
+      challengeHashSha256,
+      transcriptDigestSha256,
+      keyId: credential.keyId,
+      device: {
+        installationId: credential.keyId,
+        model: "Replacement player",
+        osVersion: "15",
+        playerVersion: "0.2.0",
+      },
+    },
+    () => true,
+    { requestId: `proof-reenroll-${label}` },
+  );
+  if (candidate.paired || candidate.reason !== "PENDING_APPROVAL")
+    throw new Error("re-enrollment candidate was not staged");
+  return { paired, actor, grant: grant.pairing, credential, candidate };
+};
+
 beforeAll(async () => {
   await store.ping();
 });
@@ -99,7 +155,7 @@ beforeEach(async () => {
   // This job owns an isolated CI database. CASCADE keeps cleanup compatible
   // with new tenant-owned tables while retaining the migrated schema itself.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "Organization", "User" RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE "Organization", "User", "DeviceKeyTombstone" RESTART IDENTITY CASCADE',
   );
 });
 
@@ -770,6 +826,182 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).rejects.toMatchObject({ code: "P2002" });
   });
 
+  it("contains a screen while replacing and reasserting targeted re-enrollment grants", async () => {
+    const paired = await pairProofDevice("proof-reenrollment", 18);
+    const actor = await createUser("proof-reenrollment-owner@example.test");
+    await prisma.membership.create({
+      data: {
+        organizationId: paired.organization.id,
+        userId: actor.id,
+        role: "OWNER",
+      },
+    });
+    const expiredChallengeId = Buffer.alloc(32, 23).toString("base64url");
+    await prisma.deviceAuthChallenge.create({
+      data: {
+        id: expiredChallengeId,
+        organizationId: paired.organization.id,
+        credentialId: paired.credential.id,
+        challengeHashSha256: proofHash(),
+        operation: "MANIFEST",
+        requestDigestSha256: proofHash(),
+        createdAt: new Date(Date.now() - 90_000),
+        expiresAt: new Date(Date.now() - 60_000),
+      },
+    });
+    const first = await store.requestScreenReenrollmentAndAudit(
+      paired.organization.id,
+      paired.screen.id,
+      `reenroll-${randomUUID()}`,
+      new Date(Date.now() + 60_000).toISOString(),
+      "Replace failed player hardware",
+      { actorUserId: actor.id },
+    );
+    expect(first).toMatchObject({ created: true });
+    expect(
+      await prisma.deviceAuthChallenge.findUniqueOrThrow({
+        where: { id: expiredChallengeId },
+      }),
+    ).toMatchObject({ consumedAt: null });
+    expect(
+      await prisma.deviceCredential.findUniqueOrThrow({
+        where: { id: paired.credential.id },
+      }),
+    ).toMatchObject({
+      revokedAt: expect.any(Date),
+      liveScreenId: null,
+      liveScreenOrganizationId: null,
+    });
+    const second = await store.requestScreenReenrollmentAndAudit(
+      paired.organization.id,
+      paired.screen.id,
+      `reenroll-${randomUUID()}`,
+      new Date(Date.now() + 60_000).toISOString(),
+      "Retry because the response was lost",
+      { actorUserId: actor.id },
+    );
+    expect(second).toMatchObject({ created: true });
+    if (!first.created || !second.created)
+      throw new Error("re-enrollment grant creation failed");
+    expect(
+      await prisma.pairingCode.findUniqueOrThrow({
+        where: { id: first.pairing.id },
+      }),
+    ).toMatchObject({ status: "REVOKED" });
+    await expect(
+      store.revokeDeviceCredentialAndAudit(
+        paired.organization.id,
+        paired.screen.id,
+        { actorUserId: actor.id },
+      ),
+    ).resolves.toMatchObject({ revoked: true });
+    expect(
+      await prisma.pairingCode.findUniqueOrThrow({
+        where: { id: second.pairing.id },
+      }),
+    ).toMatchObject({ status: "REVOKED" });
+    expect(
+      await prisma.screen.findUniqueOrThrow({
+        where: { id: paired.screen.id },
+      }),
+    ).toMatchObject({
+      credentialGeneration: 3,
+      credentialRevokedAt: expect.any(Date),
+    });
+    expect(
+      await prisma.auditEvent.count({
+        where: { action: "device.credential.revocation_reasserted" },
+      }),
+    ).toBe(1);
+  });
+
+  it("activates a proved replacement after its short proof attempt has expired", async () => {
+    const staged = await stageReenrollmentCandidate(
+      "proof-reenrollment-delayed",
+      19,
+      20,
+    );
+    await prisma.$executeRaw`
+      UPDATE "PairingAttempt"
+      SET "createdAt" = CURRENT_TIMESTAMP - INTERVAL '30 seconds',
+          "provedAt" = CURRENT_TIMESTAMP - INTERVAL '2 seconds',
+          "expiresAt" = CURRENT_TIMESTAMP - INTERVAL '1 second'
+      WHERE "id" = ${staged.candidate.candidateId}`;
+
+    const activated = await store.activateReenrollmentCandidateAndAudit(
+      staged.paired.organization.id,
+      staged.paired.screen.id,
+      staged.grant.id,
+      staged.candidate.candidateId,
+      { actorUserId: staged.actor.id },
+    );
+
+    expect(activated).toMatchObject({
+      activated: true,
+      screen: { id: staged.paired.screen.id },
+      credential: { keyId: staged.credential.keyId },
+    });
+    expect(await prisma.screen.count()).toBe(1);
+    expect(
+      await prisma.deviceCredential.count({
+        where: {
+          liveScreenId: staged.paired.screen.id,
+          revokedAt: null,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it("serializes cancellation against replacement activation", async () => {
+    const staged = await stageReenrollmentCandidate(
+      "proof-reenrollment-cancel-race",
+      21,
+      22,
+    );
+    const [activation, cancellation] = await Promise.all([
+      store.activateReenrollmentCandidateAndAudit(
+        staged.paired.organization.id,
+        staged.paired.screen.id,
+        staged.grant.id,
+        staged.candidate.candidateId,
+        { actorUserId: staged.actor.id },
+      ),
+      store.cancelScreenReenrollmentAndAudit(
+        staged.paired.organization.id,
+        staged.paired.screen.id,
+        staged.grant.id,
+        { actorUserId: staged.actor.id },
+      ),
+    ]);
+    expect(Number(activation.activated) + Number(cancellation.cancelled)).toBe(
+      1,
+    );
+    const grant = await prisma.pairingCode.findUniqueOrThrow({
+      where: { id: staged.grant.id },
+    });
+    const liveReplacementCount = await prisma.deviceCredential.count({
+      where: {
+        keyId: staged.credential.keyId,
+        liveScreenId: staged.paired.screen.id,
+        revokedAt: null,
+      },
+    });
+    expect(grant.status).toBe(activation.activated ? "CLAIMED" : "REVOKED");
+    expect(liveReplacementCount).toBe(activation.activated ? 1 : 0);
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          action: {
+            in: [
+              "device.reenrollment.activated",
+              "device.reenrollment.cancelled",
+            ],
+          },
+        },
+      }),
+    ).toBe(1);
+  });
+
   it("can delete a tenant containing consumed proof history", async () => {
     const paired = await pairProofDevice("proof-tenant-delete", 16);
 
@@ -778,6 +1010,26 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).resolves.toMatchObject({ id: paired.organization.id });
     expect(await prisma.pairingAttempt.count()).toBe(0);
     expect(await prisma.deviceCredential.count()).toBe(0);
+    expect(
+      await prisma.deviceKeyTombstone.findUnique({
+        where: { keyId: paired.credential.keyId },
+      }),
+    ).not.toBeNull();
+    const replacementOrg = await createOrganization("proof-key-reuse-denied");
+    const replacementPairing = await store.createPairing(
+      replacementOrg.id,
+      `proof-code-${randomUUID()}`,
+      new Date(Date.now() + 60_000).toISOString(),
+    );
+    await expect(
+      store.issuePairingChallenge({
+        codeHash: replacementPairing.codeHash,
+        credential: proofEnrollment(16),
+        challengeHashSha256: proofHash(),
+        transcriptDigestSha256: proofHash(),
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      }),
+    ).resolves.toBeNull();
   });
 
   it("surfaces database uniqueness conflicts and scopes playlist names per tenant", async () => {

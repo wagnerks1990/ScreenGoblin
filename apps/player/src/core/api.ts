@@ -1,4 +1,9 @@
-import type { Credentials, Heartbeat, PlayerManifest } from "./types";
+import type {
+  Credentials,
+  Heartbeat,
+  PendingProofPairing,
+  PlayerManifest,
+} from "./types";
 import {
   canonicalJson,
   canonicalPairingTranscript,
@@ -6,6 +11,7 @@ import {
   type DeviceChallengeResponse,
   type DeviceMetadata,
   type PairingChallengeRequest,
+  type PairingPendingApprovalResponse,
   type PairingResponse,
 } from "@screengoblin/contracts";
 import { sha256Hex, utf8, verifyManifestSignature } from "./crypto";
@@ -40,11 +46,28 @@ export interface PlayerRequestOptions {
   signal?: AbortSignal;
 }
 
+export interface PlayerPairingOptions extends PlayerRequestOptions {
+  /** Called after a replacement key is proved and awaits operator activation. */
+  onPending?: (
+    pending: PairingPendingApprovalResponse,
+    recovery: PendingProofPairing,
+  ) => void | Promise<void>;
+  /** Must durably persist recovery bytes before the first final POST. */
+  onProofPrepared?: (recovery: PendingProofPairing) => void | Promise<void>;
+}
+
+interface PlayerApiResult<T> {
+  status: number;
+  payload: T;
+}
+
 export interface PlayerApiOptions {
   requestTimeoutMs?: number;
   manifestMaxAttempts?: number;
   retryBaseDelayMs?: number;
   retryMaxDelayMs?: number;
+  pairingApprovalPollIntervalMs?: number;
+  pairingApprovalMaxWaitMs?: number;
   random?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -54,6 +77,10 @@ const defaults = {
   manifestMaxAttempts: 3,
   retryBaseDelayMs: 500,
   retryMaxDelayMs: 5_000,
+  // Device pairing is limited to five requests per minute. Four polls per
+  // minute leave capacity for the initial proof and transient retries.
+  pairingApprovalPollIntervalMs: 15_000,
+  pairingApprovalMaxWaitMs: 10 * 60_000,
 } as const;
 
 const retryableStatuses = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -181,7 +208,19 @@ function validatePairingResponse(
     !Number.isSafeInteger(response.heartbeatIntervalSeconds) ||
     (response.heartbeatIntervalSeconds as number) < 5 ||
     (response.heartbeatIntervalSeconds as number) > 86_400 ||
-    Object.hasOwn(response, "deviceToken")
+    Object.hasOwn(response, "deviceToken") ||
+    Object.keys(response).some(
+      (key) =>
+        ![
+          "authMode",
+          "screenId",
+          "credentialId",
+          "keyId",
+          "apiBaseUrl",
+          "heartbeatIntervalSeconds",
+          "manifestVerificationKey",
+        ].includes(key),
+    )
   )
     throw new PlayerApiFailure(
       "Invalid proof pairing response",
@@ -202,6 +241,154 @@ function validatePairingResponse(
     );
   }
   return response as unknown as PairingResponse;
+}
+
+function validatePendingPairingResponse(
+  value: unknown,
+  expectedKeyId: string,
+): PairingPendingApprovalResponse {
+  if (!value || typeof value !== "object")
+    throw new PlayerApiFailure(
+      "Invalid pending pairing response",
+      "protocol",
+      false,
+    );
+  const response = value as Record<string, unknown>;
+  const expiresAt =
+    typeof response.expiresAt === "string"
+      ? Date.parse(response.expiresAt)
+      : NaN;
+  if (
+    response.status !== "pending-approval" ||
+    !validOpaqueId(response.grantId) ||
+    !validOpaqueId(response.candidateId) ||
+    response.keyId !== expectedKeyId ||
+    response.fingerprint !== expectedKeyId ||
+    !Number.isFinite(expiresAt) ||
+    new Date(expiresAt).toISOString() !== response.expiresAt ||
+    expiresAt <= Date.now() ||
+    Object.keys(response).some(
+      (key) =>
+        ![
+          "status",
+          "grantId",
+          "candidateId",
+          "keyId",
+          "fingerprint",
+          "expiresAt",
+          "approval",
+        ].includes(key),
+    )
+  )
+    throw new PlayerApiFailure(
+      "Invalid pending pairing response",
+      "protocol",
+      false,
+    );
+  decodeCanonicalBase64Url(response.keyId, "Pending pairing key ID", 32);
+  return response as unknown as PairingPendingApprovalResponse;
+}
+
+function validatePendingProofPairing(
+  value: PendingProofPairing,
+  expectedApiBaseUrl: string,
+): Record<string, unknown> {
+  const record = value as unknown as Record<string, unknown>;
+  const expiresAt =
+    typeof record.expiresAt === "string" ? Date.parse(record.expiresAt) : NaN;
+  if (
+    record.version !== 1 ||
+    !["prepared", "pending"].includes(record.stage as string) ||
+    !secureApiBaseUrl(record.apiBaseUrl) ||
+    trim(record.apiBaseUrl as string) !== trim(expectedApiBaseUrl) ||
+    typeof record.finalBody !== "string" ||
+    record.finalBody.length < 1 ||
+    record.finalBody.length > 16_384 ||
+    typeof record.expectedKeyId !== "string" ||
+    record.installationId !== record.expectedKeyId ||
+    !Number.isFinite(expiresAt) ||
+    new Date(expiresAt).toISOString() !== record.expiresAt ||
+    expiresAt <= Date.now() ||
+    expiresAt > Date.now() + defaults.pairingApprovalMaxWaitMs ||
+    Object.keys(record).some(
+      (key) =>
+        ![
+          "version",
+          "stage",
+          "apiBaseUrl",
+          "finalBody",
+          "expectedKeyId",
+          "installationId",
+          "expiresAt",
+          "approval",
+        ].includes(key),
+    )
+  )
+    throw new PlayerApiFailure(
+      "Invalid pending pairing recovery record",
+      "protocol",
+      false,
+    );
+  decodeCanonicalBase64Url(record.expectedKeyId, "Pending pairing key ID", 32);
+  const storedApproval = record.approval as
+    PairingPendingApprovalResponse | undefined;
+  if (
+    (record.stage === "pending" && !storedApproval) ||
+    (record.stage === "prepared" && storedApproval !== undefined) ||
+    (storedApproval &&
+      validatePendingPairingResponse(
+        storedApproval,
+        record.expectedKeyId as string,
+      ).expiresAt !== storedApproval.expiresAt)
+  )
+    throw new PlayerApiFailure(
+      "Invalid pending pairing recovery record",
+      "protocol",
+      false,
+    );
+  try {
+    const body = JSON.parse(record.finalBody as string) as Record<
+      string,
+      unknown
+    >;
+    if (canonicalJson(body) !== record.finalBody)
+      throw new Error("non-canonical body");
+    const device = body.device as Record<string, unknown>;
+    const identity = body.identity as Record<string, unknown>;
+    const proof = body.pairingProof as Record<string, unknown>;
+    if (
+      !device ||
+      !identity ||
+      !proof ||
+      typeof body.code !== "string" ||
+      !/^\d{6}$/.test(body.code) ||
+      device.installationId !== record.installationId ||
+      identity.keyId !== record.expectedKeyId ||
+      proof.keyId !== record.expectedKeyId ||
+      proof.signatureFormat !== "ES256-DER"
+    )
+      throw new Error("body binding mismatch");
+    decodeCanonicalBase64Url(
+      identity.publicKeySpki,
+      "Pairing public key",
+      80,
+      128,
+    );
+    decodeCanonicalBase64Url(proof.challengeId, "Pairing challenge ID", 32);
+    decodeCanonicalBase64Url(proof.challenge, "Pairing challenge", 16, 512);
+    decodeCanonicalBase64Url(proof.signature, "Pairing signature", 64, 80);
+    return body;
+  } catch (cause) {
+    if (cause instanceof PlayerApiFailure) throw cause;
+    throw new PlayerApiFailure(
+      "Invalid pending pairing recovery record",
+      "protocol",
+      false,
+      undefined,
+      undefined,
+      { cause },
+    );
+  }
 }
 
 const parseRetryAfter = (value: string | null, now = Date.now()) => {
@@ -226,6 +413,11 @@ export class PlayerApi {
         options.manifestMaxAttempts ?? defaults.manifestMaxAttempts,
       retryBaseDelayMs: options.retryBaseDelayMs ?? defaults.retryBaseDelayMs,
       retryMaxDelayMs: options.retryMaxDelayMs ?? defaults.retryMaxDelayMs,
+      pairingApprovalPollIntervalMs:
+        options.pairingApprovalPollIntervalMs ??
+        defaults.pairingApprovalPollIntervalMs,
+      pairingApprovalMaxWaitMs:
+        options.pairingApprovalMaxWaitMs ?? defaults.pairingApprovalMaxWaitMs,
       random: options.random ?? Math.random,
       sleep:
         options.sleep ??
@@ -236,7 +428,9 @@ export class PlayerApi {
       this.options.requestTimeoutMs <= 0 ||
       this.options.manifestMaxAttempts < 1 ||
       this.options.retryBaseDelayMs < 0 ||
-      this.options.retryMaxDelayMs < 0
+      this.options.retryMaxDelayMs < 0 ||
+      this.options.pairingApprovalPollIntervalMs < 1 ||
+      this.options.pairingApprovalMaxWaitMs < 1
     )
       throw new RangeError("Player API timing options are out of range");
     if (
@@ -254,7 +448,7 @@ export class PlayerApi {
     path: string,
     init: RequestInit,
     options: PlayerRequestOptions,
-  ): Promise<T> {
+  ): Promise<PlayerApiResult<T>> {
     if (options.signal?.aborted)
       throw new PlayerApiFailure(
         "Player API request was cancelled",
@@ -315,9 +509,13 @@ export class PlayerApi {
           retryAfterMs,
         );
       }
-      if (response.status === 204) return undefined as T;
+      if (response.status === 204)
+        return { status: response.status, payload: undefined as T };
       try {
-        return (await response.json()) as T;
+        return {
+          status: response.status,
+          payload: (await response.json()) as T,
+        };
       } catch (cause) {
         throw new PlayerApiFailure(
           "Player API returned an invalid JSON response",
@@ -372,6 +570,37 @@ export class PlayerApi {
     return Math.floor(ceiling * (0.5 + this.options.random() * 0.5));
   }
 
+  private async pause(
+    milliseconds: number,
+    options: PlayerRequestOptions,
+  ): Promise<void> {
+    if (options.signal?.aborted)
+      throw new PlayerApiFailure(
+        "Player API request was cancelled",
+        "aborted",
+        false,
+      );
+    let abort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        this.options.sleep(milliseconds),
+        new Promise<never>((_, reject) => {
+          abort = () =>
+            reject(
+              new PlayerApiFailure(
+                "Player API request was cancelled",
+                "aborted",
+                false,
+              ),
+            );
+          options.signal?.addEventListener("abort", abort, { once: true });
+        }),
+      ]);
+    } finally {
+      if (abort) options.signal?.removeEventListener("abort", abort);
+    }
+  }
+
   private async request<T>(
     path: string,
     init: RequestInit = {},
@@ -380,7 +609,7 @@ export class PlayerApi {
   ): Promise<T> {
     for (let attempt = 1; ; attempt += 1) {
       try {
-        return await this.attempt<T>(path, init, options);
+        return (await this.attempt<T>(path, init, options)).payload;
       } catch (cause) {
         if (
           !(cause instanceof PlayerApiFailure) ||
@@ -389,7 +618,7 @@ export class PlayerApi {
           options.signal?.aborted
         )
           throw cause;
-        await this.options.sleep(this.retryDelay(cause, attempt));
+        await this.pause(this.retryDelay(cause, attempt), options);
       }
     }
   }
@@ -410,7 +639,7 @@ export class PlayerApi {
           options.signal?.aborted
         )
           throw cause;
-        await this.options.sleep(this.retryDelay(cause, attempt));
+        await this.pause(this.retryDelay(cause, attempt), options);
       }
     }
   }
@@ -482,7 +711,7 @@ export class PlayerApi {
   async pair(
     code: string,
     installationId: string,
-    options: PlayerRequestOptions = {},
+    options: PlayerPairingOptions = {},
   ): Promise<Credentials> {
     const device: DeviceMetadata = {
       installationId,
@@ -550,21 +779,127 @@ export class PlayerApi {
         ...signature,
       },
     });
-    // The API makes an identical successfully verified final claim idempotent.
-    // Retries reuse these exact proof bytes and never acquire a new challenge.
-    const result = validatePairingResponse(
-      await this.request<unknown>(
-        "/api/v1/device/pair",
-        {
-          method: "POST",
-          body,
-        },
-        options,
-        this.options.manifestMaxAttempts,
-      ),
-      identity.keyId,
-    );
-    return { ...result, installationId };
+    const recovery: PendingProofPairing = {
+      version: 1,
+      stage: "prepared",
+      apiBaseUrl: trim(this.apiBaseUrl),
+      finalBody: body,
+      expectedKeyId: identity.keyId,
+      installationId,
+      expiresAt: new Date(
+        Date.now() + this.options.pairingApprovalMaxWaitMs,
+      ).toISOString(),
+    };
+    if (!options.onProofPrepared)
+      throw new PlayerApiFailure(
+        "Durable pairing recovery storage is required",
+        "protocol",
+        false,
+      );
+    await options.onProofPrepared?.(recovery);
+    return this.resumePairing(recovery, options);
+  }
+
+  /** Resumes only the exact durably stored final proof; no new code or signature. */
+  async resumePairing(
+    recovery: PendingProofPairing,
+    options: PlayerPairingOptions = {},
+  ): Promise<Credentials> {
+    const body = validatePendingProofPairing(recovery, this.apiBaseUrl);
+    const identity = await getDeviceIdentity();
+    if (
+      !identity ||
+      identity.keyId !== recovery.expectedKeyId ||
+      identity.publicKeySpki !==
+        (body.identity as Record<string, unknown>).publicKeySpki
+    )
+      throw new PlayerApiFailure(
+        "Pending pairing does not match the active Android identity",
+        "protocol",
+        false,
+      );
+    const pollingDeadline =
+      recovery.stage === "prepared"
+        ? Date.now() + this.options.pairingApprovalMaxWaitMs
+        : Math.min(
+            Date.parse(recovery.expiresAt),
+            Date.now() + this.options.pairingApprovalMaxWaitMs,
+          );
+    for (;;) {
+      let result: PlayerApiResult<unknown>;
+      try {
+        result = await this.attempt<unknown>(
+          "/api/v1/device/pair",
+          { method: "POST", body: recovery.finalBody },
+          options,
+        );
+      } catch (cause) {
+        if (!(cause instanceof PlayerApiFailure) || !cause.retryable)
+          throw cause;
+        const remaining = pollingDeadline - Date.now();
+        if (remaining <= 0)
+          throw new PlayerApiFailure(
+            "Replacement approval expired before activation",
+            "timeout",
+            false,
+          );
+        const requestedDelay =
+          cause.status === 429 && cause.retryAfterMs !== undefined
+            ? cause.retryAfterMs
+            : this.options.pairingApprovalPollIntervalMs;
+        await this.pause(Math.min(requestedDelay, remaining), options);
+        continue;
+      }
+      const response = result.payload;
+      if (
+        response &&
+        typeof response === "object" &&
+        (response as Record<string, unknown>).status === "pending-approval"
+      ) {
+        if (result.status !== 202)
+          throw new PlayerApiFailure(
+            "Pending pairing response used an invalid HTTP status",
+            "protocol",
+            false,
+          );
+        const pending = validatePendingPairingResponse(
+          response,
+          recovery.expectedKeyId,
+        );
+        const boundedRecovery = {
+          ...recovery,
+          stage: "pending" as const,
+          approval: pending,
+          expiresAt: new Date(
+            Math.min(Date.parse(pending.expiresAt), pollingDeadline),
+          ).toISOString(),
+        };
+        await options.onPending?.(pending, boundedRecovery);
+        const remaining = Date.parse(boundedRecovery.expiresAt) - Date.now();
+        if (remaining <= 0)
+          throw new PlayerApiFailure(
+            "Replacement approval expired before activation",
+            "timeout",
+            false,
+          );
+        await this.pause(
+          Math.min(this.options.pairingApprovalPollIntervalMs, remaining),
+          options,
+        );
+        continue;
+      }
+      if (result.status !== 201)
+        throw new PlayerApiFailure(
+          "Activated pairing response used an invalid HTTP status",
+          "protocol",
+          false,
+        );
+      const credentials = validatePairingResponse(
+        response,
+        recovery.expectedKeyId,
+      );
+      return { ...credentials, installationId: recovery.installationId };
+    }
   }
 
   async manifest(options: PlayerRequestOptions = {}): Promise<PlayerManifest> {

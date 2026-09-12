@@ -12,6 +12,49 @@ export interface LiveSession {
   };
 }
 
+export interface DeviceReenrollmentGrant {
+  grantId: string;
+  screenId: string;
+  code: string;
+  expiresAt: string;
+  generation: number;
+}
+
+export interface DeviceReenrollmentCandidate {
+  id: string;
+  keyId: string;
+  fingerprint: string;
+  securityLevel: string;
+  device: {
+    model: string;
+    osVersion: string;
+    playerVersion: string;
+    installationId: string;
+    manufacturer?: string;
+    platform?: string;
+    appVersion?: string;
+  };
+  provedAt: string;
+}
+
+export interface DeviceReenrollmentStatus {
+  grantId: string;
+  screenId: string;
+  status: string;
+  expiresAt: string;
+  candidates: DeviceReenrollmentCandidate[];
+}
+
+export interface DeviceReenrollmentActivation {
+  grantId?: string;
+  screenId: string;
+  candidateId?: string;
+  credentialId?: string;
+  keyId?: string;
+  activatedAt?: string;
+  status?: string;
+}
+
 const baseUrl =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "/api/v1";
 
@@ -65,6 +108,7 @@ async function mutate<T>(path: string, init: RequestInit): Promise<T> {
       payload?.error?.message ?? `API returned ${response.status}`,
     );
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -100,6 +144,30 @@ export const api = {
     mutate<{ code: string; expiresAt: string }>("/pairing-codes", {
       method: "POST",
     }),
+  createDeviceReenrollment: (screenId: string, reason: string) =>
+    mutate<DeviceReenrollmentGrant>(
+      `/screens/${encodeURIComponent(screenId)}/device-reenrollment`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  deviceReenrollmentStatus: (screenId: string, grantId: string) =>
+    mutate<DeviceReenrollmentStatus>(
+      `/screens/${encodeURIComponent(screenId)}/device-reenrollment/${encodeURIComponent(grantId)}`,
+      { method: "GET" },
+    ),
+  activateDeviceReenrollmentCandidate: (
+    screenId: string,
+    grantId: string,
+    candidateId: string,
+  ) =>
+    mutate<DeviceReenrollmentActivation>(
+      `/screens/${encodeURIComponent(screenId)}/device-reenrollment/${encodeURIComponent(grantId)}/candidates/${encodeURIComponent(candidateId)}/activate`,
+      { method: "POST" },
+    ),
+  cancelDeviceReenrollment: (screenId: string, grantId: string) =>
+    mutate<void>(
+      `/screens/${encodeURIComponent(screenId)}/device-reenrollment/${encodeURIComponent(grantId)}`,
+      { method: "DELETE" },
+    ),
   fleet: async (): Promise<ApiResult<FleetSummary>> => {
     const result = await request<{ data: ScreenSummary[] }>("/screens", {
       data: screens,

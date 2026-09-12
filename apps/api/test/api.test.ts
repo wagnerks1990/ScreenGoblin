@@ -662,7 +662,7 @@ describe("device lifecycle", () => {
   });
 
   it("limits repeated guesses of the same pairing code", async () => {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
       const response = await app.inject({
         method: "POST",
         url: "/api/v1/device/pair",

@@ -30,7 +30,14 @@ Shared request and response shapes are defined in `packages/contracts`. The Open
 
 Every user resource query must include the authenticated organization boundary. A caller-provided organization ID is never sufficient authorization. Devices are restricted to their own screen and current organization. Object keys must be server-generated and tenant-prefixed. Emergency activation requires a separately audited permission; district-wide two-person approval is a production requirement.
 
-Device-credential revocation requires `screen.credential.revoke`. The compatibility role adapter grants it only to `OWNER` and `ADMIN`. The route and transactional store both revalidate the actor's current organization membership and capability. Revocation marks the credential and screen, invalidates its outstanding challenges, and appends the audit event in the same transaction. Repeating the operation is idempotent and does not append a second audit event.
+Device-credential revocation and targeted re-enrollment require their exact
+screen credential capabilities. The compatibility role adapter grants them only
+to `OWNER` and `ADMIN`. The route and transactional store both revalidate the
+actor's current organization membership and capability. Revocation marks the
+credential and screen, invalidates its outstanding challenges and pending
+re-enrollment grants, advances the credential generation, and appends the audit
+event in the same transaction. Repeating an already-completed revocation is
+idempotent and does not append a second audit event.
 
 Ordinary release publication and withdrawal use a closed, deny-by-default capability adapter. The API checks the capability at the route boundary, and the transactional store re-evaluates the actor's current organization membership and capability before writing release state or audit history. For compatibility, `OWNER`, `ADMIN`, and `PUBLISHER` currently receive `release.publish` and `release.withdraw`; `VIEWER` receives neither. This adapter does not yet provide resource scopes, custom grants, or reviewer/publisher separation.
 
@@ -78,7 +85,61 @@ Syntactically valid challenge requests for unknown, detached, expired, or revoke
 
 ### Revocation
 
-`POST /screens/:id/device-credential/revoke` returns `204` for a successful or already-completed revocation, `404` for an unknown screen/credential in the caller's organization, and `403` when the transaction-time capability check fails. Revocation prevents subsequent online challenge use. It cannot erase media from an offline player or recall already cached playback; local erasure, targeted re-enrollment, rotation, and offline-recall behavior remain pre-production gates.
+`POST /screens/:id/device-credential/revoke` returns `204` for a successful or already-completed revocation, `404` for an unknown screen/credential in the caller's organization, and `403` when the transaction-time capability check fails. Revocation prevents subsequent online challenge use and cancels stale replacement authority. It cannot erase media from an offline player or recall already cached playback; verified local erasure, automatic overlapping rotation, and offline-recall behavior remain pre-production gates.
+
+### Targeted re-enrollment
+
+Targeted re-enrollment is an operator-mediated, zero-overlap replacement for one
+existing screen. Management responses use `Cache-Control: no-store`. The
+management endpoints are:
+
+- `POST /screens/:id/device-reenrollment` with required `{ "reason": "..." }` →
+  `{ grantId, screenId, code, expiresAt, generation }`. The authorized request
+  immediately revokes/detaches the old credential, consumes its challenges,
+  invalidates an older pending grant, advances the screen generation, and writes
+  the reason-bearing request audit in one transaction. The screen is offline
+  from this request until a candidate is separately activated.
+- `GET /screens/:id/device-reenrollment/:grantId` → the target-bound grant and
+  proved candidate fingerprints. It never returns signatures, challenges,
+  private material, or the six-digit code.
+- `POST /screens/:id/device-reenrollment/:grantId/candidates/:candidateId/activate`
+  activates exactly that proved fingerprint after an `OWNER` or `ADMIN`
+  confirms it.
+- `DELETE /screens/:id/device-reenrollment/:grantId` cancels the grant so no
+  candidate can later activate through it.
+
+The Player explicitly rotates to a fresh P-256 identity, then uses the ordinary
+pair challenge endpoints. For a valid targeted grant, public finalization does
+not create or attach a credential. Instead, `POST /device/pair` returns HTTP
+`202` with:
+
+```json
+{
+  "status": "pending-approval",
+  "grantId": "...",
+  "candidateId": "...",
+  "keyId": "...",
+  "fingerprint": "...",
+  "expiresAt": "..."
+}
+```
+
+An exact retry returns the same `202` while pending. After activation, that same
+proved request returns the ordinary `201` proof credential response. The public
+device never selects or submits a target screen ID; the server derives it from
+the authorized grant.
+
+Activation rechecks the actor, tenant, target screen, unexpired grant, candidate
+proof, and credential-generation compare-and-swap. It then creates and attaches
+the never-before-enrolled key, updates only device-derived metadata, clears the
+screen revocation marker, consumes the grant, cancels competing candidates, and
+appends the activation audit atomically. The existing `Screen` and all of its
+assignments remain unchanged. A reused key, stale generation, cancelled or
+superseded grant, deleted target, or authorization change fails closed.
+
+This is manual recovery with deliberate downtime, not automatic credential
+rotation: there is no old/new overlap, grace window, autonomous renewal,
+attestation continuity, or rollback.
 
 ## Health endpoints
 

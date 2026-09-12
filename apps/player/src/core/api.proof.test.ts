@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const native = vi.hoisted(() => ({
   identity: {
     algorithm: "ES256" as const,
-    publicKeySpki: "p256-spki",
-    keyId: "device-key-1",
+    publicKeySpki:
+      "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+    keyId: "YU6CUGOQpCCNTKa2afJPBLaB1nxkbnAQwG8M-nZKs-A",
     securityLevel: "strongbox" as const,
   },
   getDeviceIdentity: vi.fn(),
@@ -88,7 +89,8 @@ beforeEach(() => {
     async (_challenge: string, expectedKeyId: string) => ({
       keyId: expectedKeyId,
       signatureFormat: "ES256-DER" as const,
-      signature: "der_signature",
+      signature:
+        "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
     }),
   );
 });
@@ -114,7 +116,7 @@ describe("PlayerApi proof-v1", () => {
       .fn()
       .mockResolvedValueOnce(Response.json(issued))
       .mockResolvedValueOnce(new Response(null, { status: 503 }))
-      .mockResolvedValueOnce(Response.json(response));
+      .mockResolvedValueOnce(Response.json(response, { status: 201 }));
     const sleep = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -122,7 +124,9 @@ describe("PlayerApi proof-v1", () => {
       "https://signage.example.test",
       undefined,
       { sleep },
-    ).pair("123456", native.identity.keyId);
+    ).pair("123456", native.identity.keyId, {
+      onProofPrepared: vi.fn(),
+    });
 
     expect(result).toEqual({
       ...response,
@@ -155,12 +159,317 @@ describe("PlayerApi proof-v1", () => {
       challengeId: issued.id,
       challenge: issued.challenge,
       keyId: native.identity.keyId,
-      signature: "der_signature",
+      signature:
+        "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
       signatureFormat: "ES256-DER",
     });
     expect(native.signDeviceChallenge).toHaveBeenCalledOnce();
     for (const call of fetchMock.mock.calls)
       expect((call[1] as RequestInit).redirect).toBe("error");
+  });
+
+  it("polls the exact proved replacement request until operator activation", async () => {
+    const replacementKeyId = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+    const replacementIdentity = {
+      ...native.identity,
+      keyId: replacementKeyId,
+    };
+    native.getDeviceIdentity.mockResolvedValue(replacementIdentity);
+    const issued = challenge("pair");
+    const pending = {
+      status: "pending-approval",
+      grantId: "grant123",
+      candidateId: "candidate123",
+      keyId: replacementKeyId,
+      fingerprint: replacementKeyId,
+      expiresAt: "2099-09-12T00:05:00.000Z",
+    };
+    const response = {
+      authMode: "proof-v1",
+      screenId: pairedScreenId,
+      credentialId: pairedCredentialId,
+      keyId: replacementKeyId,
+      apiBaseUrl: proofCredentials.apiBaseUrl,
+      heartbeatIntervalSeconds: 60,
+      manifestVerificationKey: verificationKey,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(issued))
+      .mockResolvedValueOnce(Response.json(pending, { status: 202 }))
+      .mockResolvedValueOnce(Response.json(response, { status: 201 }));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const onPending = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new PlayerApi("https://signage.example.test", undefined, {
+        sleep,
+      }).pair("123456", replacementKeyId, {
+        onProofPrepared: vi.fn(),
+        onPending,
+      }),
+    ).resolves.toMatchObject({ keyId: replacementKeyId });
+
+    expect(onPending).toHaveBeenCalledWith(
+      pending,
+      expect.objectContaining({
+        stage: "pending",
+        finalBody: expect.any(String),
+        approval: pending,
+      }),
+    );
+    expect(sleep).toHaveBeenCalledWith(15_000);
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).body).toBe(
+      (fetchMock.mock.calls[2]?.[1] as RequestInit).body,
+    );
+    expect(native.signDeviceChallenge).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a pending approval wait without sending another proof", async () => {
+    const replacementKeyId = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+    native.getDeviceIdentity.mockResolvedValue({
+      ...native.identity,
+      keyId: replacementKeyId,
+    });
+    const controller = new AbortController();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(challenge("pair")))
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            status: "pending-approval",
+            grantId: "grant123",
+            candidateId: "candidate123",
+            keyId: replacementKeyId,
+            fingerprint: replacementKeyId,
+            expiresAt: "2099-09-12T00:05:00.000Z",
+          },
+          { status: 202 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pairing = new PlayerApi("https://signage.example.test", undefined, {
+      sleep: () => new Promise(() => undefined),
+    }).pair("123456", replacementKeyId, {
+      signal: controller.signal,
+      onProofPrepared: vi.fn(),
+      onPending: () => controller.abort(),
+    });
+
+    await expect(pairing).rejects.toMatchObject({
+      kind: "aborted",
+      retryable: false,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes a durably persisted pending approval after restart", async () => {
+    const replacementKeyId = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+    native.getDeviceIdentity.mockResolvedValue({
+      ...native.identity,
+      keyId: replacementKeyId,
+    });
+    const controller = new AbortController();
+    let savedRecovery: Parameters<PlayerApi["resumePairing"]>[0] | undefined;
+    const pending = {
+      status: "pending-approval" as const,
+      grantId: "grant123",
+      candidateId: "candidate123",
+      keyId: replacementKeyId,
+      fingerprint: replacementKeyId,
+      expiresAt: "2099-09-12T00:05:00.000Z",
+    };
+    const initialFetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(challenge("pair")))
+      .mockResolvedValueOnce(Response.json(pending, { status: 202 }));
+    vi.stubGlobal("fetch", initialFetch);
+
+    await expect(
+      new PlayerApi("https://signage.example.test").pair(
+        "123456",
+        replacementKeyId,
+        {
+          signal: controller.signal,
+          onProofPrepared: vi.fn(),
+          onPending: (_approval, recovery) => {
+            savedRecovery = recovery;
+            controller.abort();
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ kind: "aborted" });
+    expect(savedRecovery).toEqual(
+      expect.objectContaining({ stage: "pending", approval: pending }),
+    );
+
+    const activated = {
+      authMode: "proof-v1",
+      screenId: pairedScreenId,
+      credentialId: pairedCredentialId,
+      keyId: replacementKeyId,
+      apiBaseUrl: proofCredentials.apiBaseUrl,
+      heartbeatIntervalSeconds: 60,
+      manifestVerificationKey: verificationKey,
+    };
+    const resumedFetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(activated, { status: 201 }));
+    vi.stubGlobal("fetch", resumedFetch);
+
+    await expect(
+      new PlayerApi("https://signage.example.test").resumePairing(
+        savedRecovery!,
+      ),
+    ).resolves.toMatchObject(activated);
+    expect((resumedFetch.mock.calls[0]?.[1] as RequestInit).body).toBe(
+      savedRecovery!.finalBody,
+    );
+    expect(native.signDeviceChallenge).toHaveBeenCalledOnce();
+  });
+
+  it("resumes the durable exact proof after an activation response is lost", async () => {
+    const controller = new AbortController();
+    let savedRecovery: Parameters<PlayerApi["resumePairing"]>[0] | undefined;
+    const firstFetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(challenge("pair")))
+      // The server may have committed activation even though the response was lost.
+      .mockRejectedValueOnce(new TypeError("connection closed after commit"));
+    vi.stubGlobal("fetch", firstFetch);
+
+    await expect(
+      new PlayerApi("https://signage.example.test", undefined, {
+        sleep: async () => controller.abort(),
+      }).pair("123456", native.identity.keyId, {
+        signal: controller.signal,
+        onProofPrepared: (recovery) => {
+          expect(firstFetch).toHaveBeenCalledTimes(1);
+          savedRecovery = recovery;
+        },
+      }),
+    ).rejects.toMatchObject({ kind: "aborted" });
+
+    expect(savedRecovery).toBeDefined();
+    expect(Date.parse(savedRecovery!.expiresAt) - Date.now()).toBeGreaterThan(
+      9 * 60_000,
+    );
+    const activated = {
+      authMode: "proof-v1",
+      screenId: pairedScreenId,
+      credentialId: pairedCredentialId,
+      keyId: native.identity.keyId,
+      apiBaseUrl: proofCredentials.apiBaseUrl,
+      heartbeatIntervalSeconds: 60,
+      manifestVerificationKey: verificationKey,
+    };
+    const resumedFetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(activated, { status: 201 }));
+    vi.stubGlobal("fetch", resumedFetch);
+
+    await expect(
+      new PlayerApi("https://signage.example.test").resumePairing(
+        savedRecovery!,
+      ),
+    ).resolves.toMatchObject(activated);
+    expect((resumedFetch.mock.calls[0]?.[1] as RequestInit).body).toBe(
+      savedRecovery!.finalBody,
+    );
+    expect((firstFetch.mock.calls[1]?.[1] as RequestInit).body).toBe(
+      savedRecovery!.finalBody,
+    );
+    expect(native.signDeviceChallenge).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["pending payload", 200, true],
+    ["activated payload", 200, false],
+  ])(
+    "rejects %s with the wrong HTTP status",
+    async (_name, status, pendingPayload) => {
+      const prepared = vi.fn();
+      const payload = pendingPayload
+        ? {
+            status: "pending-approval",
+            grantId: "grant123",
+            candidateId: "candidate123",
+            keyId: native.identity.keyId,
+            fingerprint: native.identity.keyId,
+            expiresAt: "2099-09-12T00:05:00.000Z",
+          }
+        : {
+            authMode: "proof-v1",
+            screenId: pairedScreenId,
+            credentialId: pairedCredentialId,
+            keyId: native.identity.keyId,
+            apiBaseUrl: proofCredentials.apiBaseUrl,
+            heartbeatIntervalSeconds: 60,
+            manifestVerificationKey: verificationKey,
+          };
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValueOnce(Response.json(challenge("pair")))
+          .mockResolvedValueOnce(Response.json(payload, { status })),
+      );
+
+      await expect(
+        new PlayerApi("https://signage.example.test").pair(
+          "123456",
+          native.identity.keyId,
+          { onProofPrepared: prepared },
+        ),
+      ).rejects.toMatchObject({ kind: "protocol", retryable: false });
+    },
+  );
+
+  it.each([
+    [
+      "different fingerprint",
+      { fingerprint: "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" },
+    ],
+    ["malformed candidate", { candidateId: "candidate.with.punctuation" }],
+    ["expired approval", { expiresAt: "2020-01-01T00:00:00.000Z" }],
+    ["unexpected secret", { deviceToken: "must-not-be-accepted" }],
+  ])("rejects a pending response with %s", async (_name, override) => {
+    const replacementKeyId = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+    native.getDeviceIdentity.mockResolvedValueOnce({
+      ...native.identity,
+      keyId: replacementKeyId,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(Response.json(challenge("pair")))
+        .mockResolvedValueOnce(
+          Response.json(
+            {
+              status: "pending-approval",
+              grantId: "grant123",
+              candidateId: "candidate123",
+              keyId: replacementKeyId,
+              fingerprint: replacementKeyId,
+              expiresAt: "2099-09-12T00:05:00.000Z",
+              ...override,
+            },
+            { status: 202 },
+          ),
+        ),
+    );
+
+    await expect(
+      new PlayerApi("https://signage.example.test").pair(
+        "123456",
+        replacementKeyId,
+        { onProofPrepared: vi.fn() },
+      ),
+    ).rejects.toMatchObject({ kind: "protocol", retryable: false });
   });
 
   it("rejects an installation ID that differs from the native key before network access", async () => {
@@ -222,13 +531,14 @@ describe("PlayerApi proof-v1", () => {
       vi
         .fn()
         .mockResolvedValueOnce(Response.json(issued))
-        .mockResolvedValueOnce(Response.json(response)),
+        .mockResolvedValueOnce(Response.json(response, { status: 201 })),
     );
 
     await expect(
       new PlayerApi("https://signage.example.test").pair(
         "123456",
         native.identity.keyId,
+        { onProofPrepared: vi.fn() },
       ),
     ).rejects.toThrow("Invalid proof pairing response");
   });

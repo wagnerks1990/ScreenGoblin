@@ -32,6 +32,7 @@ export interface ScreenRecord {
   networkType?: string | undefined;
   lastSeenAt?: string | undefined;
   credentialRevokedAt?: string | undefined;
+  credentialGeneration?: number | undefined;
   createdAt: string;
   updatedAt: string;
 }
@@ -223,6 +224,13 @@ export interface PairingRecord {
   expiresAt: string;
   status: "PENDING" | "CLAIMED" | "EXPIRED" | "REVOKED";
   screenId?: string | undefined;
+  purpose?: "NEW_SCREEN" | "REENROLL" | undefined;
+  targetScreenId?: string | undefined;
+  targetScreenReferenceId?: string | undefined;
+  expectedGeneration?: number | undefined;
+  authorizedByUserId?: string | undefined;
+  priorCredentialId?: string | undefined;
+  requestReason?: string | undefined;
 }
 
 export type PairingCreateResult =
@@ -278,6 +286,13 @@ export interface PairingAttemptRecord {
   transcriptDigestSha256: string;
   expiresAt: string;
   consumedAt?: string | undefined;
+  provedAt?: string | undefined;
+  activatedAt?: string | undefined;
+  cancelledAt?: string | undefined;
+  installationId?: string | undefined;
+  model?: string | undefined;
+  osVersion?: string | undefined;
+  playerVersion?: string | undefined;
   boundCredentialId?: string | undefined;
   createdAt: string;
 }
@@ -292,7 +307,43 @@ export type PairingProofClaimResult =
       screen: ScreenRecord;
       credential: DeviceCredentialRecord;
     }
+  | {
+      paired: false;
+      reason: "PENDING_APPROVAL";
+      grantId: string;
+      candidateId: string;
+      keyId: string;
+      expiresAt: string;
+    }
   | { paired: false; reason: "INVALID" };
+
+export interface ReenrollmentCandidateRecord {
+  id: string;
+  grantId: string;
+  screenId: string;
+  keyId: string;
+  fingerprint: string;
+  securityLevel: DeviceSecurityLevel;
+  installationId: string;
+  model: string;
+  osVersion: string;
+  playerVersion: string;
+  provedAt: string;
+  expiresAt: string;
+}
+
+export type ReenrollmentRequestResult =
+  | { created: true; pairing: PairingRecord }
+  | { created: false; reason: "NOT_FOUND" | "FORBIDDEN" | "CODE_COLLISION" };
+export type ReenrollmentActivationResult =
+  | {
+      activated: true;
+      screen: ScreenRecord;
+      credential: DeviceCredentialRecord;
+    }
+  | { activated: false; reason: "NOT_FOUND" | "FORBIDDEN" | "STALE" };
+export type ReenrollmentCancelResult =
+  { cancelled: true } | { cancelled: false; reason: "NOT_FOUND" | "FORBIDDEN" };
 
 export type DeviceAuthOperation = "heartbeat" | "manifest";
 
@@ -335,7 +386,7 @@ export interface DeviceCredentialRevokeAuditContext {
 }
 
 export type DeviceCredentialRevokeResult =
-  | { revoked: true; credential: DeviceCredentialRecord }
+  | { revoked: true; credential?: DeviceCredentialRecord | undefined }
   | {
       revoked: false;
       reason: "NOT_FOUND" | "ALREADY_REVOKED" | "FORBIDDEN";
@@ -371,6 +422,11 @@ export interface DataStore {
     >,
   ): Promise<ScreenRecord | null>;
   deleteScreen(orgId: string, id: string): Promise<boolean>;
+  deleteScreenAndAudit(
+    orgId: string,
+    id: string,
+    audit: DeviceCredentialRevokeAuditContext,
+  ): Promise<"DELETED" | "NOT_FOUND" | "FORBIDDEN">;
   createPairing(
     orgId: string,
     codeHash: string,
@@ -387,6 +443,39 @@ export interface DataStore {
     expiresAt: string,
     audit: PairingCreateAuditContext,
   ): Promise<PairingCreateResult>;
+  requestScreenReenrollmentAndAudit(
+    orgId: string,
+    screenId: string,
+    codeHash: string,
+    expiresAt: string,
+    reason: string,
+    audit: PairingCreateAuditContext,
+  ): Promise<ReenrollmentRequestResult>;
+  getReenrollmentStatus(
+    orgId: string,
+    screenId: string,
+    grantId: string,
+    actorUserId: string,
+  ): Promise<{
+    grantId: string;
+    screenId: string;
+    status: PairingRecord["status"];
+    expiresAt: string;
+    candidates: ReenrollmentCandidateRecord[];
+  } | null>;
+  activateReenrollmentCandidateAndAudit(
+    orgId: string,
+    screenId: string,
+    grantId: string,
+    candidateId: string,
+    audit: PairingCreateAuditContext,
+  ): Promise<ReenrollmentActivationResult>;
+  cancelScreenReenrollmentAndAudit(
+    orgId: string,
+    screenId: string,
+    grantId: string,
+    audit: PairingCreateAuditContext,
+  ): Promise<ReenrollmentCancelResult>;
   claimPairing(
     codeHash: string,
     device: {

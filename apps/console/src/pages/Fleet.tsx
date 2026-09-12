@@ -12,6 +12,8 @@ import {
   Thermometer,
   Clock3,
   Tag,
+  KeyRound,
+  AlertTriangle,
 } from "lucide-react";
 import type { ScreenSummary } from "@screengoblin/contracts";
 import { screens } from "../data";
@@ -26,7 +28,35 @@ import {
   Select,
   Status,
 } from "../components";
-import { api } from "../api";
+import {
+  api,
+  type DeviceReenrollmentActivation,
+  type DeviceReenrollmentCandidate,
+  type DeviceReenrollmentGrant,
+  type DeviceReenrollmentStatus,
+} from "../api";
+
+const terminalReenrollmentStatuses = new Set([
+  "activated",
+  "claimed",
+  "cancelled",
+  "canceled",
+  "revoked",
+  "expired",
+]);
+
+function deviceDescription(device: DeviceReenrollmentCandidate["device"]) {
+  const values = [
+    device.model,
+    device.osVersion,
+    device.playerVersion,
+    device.installationId,
+    device.manufacturer,
+    device.platform,
+    device.appVersion,
+  ].filter((value): value is string => typeof value === "string");
+  return values.length ? values.join(" · ") : "No device metadata";
+}
 
 export function Fleet({ canManage = true }: { canManage?: boolean }) {
   const [fleetScreens, setFleetScreens] = useState<ScreenSummary[]>(
@@ -43,6 +73,25 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
     expiresAt: string;
   }>();
   const [pairError, setPairError] = useState("");
+  const [reenrollOpen, setReenrollOpen] = useState(false);
+  const [reenrollScreen, setReenrollScreen] = useState<ScreenSummary | null>(
+    null,
+  );
+  const [reenrollGrant, setReenrollGrant] = useState<DeviceReenrollmentGrant>();
+  const [reenrollStatus, setReenrollStatus] =
+    useState<DeviceReenrollmentStatus>();
+  const [reenrollActivation, setReenrollActivation] =
+    useState<DeviceReenrollmentActivation>();
+  const [reenrollError, setReenrollError] = useState("");
+  const [reenrollBusy, setReenrollBusy] = useState(false);
+  const [selectedCandidateId, setSelectedCandidateId] = useState("");
+  const [candidateConfirmed, setCandidateConfirmed] = useState(false);
+  const [reenrollReason, setReenrollReason] = useState("");
+  const reenrollStatusName = reenrollStatus?.status.toLowerCase();
+  const reenrollmentIsTerminal = Boolean(
+    reenrollStatusName && terminalReenrollmentStatuses.has(reenrollStatusName),
+  );
+  const reenrollmentWasClaimed = reenrollStatusName === "claimed";
   const filtered = useMemo(
     () =>
       fleetScreens.filter(
@@ -68,6 +117,172 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
         );
       });
   }, []);
+  useEffect(() => {
+    if (!reenrollOpen || !reenrollGrant || reenrollActivation) return;
+    let active = true;
+    let timeout: number | undefined;
+    const poll = async () => {
+      try {
+        const next = await api.deviceReenrollmentStatus(
+          reenrollGrant.screenId,
+          reenrollGrant.grantId,
+        );
+        if (!active) return;
+        setReenrollStatus(next);
+        setReenrollError("");
+        if (next.status.toLowerCase() === "claimed") {
+          setFleetScreens((current) =>
+            current.map((screen) =>
+              screen.id === next.screenId
+                ? { ...screen, status: "online" }
+                : screen,
+            ),
+          );
+        }
+        if (!terminalReenrollmentStatuses.has(next.status.toLowerCase())) {
+          timeout = window.setTimeout(poll, 2000);
+        }
+      } catch (error) {
+        if (!active) return;
+        setReenrollError(
+          error instanceof Error
+            ? error.message
+            : "Replacement status could not be refreshed.",
+        );
+        timeout = window.setTimeout(poll, 4000);
+      }
+    };
+    void poll();
+    return () => {
+      active = false;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    };
+  }, [reenrollActivation, reenrollGrant, reenrollOpen]);
+  useEffect(() => {
+    if (
+      selectedCandidateId &&
+      reenrollStatus &&
+      !reenrollStatus.candidates.some(
+        (candidate) => candidate.id === selectedCandidateId,
+      )
+    ) {
+      setSelectedCandidateId("");
+      setCandidateConfirmed(false);
+    }
+  }, [reenrollStatus, selectedCandidateId]);
+
+  const beginReenrollment = (screen: ScreenSummary) => {
+    if (reenrollGrant && !reenrollmentIsTerminal && !reenrollActivation) {
+      setReenrollOpen(true);
+      return;
+    }
+    setReenrollScreen(screen);
+    setReenrollOpen(true);
+    setReenrollGrant(undefined);
+    setReenrollStatus(undefined);
+    setReenrollActivation(undefined);
+    setReenrollError("");
+    setSelectedCandidateId("");
+    setCandidateConfirmed(false);
+    setReenrollReason("");
+  };
+  const createReenrollment = async () => {
+    if (!reenrollScreen) return;
+    setReenrollBusy(true);
+    setReenrollError("");
+    try {
+      const grant = await api.createDeviceReenrollment(
+        reenrollScreen.id,
+        reenrollReason.trim(),
+      );
+      setReenrollGrant(grant);
+      setFleetScreens((current) =>
+        current.map((screen) =>
+          screen.id === grant.screenId
+            ? { ...screen, status: "offline" }
+            : screen,
+        ),
+      );
+    } catch (error) {
+      setReenrollError(
+        error instanceof Error
+          ? error.message
+          : "A replacement code could not be created.",
+      );
+    } finally {
+      setReenrollBusy(false);
+    }
+  };
+  const dismissReenrollment = () => {
+    if (reenrollBusy) return;
+    setReenrollOpen(false);
+  };
+  const cancelReenrollment = async () => {
+    if (!reenrollGrant || reenrollActivation || reenrollmentIsTerminal) {
+      setReenrollOpen(false);
+      return;
+    }
+    if (
+      !window.confirm(
+        "Cancel this replacement request? The revoked old credential will not be restored.",
+      )
+    ) {
+      return;
+    }
+    setReenrollBusy(true);
+    setReenrollError("");
+    try {
+      await api.cancelDeviceReenrollment(
+        reenrollGrant.screenId,
+        reenrollGrant.grantId,
+      );
+      setReenrollStatus({
+        grantId: reenrollGrant.grantId,
+        screenId: reenrollGrant.screenId,
+        status: "REVOKED",
+        expiresAt: reenrollGrant.expiresAt,
+        candidates: [],
+      });
+      setSelectedCandidateId("");
+      setCandidateConfirmed(false);
+    } catch (error) {
+      setReenrollError(
+        error instanceof Error
+          ? error.message
+          : "The replacement request could not be cancelled.",
+      );
+    } finally {
+      setReenrollBusy(false);
+    }
+  };
+  const activateCandidate = async () => {
+    if (!reenrollGrant || !selectedCandidateId || !candidateConfirmed) return;
+    setReenrollBusy(true);
+    setReenrollError("");
+    try {
+      const activation = await api.activateDeviceReenrollmentCandidate(
+        reenrollGrant.screenId,
+        reenrollGrant.grantId,
+        selectedCandidateId,
+      );
+      setReenrollActivation(activation);
+      setFleetScreens((current) =>
+        current.map((screen) =>
+          screen.id === activation.screenId
+            ? { ...screen, status: "online" }
+            : screen,
+        ),
+      );
+    } catch (error) {
+      setReenrollError(
+        error instanceof Error
+          ? error.message
+          : "The selected replacement could not be activated.",
+      );
+    } finally {
+      setReenrollBusy(false);
+    }
+  };
   return (
     <>
       {loadError && (
@@ -187,7 +402,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
         />
       )}
       <Drawer
-        open={!!selected}
+        open={!!selected && !reenrollOpen}
         onClose={() => setSelected(null)}
         title={selected?.name ?? "Screen"}
         eyebrow={selected?.location ?? "Screen details"}
@@ -281,6 +496,22 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
                 ))}
               </div>
             </div>
+            {canManage && source === "live" && (
+              <div className="drawer-section device-identity-section">
+                <h3>Device identity</h3>
+                <p>
+                  Stage a new hardware identity and verify its exact key before
+                  replacing this screen&apos;s active credential.
+                </p>
+                <Button
+                  variant="danger"
+                  icon={<KeyRound size={17} />}
+                  onClick={() => beginReenrollment(selected)}
+                >
+                  Replace device identity
+                </Button>
+              </div>
+            )}
           </>
         )}
       </Drawer>
@@ -306,6 +537,188 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
           <p className="error-message">{pairError}</p>
         ) : (
           <p>Creating a secure pairing code…</p>
+        )}
+      </Modal>
+      <Modal
+        open={reenrollOpen}
+        onClose={dismissReenrollment}
+        title={`Replace device identity${reenrollScreen ? ` — ${reenrollScreen.name}` : ""}`}
+        footer={
+          reenrollActivation || reenrollmentIsTerminal ? (
+            <Button
+              variant="secondary"
+              disabled={reenrollBusy}
+              onClick={dismissReenrollment}
+            >
+              Close
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                disabled={reenrollBusy}
+                onClick={
+                  reenrollGrant
+                    ? () => void cancelReenrollment()
+                    : dismissReenrollment
+                }
+              >
+                {reenrollGrant ? "Cancel replacement" : "Keep current identity"}
+              </Button>
+              {!reenrollGrant && (
+                <Button
+                  variant="danger"
+                  disabled={reenrollBusy || !reenrollReason.trim()}
+                  onClick={() => void createReenrollment()}
+                >
+                  {reenrollBusy ? "Creating code…" : "Create replacement code"}
+                </Button>
+              )}
+              {reenrollGrant && selectedCandidateId && (
+                <Button
+                  variant="danger"
+                  disabled={
+                    !candidateConfirmed ||
+                    reenrollBusy ||
+                    reenrollmentIsTerminal
+                  }
+                  onClick={() => void activateCandidate()}
+                >
+                  {reenrollBusy ? "Activating…" : "Activate exact candidate"}
+                </Button>
+              )}
+            </>
+          )
+        }
+      >
+        {reenrollActivation || reenrollmentWasClaimed ? (
+          <div className="reenrollment-success" role="status">
+            <h3>
+              {reenrollActivation
+                ? "Replacement activated"
+                : "Replacement activated by another administrator"}
+            </h3>
+            <p>
+              Screen identity{" "}
+              <code>
+                {reenrollActivation?.screenId ?? reenrollStatus?.screenId}
+              </code>{" "}
+              was preserved. The selected device must reconnect with its new
+              credential.
+            </p>
+          </div>
+        ) : reenrollmentIsTerminal ? (
+          <div className="reenrollment-terminal" role="status">
+            <h3>Replacement request {reenrollStatusName}</h3>
+            <p>
+              No replacement candidate can be activated from this request. The
+              previously revoked credential has not been restored; create a new
+              replacement request to recover this screen.
+            </p>
+          </div>
+        ) : !reenrollGrant ? (
+          <div className="reenrollment-warning">
+            <AlertTriangle aria-hidden="true" />
+            <div>
+              <h3>Creating a code causes an immediate interruption</h3>
+              <p>
+                Creating the replacement code immediately revokes the current
+                credential and takes this screen offline. The screen record,
+                assignments, and history remain unchanged. A new device will not
+                be attached until you verify and activate its exact fingerprint.
+              </p>
+            </div>
+            <label className="field reenrollment-reason">
+              <span>Reason for replacement</span>
+              <textarea
+                aria-label="Reason for replacement"
+                value={reenrollReason}
+                maxLength={500}
+                rows={3}
+                placeholder="For example: player hardware was replaced"
+                onChange={(event) => setReenrollReason(event.target.value)}
+              />
+              <small>
+                This reason is recorded for operator accountability.
+              </small>
+            </label>
+          </div>
+        ) : (
+          <div className="reenrollment-progress">
+            <div className="pairing-result" aria-live="polite">
+              <p>Enter this single-use code on the replacement Player:</p>
+              <strong>{reenrollGrant.code}</strong>
+              <small>
+                Expires {new Date(reenrollGrant.expiresAt).toLocaleTimeString()}
+              </small>
+            </div>
+            <p className="reenrollment-state" role="status">
+              Request status: {reenrollStatus?.status ?? "Waiting for Player"}
+            </p>
+            {reenrollStatus?.candidates.length ? (
+              <fieldset className="candidate-list">
+                <legend>Select the exact proved device to activate</legend>
+                {reenrollStatus.candidates.map(
+                  (candidate: DeviceReenrollmentCandidate) => (
+                    <label
+                      className={
+                        selectedCandidateId === candidate.id
+                          ? "candidate-card selected"
+                          : "candidate-card"
+                      }
+                      key={candidate.id}
+                    >
+                      <input
+                        type="radio"
+                        name="reenrollment-candidate"
+                        value={candidate.id}
+                        checked={selectedCandidateId === candidate.id}
+                        onChange={() => {
+                          setSelectedCandidateId(candidate.id);
+                          setCandidateConfirmed(false);
+                        }}
+                      />
+                      <span>
+                        <b>Key fingerprint</b>
+                        <code>{candidate.fingerprint}</code>
+                        <small>{deviceDescription(candidate.device)}</small>
+                        <small>
+                          Security: {candidate.securityLevel} · Proved{" "}
+                          {new Date(candidate.provedAt).toLocaleString()}
+                        </small>
+                      </span>
+                    </label>
+                  ),
+                )}
+              </fieldset>
+            ) : (
+              <p>
+                No proved replacement candidates yet. This page refreshes
+                automatically.
+              </p>
+            )}
+            {selectedCandidateId && (
+              <label className="candidate-confirmation">
+                <input
+                  type="checkbox"
+                  checked={candidateConfirmed}
+                  onChange={(event) =>
+                    setCandidateConfirmed(event.target.checked)
+                  }
+                />
+                <span>
+                  I verified this exact fingerprint and device metadata.
+                  Activating it attaches this new credential to the preserved
+                  screen identity.
+                </span>
+              </label>
+            )}
+          </div>
+        )}
+        {reenrollError && (
+          <p className="error-message" role="alert">
+            {reenrollError}
+          </p>
         )}
       </Modal>
     </>

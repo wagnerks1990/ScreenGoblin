@@ -37,6 +37,15 @@ class MemoryStore implements PlayerStore {
   async putCredentials(value: Credentials) {
     this.credentials = value;
   }
+  async getPendingPairing() {
+    return undefined;
+  }
+  async putPendingPairing() {}
+  async completePairing(value: Credentials) {
+    await this.putCredentials(value);
+  }
+  async deletePendingPairing() {}
+  async clearProvisionedState() {}
   async getActiveManifest() {
     return this.active;
   }

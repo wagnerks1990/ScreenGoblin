@@ -18,8 +18,15 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   credential revocation that invalidates outstanding challenges, and require
   `DEVICE_AUTH_MODE=proof-v1` in production. The legacy bearer path is limited
   to explicit non-production localhost development.
-- Keep hardware/application attestation, rotation, targeted re-enrollment,
-  offline recall, and verified native erasure as explicit pilot/release gates.
+- Add targeted, zero-overlap device re-enrollment that preserves the existing
+  screen and assignments: an OWNER/ADMIN request immediately revokes the old
+  identity; the Player explicitly rotates to a fresh key and proves a pending
+  candidate; and a separate OWNER/ADMIN exact-fingerprint confirmation performs
+  an audited, credential-generation-guarded activation. Cancellation,
+  superseding grants, revocation races, and competing candidates fail closed.
+- Keep hardware/application attestation, automatic overlapping rotation,
+  offline recall, verified native erasure, and physical-device validation as
+  explicit pilot/release gates. Re-enrollment code-path tests do not close them.
 - Require a reachable Redis backend in production and apply fail-closed,
   distributed, HMAC-keyed login, pairing, heartbeat, and manifest budgets.
 - Replace shared-secret manifest MACs with Ed25519 signatures verified by the player using a public key pinned during enrollment.

@@ -16,6 +16,16 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - Players connect outbound over TLS. In `proof-v1`, Android creates a non-exportable Keystore P-256 identity, the server enrolls its canonical public key, and every manifest or heartbeat requires a fresh operation- and body-bound one-use proof. Production rejects the localhost-only `development-bearer` mode.
 - Enrollment is a two-stage, transcript-bound challenge exchange. Android installation ID equals the server-derived SHA-256 SPKI key ID; an identical successful final claim is idempotently recoverable. A reported Keystore security level is not attestation, and a stolen pairing code remains first-winner authority.
 - Device revocation is an OWNER/ADMIN capability revalidated transactionally with the credential/screen change, outstanding-challenge invalidation, and one audit record. Revocation blocks online proof use but cannot recall or erase content from an offline player.
+- Targeted re-enrollment is a manual, zero-overlap recovery protocol for an
+  existing screen. An authorized request requires an operational reason,
+  immediately revokes/detaches the old identity, takes the screen offline, and
+  advances a credential generation. An explicit local Player action
+  creates a fresh key; proof stages only a pending candidate. A separate current
+  OWNER/ADMIN must compare and activate the exact fingerprint. Activation uses a
+  generation compare-and-swap, preserves the screen and assignments, creates one
+  globally new credential, and cancels competing authority atomically. A code
+  alone must never install a replacement, and pairing failure must never cause
+  silent key rotation.
 - Manifests bind to a screen, carry a renewable envelope lease, and are signed with Ed25519. A signed normal withdrawal clears stale playback; an optional signed `playbackEndsAt` is the hard schedule boundary. Players pin the verification key during trusted enrollment and verify before staging.
 - Player item state is generation-scoped. It reports now-playing and starts the
   display duration only after renderer readiness, blanks stale transitions, and
@@ -40,7 +50,16 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 
 ## Deliberately disabled or incomplete
 
-Emergency activation, remote commands, screenshots, proof of play, uploads/scanning, release approvals, scoped location authorization, MFA/SSO, update rings, device hardware/application attestation, credential rotation, targeted safe re-enrollment, verified local erasure, and offline recall are not complete release capabilities. Server-bound Keystore proof and transactional revocation exist, but do not imply those broader device-lifecycle controls. Immutable ordinary release snapshots exist, but multi-party approval and promotion workflows remain incomplete. Do not create UI or documentation that implies otherwise.
+Emergency activation, remote commands, screenshots, proof of play,
+uploads/scanning, release approvals, scoped location authorization, MFA/SSO,
+update rings, device hardware/application attestation, automatic overlapping
+credential rotation, verified local erasure, offline recall, and representative
+physical-device validation are not complete release capabilities. Staged
+targeted re-enrollment exists as a manual recovery path, but does not imply
+attestation, erasure, recall, continuous rotation, or physical-device identity.
+Immutable ordinary release snapshots exist, but multi-party approval and
+promotion workflows remain incomplete. Do not create UI or documentation that
+implies otherwise.
 
 ## AI boundaries
 
@@ -48,4 +67,4 @@ AI may draft copy, suggest templates/tags/schedules, summarize device health, an
 
 ## Quality gate
 
-Run `npm run validate`; CI additionally runs the destructive-guarded PostgreSQL integration suite. Android identity/proof changes also require Gradle lint, host unit tests, and a debug build. Continue expanding scoped authorization and immutable release integrity, browser accessibility/E2E tests, Android tests, native stream-to-disk caching, DNS/egress enforcement, attestation/rotation/re-enrollment/erasure controls, offline/emergency recovery tests, and physical-device evidence as the corresponding features mature. Green automated tests alone do not establish pre-production readiness.
+Run `npm run validate`; CI additionally runs the destructive-guarded PostgreSQL integration suite. Android identity/proof changes also require Gradle lint, host unit tests, and a debug build. Continue expanding scoped authorization and immutable release integrity, browser accessibility/E2E tests, Android tests, native stream-to-disk caching, DNS/egress enforcement, attestation/automatic-rotation/erasure controls, offline/emergency recovery tests, and physical-device evidence as the corresponding features mature. Re-enrollment route, race, and protocol tests do not establish physical fingerprint comparison, device identity, or verified erasure. Green automated tests alone do not establish pre-production readiness.

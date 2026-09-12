@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const native = vi.hoisted(() => ({
   platform: "web",
   getIdentity: vi.fn(),
+  rotateIdentity: vi.fn(),
+  finalizeIdentityRotation: vi.fn(),
   signChallenge: vi.fn(),
 }));
 
@@ -10,19 +12,24 @@ vi.mock("@capacitor/core", () => ({
   Capacitor: { getPlatform: () => native.platform },
   registerPlugin: () => ({
     getIdentity: native.getIdentity,
+    rotateIdentity: native.rotateIdentity,
+    finalizeIdentityRotation: native.finalizeIdentityRotation,
     signChallenge: native.signChallenge,
   }),
 }));
 
 import {
+  finalizeDeviceIdentityRotation,
   getDeviceIdentity,
   installationId,
+  rotateDeviceIdentity,
   signDeviceChallenge,
 } from "./device";
 
 const identity = {
-  publicKeySpki: "public-spki",
-  keyId: "hardware-key-fingerprint",
+  publicKeySpki:
+    "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+  keyId: "YU6CUGOQpCCNTKa2afJPBLaB1nxkbnAQwG8M-nZKs-A",
   algorithm: "ES256" as const,
   securityLevel: "strongbox" as const,
 };
@@ -31,8 +38,11 @@ beforeEach(() => {
   localStorage.clear();
   native.platform = "web";
   native.getIdentity.mockReset().mockResolvedValue(identity);
+  native.rotateIdentity.mockReset().mockResolvedValue(identity);
+  native.finalizeIdentityRotation.mockReset().mockResolvedValue(undefined);
   native.signChallenge.mockReset().mockResolvedValue({
-    signature: "der-signature",
+    signature:
+      "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
     signatureFormat: "ES256-DER",
     keyId: identity.keyId,
   });
@@ -89,7 +99,8 @@ describe("device identity", () => {
     );
     native.platform = "android";
     await expect(signDeviceChallenge("valid-challenge")).resolves.toEqual({
-      signature: "der-signature",
+      signature:
+        "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
       signatureFormat: "ES256-DER",
       keyId: identity.keyId,
     });
@@ -101,14 +112,31 @@ describe("device identity", () => {
   it("fails closed when Android signs with a different key", async () => {
     native.platform = "android";
     native.signChallenge.mockResolvedValueOnce({
-      signature: "der-signature",
+      signature:
+        "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
       signatureFormat: "ES256-DER",
-      keyId: "replacement-key",
+      keyId: "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
     });
 
     await expect(
       signDeviceChallenge("valid-challenge", identity.keyId),
     ).rejects.toThrow("identity key changed");
+  });
+
+  it("rotates only after an explicit native request and finalizes the expected key", async () => {
+    await expect(rotateDeviceIdentity()).rejects.toThrow(
+      "only available on Android",
+    );
+    await finalizeDeviceIdentityRotation(identity.keyId);
+    expect(native.finalizeIdentityRotation).not.toHaveBeenCalled();
+
+    native.platform = "android";
+    await expect(rotateDeviceIdentity()).resolves.toEqual(identity);
+    expect(native.rotateIdentity).toHaveBeenCalledOnce();
+    await finalizeDeviceIdentityRotation(identity.keyId);
+    expect(native.finalizeIdentityRotation).toHaveBeenCalledWith({
+      keyId: identity.keyId,
+    });
   });
 
   it("fails closed when Android returns incomplete identity metadata", async () => {
@@ -119,6 +147,17 @@ describe("device identity", () => {
     });
     await expect(getDeviceIdentity()).rejects.toThrow(
       "invalid device identity",
+    );
+  });
+
+  it("recalculates and verifies the key fingerprint from the exact SPKI", async () => {
+    native.platform = "android";
+    native.getIdentity.mockResolvedValueOnce({
+      ...identity,
+      keyId: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+    });
+    await expect(getDeviceIdentity()).rejects.toThrow(
+      "fingerprint does not match",
     );
   });
 });

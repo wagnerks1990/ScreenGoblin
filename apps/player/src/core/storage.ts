@@ -1,4 +1,9 @@
-import type { Credentials, PlayerManifest, PlayerStore } from "./types";
+import type {
+  Credentials,
+  PendingProofPairing,
+  PlayerManifest,
+  PlayerStore,
+} from "./types";
 
 const DATABASE = "screengoblin-player";
 const STORE = "state";
@@ -31,9 +36,50 @@ async function write(entries: Array<[string, unknown]>): Promise<void> {
   });
 }
 
+async function remove(key: string): Promise<void> {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export class IndexedDbPlayerStore implements PlayerStore {
   getCredentials = () => read<Credentials>("credentials");
   putCredentials = (value: Credentials) => write([["credentials", value]]);
+  getPendingPairing = () => read<PendingProofPairing>("pending-pairing");
+  putPendingPairing = (value: PendingProofPairing) =>
+    write([["pending-pairing", value]]);
+  deletePendingPairing = () => remove("pending-pairing");
+
+  async clearProvisionedState(): Promise<void> {
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const state = tx.objectStore(STORE);
+      state.delete("credentials");
+      state.delete("active-manifest");
+      state.delete("previous-manifest");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+
+  async completePairing(value: Credentials): Promise<void> {
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const state = tx.objectStore(STORE);
+      state.put(value, "credentials");
+      state.delete("pending-pairing");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
   getActiveManifest = () => read<PlayerManifest>("active-manifest");
   getPreviousManifest = () => read<PlayerManifest>("previous-manifest");
 

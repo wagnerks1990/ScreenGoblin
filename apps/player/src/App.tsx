@@ -9,6 +9,7 @@ import {
 import { CacheAssetRepository } from "./core/assets";
 import {
   freeStorageBytes,
+  finalizeDeviceIdentityRotation,
   hasNativeDeviceIdentity,
   installationId as getInstallationId,
   networkType,
@@ -16,7 +17,12 @@ import {
 import { ManifestManager } from "./core/manifest";
 import { SingleFlight } from "./core/single-flight";
 import { IndexedDbPlayerStore } from "./core/storage";
-import type { Credentials, Heartbeat, PlayerManifest } from "./core/types";
+import type {
+  Credentials,
+  Heartbeat,
+  PendingProofPairing,
+  PlayerManifest,
+} from "./core/types";
 
 const store = new IndexedDbPlayerStore();
 const assetRepository = new CacheAssetRepository();
@@ -26,6 +32,7 @@ const startedAt = Date.now();
 export default function App() {
   const [installationId, setInstallationId] = useState("");
   const [credentials, setCredentials] = useState<Credentials>();
+  const [pendingPairing, setPendingPairing] = useState<PendingProofPairing>();
   const [manifest, setManifest] = useState<PlayerManifest>();
   const [ready, setReady] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
@@ -50,9 +57,32 @@ export default function App() {
       getInstallationId(),
       store.getCredentials(),
       manager.recover(),
+      store.getPendingPairing(),
     ])
-      .then(async ([id, savedCredentials, savedManifest]) => {
+      .then(async ([id, savedCredentials, savedManifest, savedPending]) => {
         setInstallationId(id);
+        let resumable = savedPending;
+        if (resumable && Date.parse(resumable.expiresAt) <= Date.now()) {
+          await store.deletePendingPairing();
+          resumable = undefined;
+        }
+        if (savedCredentials && resumable) {
+          await store.deletePendingPairing();
+          resumable = undefined;
+        }
+        if (
+          resumable &&
+          (!hasNativeDeviceIdentity() ||
+            resumable.expectedKeyId !== id ||
+            resumable.installationId !== id)
+        ) {
+          setFatal(
+            "Saved pairing recovery does not match this device identity",
+          );
+          setReady(true);
+          return;
+        }
+        setPendingPairing(resumable);
         const validCredentials =
           savedCredentials &&
           savedCredentials.manifestVerificationKey &&
@@ -67,11 +97,25 @@ export default function App() {
           (savedCredentials && !validCredentials) ||
           (!savedCredentials && savedManifest)
         ) {
-          await Promise.all([store.clear(), assetRepository.removeAll()]);
+          await Promise.all([
+            resumable ? store.clearProvisionedState() : store.clear(),
+            assetRepository.removeAll(),
+          ]);
           setCredentials(undefined);
           setManifest(undefined);
           setFallback(false);
         } else {
+          if (savedCredentials?.authMode === "proof-v1") {
+            try {
+              await finalizeDeviceIdentityRotation(savedCredentials.keyId);
+            } catch {
+              setFatal(
+                "Activated device credentials require secure key cleanup",
+              );
+              setReady(true);
+              return;
+            }
+          }
           setCredentials(savedCredentials);
           setManifest(savedManifest);
           setFallback(Boolean(savedManifest));
@@ -236,10 +280,34 @@ export default function App() {
   }, [api, credentials, deprovision, fallback, manifest]);
 
   const paired = useCallback(async (value: Credentials) => {
-    await store.putCredentials(value);
+    await store.completePairing(value);
+    if (value.authMode === "proof-v1") {
+      try {
+        await finalizeDeviceIdentityRotation(value.keyId);
+      } catch (cause) {
+        setFatal("Activated device credentials require secure key cleanup");
+        throw new Error(
+          "The replacement was activated, but old device keys could not be securely removed. Restart to retry cleanup.",
+          { cause },
+        );
+      }
+    }
     credentialEpochRef.current += 1;
     deprovisionRef.current = undefined;
+    setPendingPairing(undefined);
     setCredentials(value);
+  }, []);
+
+  const persistPendingPairing = useCallback(
+    async (value: PendingProofPairing) => {
+      await store.putPendingPairing(value);
+      setPendingPairing(value);
+    },
+    [],
+  );
+  const discardPendingPairing = useCallback(async () => {
+    await store.deletePendingPairing();
+    setPendingPairing(undefined);
   }, []);
   const playbackError = useCallback(async () => {
     try {
@@ -285,6 +353,10 @@ export default function App() {
         installationId={installationId}
         defaultApiUrl={import.meta.env.VITE_API_URL ?? location.origin}
         onPaired={paired}
+        onIdentityChanged={setInstallationId}
+        pendingPairing={pendingPairing}
+        onPendingPairing={persistPendingPairing}
+        onDiscardPendingPairing={discardPendingPairing}
       />
     );
   if (!manifest)

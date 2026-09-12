@@ -320,4 +320,203 @@ describe("proof-v1 device routes", () => {
     expect(denied.statusCode).toBe(401);
     expect(denied.json().error.code).toBe("DEVICE_UNAUTHORIZED");
   });
+
+  it("stages targeted re-enrollment until the exact proved candidate is activated", async () => {
+    const original = await pair(await pairingFixture());
+    const screenId = String(original.credentials.screenId);
+    const requestGrant = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${screenId}/device-reenrollment`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: { reason: "Replace a failed player securely" },
+    });
+    expect(requestGrant.statusCode).toBe(201);
+    expect(requestGrant.headers["cache-control"]).toBe("no-store");
+    const firstGrant = requestGrant.json<{
+      grantId: string;
+      code: string;
+      generation: number;
+    }>();
+    expect(firstGrant.generation).toBe(1);
+    const replacementGrant = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${screenId}/device-reenrollment`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: { reason: "Retry after the first response was lost" },
+    });
+    expect(replacementGrant.statusCode).toBe(201);
+    const grant = replacementGrant.json<{
+      grantId: string;
+      code: string;
+      generation: number;
+    }>();
+    expect(grant.grantId).not.toBe(firstGrant.grantId);
+    expect(grant.generation).toBe(2);
+    const superseded = await app.inject({
+      method: "GET",
+      url: `/api/v1/screens/${screenId}/device-reenrollment/${firstGrant.grantId}`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(superseded.json()).toMatchObject({
+      status: "revoked",
+      candidates: [],
+    });
+
+    const { publicKey, privateKey } = generateKeyPairSync("ec", {
+      namedCurve: "prime256v1",
+    });
+    const spki = Buffer.from(publicKey.export({ format: "der", type: "spki" }));
+    const replacementKeyId = sha256Base64Url(spki);
+    const request = {
+      code: grant.code,
+      device: {
+        installationId: replacementKeyId,
+        model: "Replacement player",
+        osVersion: "15",
+        playerVersion: "0.2.0",
+      },
+      identity: {
+        algorithm: "ES256" as const,
+        publicKeySpki: spki.toString("base64url"),
+        keyId: replacementKeyId,
+        securityLevel: "software" as const,
+      },
+    };
+    const challengeResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/pair/challenge",
+      payload: request,
+    });
+    const challenge = challengeResponse.json<ChallengeResponse>();
+    const proofPayload = {
+      ...request,
+      pairingProof: {
+        challengeId: challenge.id,
+        challenge: challenge.challenge,
+        keyId: replacementKeyId,
+        signatureFormat: "ES256-DER" as const,
+        signature: signatureFor(privateKey, challenge.challenge),
+      },
+    };
+    const prove = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/device/pair",
+        payload: proofPayload,
+      });
+    const pending = await prove();
+    expect(pending.statusCode).toBe(202);
+    const candidate = pending.json<{
+      status: string;
+      grantId: string;
+      candidateId: string;
+      keyId: string;
+      fingerprint: string;
+    }>();
+    expect(candidate).toMatchObject({
+      status: "pending-approval",
+      grantId: grant.grantId,
+      keyId: replacementKeyId,
+      fingerprint: replacementKeyId,
+    });
+    expect((await prove()).statusCode).toBe(202);
+    expect(
+      store.audits.filter(
+        (audit) => audit.action === "device.reenrollment.candidate_proved",
+      ),
+    ).toHaveLength(1);
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/v1/screens/${screenId}/device-reenrollment/${grant.grantId}`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.headers["cache-control"]).toBe("no-store");
+    expect(status.json()).toMatchObject({
+      grantId: grant.grantId,
+      screenId,
+      status: "pending",
+      candidates: [
+        {
+          id: candidate.candidateId,
+          fingerprint: replacementKeyId,
+          device: { model: "Replacement player" },
+        },
+      ],
+    });
+
+    const activated = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${screenId}/device-reenrollment/${grant.grantId}/candidates/${candidate.candidateId}/activate`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(activated.statusCode).toBe(200);
+    expect(activated.json()).toMatchObject({
+      grantId: grant.grantId,
+      screenId,
+      candidateId: candidate.candidateId,
+      keyId: replacementKeyId,
+      status: "activated",
+    });
+    const final = await prove();
+    expect(final.statusCode).toBe(201);
+    expect(final.json()).toMatchObject({
+      authMode: "proof-v1",
+      screenId,
+      keyId: replacementKeyId,
+    });
+
+    const laterGrant = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${screenId}/device-reenrollment`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: { reason: "Contain this replacement before another attempt" },
+    });
+    expect(laterGrant.statusCode).toBe(201);
+    const laterGrantId = laterGrant.json<{ grantId: string }>().grantId;
+    const reassert = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${screenId}/device-credential/revoke`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(reassert.statusCode).toBe(204);
+    const cancelled = await app.inject({
+      method: "GET",
+      url: `/api/v1/screens/${screenId}/device-reenrollment/${laterGrantId}`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(cancelled.json()).toMatchObject({ status: "revoked" });
+  });
+
+  it("reasserts containment for a pending legacy screen without credential history", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Legacy display",
+      location: "Lobby",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const requested = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${screen.id}/device-reenrollment`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: { reason: "Contain a legacy device replacement" },
+    });
+    expect(requested.statusCode).toBe(201);
+    const grantId = requested.json<{ grantId: string }>().grantId;
+    const revoked = await app.inject({
+      method: "POST",
+      url: `/api/v1/screens/${screen.id}/device-credential/revoke`,
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(revoked.statusCode).toBe(204);
+    expect(
+      store.pairings.find((pairing) => pairing.id === grantId)?.status,
+    ).toBe("REVOKED");
+    expect(
+      store.screens.find((candidate) => candidate.id === screen.id)
+        ?.credentialGeneration,
+    ).toBe(2);
+  });
 });

@@ -49,6 +49,18 @@ export interface DevelopmentBearerCredentials extends CredentialBase {
 
 export type Credentials = ProofCredentials | DevelopmentBearerCredentials;
 
+/** Durable recovery material for one bounded proof pairing attempt. */
+export interface PendingProofPairing {
+  version: 1;
+  stage: "prepared" | "pending";
+  apiBaseUrl: string;
+  finalBody: string;
+  expectedKeyId: string;
+  installationId: string;
+  expiresAt: string;
+  approval?: PairingPendingApprovalResponse;
+}
+
 export interface PairingSession {
   code: string;
   expiresAt: string;
@@ -76,6 +88,11 @@ export interface Heartbeat {
 export interface PlayerStore {
   getCredentials(): Promise<Credentials | undefined>;
   putCredentials(value: Credentials): Promise<void>;
+  getPendingPairing(): Promise<PendingProofPairing | undefined>;
+  putPendingPairing(value: PendingProofPairing): Promise<void>;
+  completePairing(value: Credentials): Promise<void>;
+  deletePendingPairing(): Promise<void>;
+  clearProvisionedState(): Promise<void>;
   getActiveManifest(): Promise<PlayerManifest | undefined>;
   getPreviousManifest(): Promise<PlayerManifest | undefined>;
   activateManifest(value: PlayerManifest): Promise<void>;
@@ -89,3 +106,4 @@ export interface AssetRepository {
   prune?(retainedAssets: PlayerAsset[]): Promise<void>;
   removeAll(): Promise<void>;
 }
+import type { PairingPendingApprovalResponse } from "@screengoblin/contracts";

@@ -51,8 +51,17 @@ their installation ID; a legacy browser UUID cannot override it. Browser/PWA
 installations continue using a persisted random UUID and may use bearer
 authentication only in an explicit localhost development build. Proof-v1 binds
 the public key to the screen, verifies fresh server challenges, and supports
-transactional OWNER/ADMIN revocation. Server-verified attestation, credential/key
-rotation, targeted re-enrollment, offline recall, and verified local erasure
-during decommissioning remain release gates.
+transactional OWNER/ADMIN revocation. Server-verified attestation, automatic
+overlapping credential/key rotation, offline recall, verified local erasure,
+and representative physical-device validation remain release gates.
+
+Manual targeted re-enrollment requires an explicit local action before the
+Player replaces its prior Keystore identity with a fresh P-256 key. Fresh-key
+proof returns a pending candidate and fingerprint; the key cannot authenticate
+until a separate current OWNER/ADMIN confirms that exact fingerprint and
+activates it for the existing screen. Pairing failures and ordinary enrollment
+must never silently rotate the native identity. This zero-overlap recovery path
+does not implement automatic rotation, attestation, offline recall, or verified
+erasure; those remain release gates.
 
 Release APKs must use a protected signing key in CI. Never commit signing credentials. Production API URLs must use HTTPS; cleartext traffic is disabled.
