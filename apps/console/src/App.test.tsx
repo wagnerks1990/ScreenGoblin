@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, vi } from "vitest";
@@ -703,6 +703,48 @@ describe("ScreenGoblin console", () => {
 
     expect(screen.queryByRole("dialog", { name: "Main Lobby" })).toBeNull();
     expect(opener).toHaveFocus();
+  });
+
+  it("keeps prototype settings read-only without implying enforcement", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/settings"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        name: "Workspace settings are unavailable",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Content approval is not configured or enforced here."),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Proof-of-play collection is not configured or independently verified.",
+      ),
+    ).toBeTruthy();
+
+    const settingsPanel =
+      document.querySelector<HTMLElement>(".settings-panel");
+    expect(settingsPanel).not.toBeNull();
+    const controls = within(settingsPanel!);
+    expect(controls.queryByRole("textbox")).toBeNull();
+    expect(controls.queryByRole("spinbutton")).toBeNull();
+    expect(controls.queryByRole("combobox")).toBeNull();
+    expect(controls.queryByRole("checkbox")).toBeNull();
+    expect(controls.queryByRole("button", { name: /save/i })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Security" }));
+    expect(
+      screen.getByRole("heading", {
+        name: "Security settings are unavailable",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByText(/changes saved/i)).toBeNull();
+    expect(screen.queryByText(/stored for this session/i)).toBeNull();
   });
 
   it("does not expose administrative routes to a live viewer session", () => {
