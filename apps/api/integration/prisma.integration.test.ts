@@ -425,6 +425,135 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect(await prisma.auditEvent.count()).toBe(0);
   });
 
+  it("rolls back emergency activation and clear when their audit insert fails", async () => {
+    const organization = await createOrganization("emergency-audit-rollback");
+    const actor = await createMember(organization.id, "ADMIN", "emergency");
+    const screen = await store.createScreen(organization.id, {
+      name: "Emergency rollback screen",
+      location: "Lobby",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const existing = await prisma.emergencyOverride.create({
+      data: {
+        organizationId: organization.id,
+        title: "Existing emergency",
+        message: "Must remain uncleared",
+        targetScreenIds: [screen.id],
+        expiresAt: new Date(Date.now() + 60_000),
+        createdById: actor.id,
+      },
+    });
+    const audit = {
+      actorUserId: actor.id,
+      ipAddress: "127.0.0.1",
+      requestId: "emergency-audit-rollback",
+    };
+
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_emergency_audits" CHECK ("action" NOT IN (\'emergency.activated\', \'emergency.cleared\'))',
+    );
+    try {
+      await expect(
+        store.activateEmergencyAndAudit(
+          organization.id,
+          {
+            title: "Rolled-back emergency",
+            message: "Must not persist",
+            backgroundColor: "#C1121F",
+            targetScreenIds: [screen.id],
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+          audit,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        store.clearEmergencyAndAudit(organization.id, existing.id, audit),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_emergency_audits"',
+      );
+    }
+
+    expect(
+      await prisma.emergencyOverride.count({
+        where: {
+          organizationId: organization.id,
+          title: "Rolled-back emergency",
+        },
+      }),
+    ).toBe(0);
+    await expect(
+      prisma.emergencyOverride.findUniqueOrThrow({
+        where: { id: existing.id },
+      }),
+    ).resolves.toMatchObject({ clearedAt: null });
+    expect(
+      await prisma.auditEvent.count({
+        where: { organizationId: organization.id },
+      }),
+    ).toBe(0);
+  });
+
+  it("revalidates emergency actors and every target inside the transaction", async () => {
+    const [organization, otherOrganization] = await Promise.all([
+      createOrganization("emergency-revalidation"),
+      createOrganization("emergency-revalidation-other"),
+    ]);
+    const [viewer, admin] = await Promise.all([
+      createMember(organization.id, "VIEWER", "emergency-viewer"),
+      createMember(organization.id, "ADMIN", "emergency-admin"),
+    ]);
+    const [local, foreign] = await Promise.all([
+      store.createScreen(organization.id, {
+        name: "Local emergency screen",
+        location: "Lobby",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      }),
+      store.createScreen(otherOrganization.id, {
+        name: "Foreign emergency screen",
+        location: "Lobby",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      }),
+    ]);
+    const input = {
+      title: "Denied emergency",
+      message: "Must fail closed",
+      backgroundColor: "#C1121F",
+      targetScreenIds: [local.id],
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+
+    await expect(
+      store.activateEmergencyAndAudit(organization.id, input, {
+        actorUserId: viewer.id,
+      }),
+    ).resolves.toEqual({ activated: false, reason: "FORBIDDEN" });
+    await expect(
+      store.activateEmergencyAndAudit(
+        organization.id,
+        { ...input, targetScreenIds: [local.id, foreign.id] },
+        { actorUserId: admin.id },
+      ),
+    ).resolves.toEqual({ activated: false, reason: "INVALID_SCREEN" });
+    expect(
+      await prisma.emergencyOverride.count({
+        where: { organizationId: organization.id },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.auditEvent.count({
+        where: { organizationId: organization.id },
+      }),
+    ).toBe(0);
+  });
+
   it("revalidates ordinary mutation actors and playlist assets inside the transaction", async () => {
     const [organization, otherOrganization] = await Promise.all([
       createOrganization("ordinary-revalidation"),

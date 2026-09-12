@@ -50,7 +50,9 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
 
 - OWNER/ADMIN control screens; PUBLISHER may manage ordinary content and
   schedules; VIEWER is read-only. Legacy emergency routes exist only for
-  isolated non-production fixtures and are not a complete authorization model.
+  isolated non-production fixtures. Their activation and clear writes recheck
+  current capabilities, lock organization-scoped targets, and commit audit and
+  state atomically, but they are not a complete approval or authorization model.
 - Emergency publishing is supplemental—not a life-safety or mass-notification
   system—and production startup rejects `EMERGENCY_FEATURE_ENABLED=true` while
   the required authorization, two-person approval, MFA, acknowledgement,

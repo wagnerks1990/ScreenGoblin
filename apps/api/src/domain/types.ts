@@ -216,6 +216,14 @@ export interface EmergencyRecord {
   createdById: string;
   createdAt: string;
 }
+export type EmergencyActivationResult =
+  | { activated: true; emergency: EmergencyRecord }
+  | { activated: false; reason: "FORBIDDEN" | "INVALID_SCREEN" };
+
+export type EmergencyClearResult =
+  | { cleared: true; emergency: EmergencyRecord }
+  | { cleared: false; reason: "FORBIDDEN" | "NOT_FOUND" };
+
 export interface AuditRecord {
   id: string;
   organizationId: string;
@@ -679,15 +687,19 @@ export interface DataStore {
     screenId: string,
     at: string,
   ): Promise<EmergencyRecord | null>;
-  createEmergency(
+  activateEmergencyAndAudit(
     orgId: string,
-    userId: string,
     data: Pick<
       EmergencyRecord,
       "title" | "message" | "backgroundColor" | "targetScreenIds" | "expiresAt"
     >,
-  ): Promise<EmergencyRecord>;
-  clearEmergency(orgId: string, id: string): Promise<EmergencyRecord | null>;
+    audit: UserMutationAuditContext,
+  ): Promise<EmergencyActivationResult>;
+  clearEmergencyAndAudit(
+    orgId: string,
+    id: string,
+    audit: UserMutationAuditContext,
+  ): Promise<EmergencyClearResult>;
   listAudits(orgId: string, limit: number): Promise<AuditRecord[]>;
   audit(event: Omit<AuditRecord, "id" | "createdAt">): Promise<void>;
 }

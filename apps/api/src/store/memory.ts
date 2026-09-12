@@ -1945,33 +1945,82 @@ export class MemoryStore implements DataStore {
       ) ?? null
     );
   }
-  async createEmergency(
+  async activateEmergencyAndAudit(
     org: string,
-    userId: string,
     data: Pick<
       EmergencyRecord,
       "title" | "message" | "backgroundColor" | "targetScreenIds" | "expiresAt"
     >,
+    audit: UserMutationAuditContext,
   ) {
-    const t = now();
-    const x: EmergencyRecord = {
+    const actor = this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]);
+    if (!hasCapability(actor?.role, CAPABILITIES.emergencyActivate))
+      return { activated: false, reason: "FORBIDDEN" } as const;
+    const targetScreenIds = [...new Set(data.targetScreenIds)].sort();
+    if (
+      targetScreenIds.some(
+        (screenId) =>
+          !this.screens.some(
+            (screen) => screen.organizationId === org && screen.id === screenId,
+          ),
+      )
+    )
+      return { activated: false, reason: "INVALID_SCREEN" } as const;
+    const timestamp = now();
+    const emergency: EmergencyRecord = {
       id: id(),
       organizationId: org,
-      createdById: userId,
-      startsAt: t,
+      createdById: audit.actorUserId,
+      startsAt: timestamp,
       ...data,
-      createdAt: t,
+      targetScreenIds,
+      createdAt: timestamp,
     };
-    this.emergencies.push(x);
-    return x;
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "emergency.activated",
+      entityType: "emergency",
+      entityId: emergency.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        targetCount: targetScreenIds.length,
+        expiresAt: emergency.expiresAt,
+      },
+    });
+    this.emergencies.push(emergency);
+    this.audits.push(auditRecord);
+    return { activated: true, emergency } as const;
   }
-  async clearEmergency(org: string, overrideId: string) {
-    const x = this.emergencies.find(
-      (e) => e.organizationId === org && e.id === overrideId,
+  async clearEmergencyAndAudit(
+    org: string,
+    overrideId: string,
+    audit: UserMutationAuditContext,
+  ) {
+    const actor = this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]);
+    if (!hasCapability(actor?.role, CAPABILITIES.emergencyClear))
+      return { cleared: false, reason: "FORBIDDEN" } as const;
+    const emergency = this.emergencies.find(
+      (candidate) =>
+        candidate.organizationId === org && candidate.id === overrideId,
     );
-    if (!x) return null;
-    x.clearedAt = now();
-    return x;
+    if (!emergency) return { cleared: false, reason: "NOT_FOUND" } as const;
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "emergency.cleared",
+      entityType: "emergency",
+      entityId: overrideId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {},
+    });
+    emergency.clearedAt = now();
+    this.audits.push(auditRecord);
+    return { cleared: true, emergency } as const;
   }
   async listAudits(org: string, limit: number) {
     return this.audits

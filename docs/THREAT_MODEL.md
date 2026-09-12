@@ -37,6 +37,12 @@ ScreenGoblin is not currently a certified emergency-notification or life-safety 
 | Database/object loss            | Lost schedules/media/audit                             | Encrypted versioned backups, restore drills, retention and off-host copies                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Screenshot privacy leak         | Unintended personal data                               | Role-gate, audit, short retention, encryption, disable per location where required                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
+The isolated non-production emergency fixture path rechecks current emergency
+capabilities, locks organization-scoped targets, and commits each activation or
+clear with its audit event in one transaction. Production remains hard-disabled
+pending strong re-authentication, distinct-person approval, delivery
+acknowledgement, recovery, and tabletop evidence.
+
 ## Container posture
 
 Only ports 80/443 are published. Data services use an internal network. Application/static containers run read-only with dropped Linux capabilities and `no-new-privileges`; persistent data uses named volumes. Secrets are injected at runtime and must move from an environment file to a secret manager for production. Pin images by digest and generate an SBOM for release candidates.

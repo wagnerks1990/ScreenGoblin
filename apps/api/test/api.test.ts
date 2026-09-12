@@ -1720,4 +1720,105 @@ describe("emergency safety gate", () => {
     expect(r.statusCode).toBe(503);
     expect(r.json().error.code).toBe("FEATURE_DISABLED");
   });
+
+  it("activates and clears through the audited emergency boundary", async () => {
+    app.config.emergencyPublishingEnabled = true;
+    const screen = await store.createScreen("org-a", {
+      name: "Lobby",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const activated = await app.inject({
+      method: "POST",
+      url: "/api/v1/emergencies",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        title: "Drill",
+        message: "Atomic emergency test",
+        targetScreenIds: [screen.id, screen.id],
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    expect(activated.statusCode).toBe(201);
+    expect(activated.json().targetScreenIds).toEqual([screen.id]);
+    expect(store.audits[0]).toMatchObject({
+      organizationId: "org-a",
+      actorUserId: store.users[0]!.id,
+      action: "emergency.activated",
+      entityType: "emergency",
+      metadata: { targetCount: 1 },
+    });
+
+    const cleared = await app.inject({
+      method: "POST",
+      url: `/api/v1/emergencies/${activated.json().id}/clear`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().clearedAt).toBeTypeOf("string");
+    expect(store.audits[1]).toMatchObject({
+      organizationId: "org-a",
+      actorUserId: store.users[0]!.id,
+      action: "emergency.cleared",
+      entityType: "emergency",
+      entityId: activated.json().id,
+    });
+  });
+
+  it("maps emergency authorization, target, and tenant failures safely", async () => {
+    app.config.emergencyPublishingEnabled = true;
+    const local = await store.createScreen("org-a", {
+      name: "Local",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const foreign = await store.createScreen("org-b", {
+      name: "Foreign",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const viewer = app.jwt.sign({
+      sub: store.users[1]!.id,
+      email: store.users[1]!.email,
+      organizationId: "org-a",
+      role: "VIEWER",
+    });
+    const payload = {
+      title: "Denied drill",
+      message: "Must not activate",
+      targetScreenIds: [local.id],
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/v1/emergencies",
+      headers: { authorization: `Bearer ${viewer}` },
+      payload,
+    });
+    expect(denied.statusCode).toBe(403);
+
+    const invalidTarget = await app.inject({
+      method: "POST",
+      url: "/api/v1/emergencies",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { ...payload, targetScreenIds: [local.id, foreign.id] },
+    });
+    expect(invalidTarget.statusCode).toBe(422);
+    expect(invalidTarget.json().error.code).toBe("INVALID_SCREEN");
+    expect(store.emergencies).toEqual([]);
+    expect(store.audits).toEqual([]);
+
+    const missingClear = await app.inject({
+      method: "POST",
+      url: "/api/v1/emergencies/foreign-emergency/clear",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(missingClear.statusCode).toBe(404);
+  });
 });

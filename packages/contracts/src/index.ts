@@ -19,6 +19,8 @@ export const CAPABILITIES = {
   releaseWithdraw: "release.withdraw",
   screenCredentialRevoke: "screen.credential.revoke",
   screenCredentialReenroll: "screen.credential.reenroll",
+  emergencyActivate: "emergency.activate",
+  emergencyClear: "emergency.clear",
 } as const;
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
