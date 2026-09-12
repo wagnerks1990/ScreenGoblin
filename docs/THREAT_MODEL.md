@@ -37,6 +37,12 @@ ScreenGoblin is not currently a certified emergency-notification or life-safety 
 | Database/object loss            | Lost schedules/media/audit                             | Encrypted versioned backups, restore drills, retention and off-host copies                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Screenshot privacy leak         | Unintended personal data                               | Role-gate, audit, short retention, encryption, disable per location where required                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
+The repository supply-chain gate now uses the checksum-verified Trivy binary
+for blocking secret and infrastructure/configuration scans and enforces an
+exact lockfile-license allowlist with narrow, expiring exceptions. These are
+static repository and build-input controls; they do not perform DAST or monitor
+production runtime configuration.
+
 User access tokens expire after one hour and carry a random per-login
 session identity whose SHA-256 hash is stored. Every authenticated user request
 checks that exact session's expiry and revocation together with live user,

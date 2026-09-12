@@ -20,7 +20,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "validate:container-inputs": "node deploy/scripts/validate-container-inputs.mjs",
     "validate:gradle-integrity": "node deploy/scripts/validate-gradle-integrity.mjs",
-    "validate": "npm run validate:container-inputs && npm run validate:gradle-integrity && npm run prisma:generate -w @screengoblin/api && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
+    "validate:static-security-policy": "node deploy/scripts/validate-static-security-policy.mjs",
+    "validate": "npm run validate:container-inputs && npm run validate:gradle-integrity && npm run validate:static-security-policy && npm run prisma:generate -w @screengoblin/api && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
   },
   "engines": {
     "node": ">=22"

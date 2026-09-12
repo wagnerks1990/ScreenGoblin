@@ -33,6 +33,10 @@ An unchecked item is a known gap, not an implicit approval.
 - [ ] Secrets are in a managed secret store and rotation is rehearsed.
 - [ ] Images are digest-pinned; release artifacts have SBOMs and signatures.
 - [ ] Dependency, CodeQL, container, DAST, and secret scans are clean or exceptions accepted.
+      CI now blocks repository secrets, IaC/configuration misconfigurations, and
+      unapproved lockfile licenses with narrow expiring exceptions and retained
+      checksum-bound static evidence. This is not DAST or production-runtime
+      coverage, so the combined gate remains unchecked.
 - [ ] Screenshot collection/retention has privacy approval.
 - [ ] Independent penetration test findings are closed or accepted.
 

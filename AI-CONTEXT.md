@@ -117,5 +117,5 @@ bound by an adjacent checksum, and attested through a tag-only GitHub OIDC job
 that immediately verifies the repository attestation before retaining the final
 artifact. Manual dispatches remain unsigned and unprivileged. This provenance
 binds the evidence archive digest, not an immutable registry promotion, direct
-OCI/APK signatures, production signing custody, or approval. Green automated
+OCI/APK signatures, production signing custody, or approval. Repository CI also blocks secret and IaC/configuration findings and enforces exact dependency-license policy with narrow, expiring, fail-closed exceptions. Successful static reports and sanitized lockfile-license evidence are checksum-bound; they do not constitute DAST or production-runtime monitoring. Green automated
 tests alone do not establish pre-production readiness.
