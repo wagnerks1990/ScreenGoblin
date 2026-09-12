@@ -27,9 +27,9 @@ case " $* " in
     ;;
   *" down --volumes --remove-orphans "*) exit 0 ;;
   *" ps --all "*) printf 'NAME STATUS\\nsmoke healthy\\n'; exit 0 ;;
-  *" ps --quiet "*) printf 'container-%s\\n' "${!#}"; exit 0 ;;
+  *" ps --quiet "*) printf 'container-%s\\n' "\${!#}"; exit 0 ;;
   *" inspect container-"*)
-    if [[ "${FAKE_HOST_BINDING:-}" == true ]]; then
+    if [[ "\${FAKE_HOST_BINDING:-}" == true ]]; then
       printf '[{"HostIp":"0.0.0.0","HostPort":"18080"}]\\n'
     else
       printf 'null\\n'
