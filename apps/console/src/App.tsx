@@ -16,9 +16,6 @@ import {
   Settings,
   Menu,
   Search,
-  Bell,
-  Plus,
-  Sparkles,
   WifiOff,
 } from "lucide-react";
 import { Dashboard } from "./pages/Dashboard";
@@ -41,7 +38,6 @@ const nav = [
 
 export function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [liveSession, setLiveSession] = useState(api.hasLiveSession());
   const [demoAllowed, setDemoAllowed] = useState(api.demoAllowed());
@@ -56,9 +52,6 @@ export function App() {
   const canAdmin =
     (!liveSession && demoAllowed) ||
     ["OWNER", "ADMIN"].includes(sessionUser?.role ?? "");
-  const canPublish =
-    (!liveSession && demoAllowed) ||
-    ["OWNER", "ADMIN", "PUBLISHER"].includes(sessionUser?.role ?? "");
   const dataMode = liveSession ? "live" : demoAllowed ? "demo" : "failed";
   useEffect(() => setMobileOpen(false), [location.pathname]);
   useEffect(() => {
@@ -181,7 +174,14 @@ export function App() {
                   : "Reconnect to load operational data"}
             </span>
           </div>
-          <button aria-label="Workspace options">•••</button>
+          <button
+            type="button"
+            aria-label="Workspace options unavailable"
+            title="Workspace options are unavailable in this prototype"
+            disabled
+          >
+            •••
+          </button>
         </div>
       </aside>
       <div className="content-shell">
@@ -196,10 +196,11 @@ export function App() {
           <div className="global-search">
             <Search size={17} />
             <input
-              aria-label="Global search"
-              placeholder="Search screens, media, or playlists…"
+              aria-label="Global search unavailable"
+              placeholder="Global search unavailable"
+              title="Global search is unavailable in this prototype"
+              disabled
             />
-            <kbd>⌘ K</kbd>
           </div>
           <div className="top-actions">
             <button
@@ -227,11 +228,13 @@ export function App() {
                 {logoutStatus}
               </p>
             )}
-            <button className="icon-button" aria-label="Notifications">
-              <Bell size={19} />
-              <i />
-            </button>
-            <button className="profile" aria-label="Open profile menu">
+            <button
+              type="button"
+              className="profile"
+              aria-label="Profile menu unavailable"
+              title="Profile menu is unavailable in this prototype"
+              disabled
+            >
               {(sessionUser?.name ?? "Demo Operator")
                 .split(/\s+/)
                 .map((part) => part[0])
@@ -243,16 +246,7 @@ export function App() {
         </header>
         <main id="main-content" tabIndex={-1}>
           <Routes>
-            <Route
-              path="/dashboard"
-              element={
-                <Dashboard
-                  key={dataMode}
-                  onCreate={() => setCreateOpen(true)}
-                  canCreate={canPublish}
-                />
-              }
-            />
+            <Route path="/dashboard" element={<Dashboard key={dataMode} />} />
             <Route path="/media" element={<MediaVault key={dataMode} />} />
             <Route path="/playlists" element={<Playlists />} />
             <Route path="/schedules" element={<Schedules />} />
@@ -280,49 +274,6 @@ export function App() {
           </Routes>
         </main>
       </div>
-      <Modal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        title="Create announcement"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => setCreateOpen(false)}
-              icon={<Sparkles size={17} />}
-            >
-              Open studio
-            </Button>
-          </>
-        }
-      >
-        <div className="creation-grid">
-          <button>
-            <span className="creation-icon green">
-              <Sparkles />
-            </span>
-            <b>Start from template</b>
-            <small>Use an approved district layout</small>
-          </button>
-          <button>
-            <span className="creation-icon amber">
-              <Siren />
-            </span>
-            <b>Priority message</b>
-            <small>Publish an important notice</small>
-          </button>
-        </div>
-        <Field label="Quick start">
-          <div className="input-with-button">
-            <input placeholder="What do you need to announce?" />
-            <button aria-label="Create from prompt">
-              <Plus size={18} />
-            </button>
-          </div>
-        </Field>
-      </Modal>
       <Modal
         open={loginOpen}
         onClose={() => {
