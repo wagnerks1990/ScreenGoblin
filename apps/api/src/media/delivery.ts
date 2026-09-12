@@ -4,7 +4,7 @@ import {
   timingSafeEqual,
   webcrypto,
 } from "node:crypto";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 
 const CAPABILITY_VERSION = 1;
 const CAPABILITY_PREFIX = "ScreenGoblin media delivery capability v1\n";
@@ -35,6 +35,54 @@ export interface MediaObject {
 export interface MediaObjectStore {
   getObject(storageKey: string): Promise<MediaObject | null>;
 }
+
+export const enforceExactByteLength = (
+  body: Readable,
+  expectedBytes: number,
+): Readable => {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0)
+    throw new Error("Private media object length is invalid");
+  let receivedBytes = 0;
+  let finalByte: Buffer | null = null;
+  const bounded = new Transform({
+    transform(chunk: Buffer | string, encoding, callback) {
+      const bytes =
+        typeof chunk === "string" ? Buffer.from(chunk, encoding) : chunk;
+      if (bytes.byteLength > expectedBytes - receivedBytes) {
+        callback(
+          new Error("Private media object exceeded its declared length"),
+        );
+        return;
+      }
+      receivedBytes += bytes.byteLength;
+      if (receivedBytes === expectedBytes && bytes.byteLength > 0) {
+        finalByte = bytes.subarray(bytes.byteLength - 1);
+        callback(
+          null,
+          bytes.byteLength === 1
+            ? undefined
+            : bytes.subarray(0, bytes.byteLength - 1),
+        );
+        return;
+      }
+      callback(null, bytes);
+    },
+    flush(callback) {
+      if (receivedBytes !== expectedBytes) {
+        callback(
+          new Error("Private media object ended before its declared length"),
+        );
+        return;
+      }
+      callback(null, finalByte ?? undefined);
+    },
+  });
+  body.on("error", (error) => bounded.destroy(error));
+  bounded.on("close", () => {
+    if (!body.destroyed) body.destroy();
+  });
+  return body.pipe(bounded);
+};
 
 const encode = (value: unknown) =>
   Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -192,22 +240,44 @@ export class S3MediaObjectStore implements MediaObjectStore {
     const signingKey = await hmac(serviceKey, "aws4_request");
     const requestSignature = await hmac(signingKey, stringToSign);
     const authorization = `AWS4-HMAC-SHA256 Credential=${this.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${requestSignature.toString("hex")}`;
+    const controller = new AbortController();
     const response = await fetch(url, {
       method: "GET",
       redirect: "error",
       headers: {
+        "Accept-Encoding": "identity",
         Authorization: authorization,
         "x-amz-content-sha256": payloadHash,
         "x-amz-date": amzDate,
       },
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
     });
-    if (response.status === 404) return null;
-    if (!response.ok || !response.body)
+    if (response.status === 404) {
+      controller.abort();
+      return null;
+    }
+    if (!response.ok || !response.body) {
+      controller.abort();
       throw new Error("Private media object retrieval failed");
-    const length = Number(response.headers.get("content-length"));
-    if (!Number.isSafeInteger(length) || length < 0)
+    }
+    const contentEncoding = response.headers.get("content-encoding");
+    if (
+      contentEncoding !== null &&
+      contentEncoding.trim().toLowerCase() !== "identity"
+    ) {
+      controller.abort();
+      throw new Error("Private media object encoding is not allowed");
+    }
+    const contentLength = response.headers.get("content-length");
+    if (contentLength === null || !/^(0|[1-9]\d*)$/.test(contentLength)) {
+      controller.abort();
       throw new Error("Private media object length is invalid");
+    }
+    const length = Number(contentLength);
+    if (!Number.isSafeInteger(length)) {
+      controller.abort();
+      throw new Error("Private media object length is invalid");
+    }
     return {
       body: Readable.fromWeb(response.body as never),
       contentLength: length,

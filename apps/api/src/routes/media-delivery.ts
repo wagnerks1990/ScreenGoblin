@@ -1,6 +1,9 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { verifyMediaCapability } from "../media/delivery.js";
+import {
+  enforceExactByteLength,
+  verifyMediaCapability,
+} from "../media/delivery.js";
 
 const params = z.object({ assetId: z.string().min(1).max(256) });
 const query = z.object({ capability: z.string().min(40).max(4096) }).strict();
@@ -56,6 +59,6 @@ export const mediaDeliveryRoutes: FastifyPluginAsync = async (app) => {
       .header("Content-Length", String(claims.sizeBytes))
       .header("Cache-Control", "private, no-store")
       .header("X-Content-Type-Options", "nosniff");
-    return reply.send(object.body);
+    return reply.send(enforceExactByteLength(object.body, claims.sizeBytes));
   });
 };

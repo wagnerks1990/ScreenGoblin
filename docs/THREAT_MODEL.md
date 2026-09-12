@@ -190,7 +190,12 @@ the API rechecks that exact credential key and the tenant/screen-specific latest
 assignment remain active before reading only the signed key from its fixed S3
 endpoint; withdrawal, replacement, asset expiry, or a schedule boundary denies
 the old capability without disclosing which condition failed. It never fetches
-a stored arbitrary URL.
+a stored arbitrary URL. Storage fetches request identity encoding, reject any
+encoded response, require a canonical declared length, and independently stop
+the delivered stream before it can exceed the signed byte count. The final byte
+is released only at clean upstream EOF, so a late extra chunk, truncation, or
+upstream error aborts delivery; downstream cancellation destroys the upstream
+stream.
 Media delivery does not require another per-media proof signature: a captured
 capability is replayable only while its bound credential and assignment remain
 active and until its earliest signed deadline. Withdrawal blocks new reads once

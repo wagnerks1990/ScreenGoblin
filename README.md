@@ -65,6 +65,9 @@ Point `SCREEN_GOBLIN_HOST` and `PLAYER_HOST` DNS records at the host. Caddy obta
 The MinIO bucket is private and Caddy does not proxy it. Players receive
 short-lived, active-device-bound API capabilities in signed manifests; the API
 streams only the exact server-derived object key from its fixed storage endpoint.
+Object responses must use identity encoding and match the signed byte length on
+the actual stream. The final byte is released only after clean upstream EOF, so
+encoded, overlong, truncated, or late-error bodies fail closed.
 
 The Console media inventory is intentionally read-only. This prototype has no
 browser upload pipeline. Deprecated caller-supplied metadata registration is
