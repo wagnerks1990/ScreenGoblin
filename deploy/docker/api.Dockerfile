@@ -13,7 +13,11 @@ RUN npm run build -w @screengoblin/contracts \
  && npm run build -w @screengoblin/api
 
 FROM build AS production-deps
-RUN npm prune --omit=dev
+RUN npm prune --omit=dev \
+      --workspace @screengoblin/api \
+      --workspace @screengoblin/contracts \
+ && node --input-type=module -e "await Promise.all([import('@prisma/client'), import('fastify'), import('@screengoblin/contracts')])" \
+ && test -f node_modules/.prisma/client/schema.prisma
 
 FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001
@@ -31,6 +35,8 @@ COPY --from=build --chown=screengoblin:screengoblin /app/packages/contracts ./pa
 COPY --from=build --chown=screengoblin:screengoblin /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build --chown=screengoblin:screengoblin /app/apps/api/dist ./apps/api/dist
 COPY --from=build --chown=screengoblin:screengoblin /app/apps/api/prisma ./apps/api/prisma
+RUN node --input-type=module -e "await Promise.all([import('@prisma/client'), import('fastify'), import('@screengoblin/contracts')])" \
+ && test -f node_modules/.prisma/client/schema.prisma
 USER screengoblin
 EXPOSE 3001
 CMD ["node", "apps/api/dist/server.js"]
