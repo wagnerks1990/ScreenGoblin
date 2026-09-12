@@ -33,6 +33,8 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - Player item state is generation-scoped. It reports now-playing and starts the
   display duration only after renderer readiness, blanks stale transitions, and
   invokes bounded single-shot recovery for silent stalls or render failures.
+  Heartbeat uptime uses monotonic elapsed time and must not depend on wall-clock
+  corrections.
 - The production Player build injects exact shell assets into a content-derived
   service-worker cache. API requests and verified manifest media never enter or
   read that shell namespace, and activation prunes shell generations only.
@@ -42,7 +44,9 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   active/rollback-aware orphan pruning are exposed to the Player. During
   upgrade, an explicit native `CACHE_MISS` may use only an
   exact-size/hash-verified legacy CacheStorage entry; new ordinary Android
-  prefetches remain native. Browser development
+  prefetches remain native. Every playable manifest refresh, including an
+  unchanged semantic version, revalidates all referenced assets so cache loss or
+  corruption is repaired before playback. Browser development
   retains bounded CacheStorage. Emergency overlays never enter the normal
   rollback chain, and stale callbacks may not roll back a newer active version.
 - Live operational data must fail visibly. Never replace a failed authenticated request with demo values.

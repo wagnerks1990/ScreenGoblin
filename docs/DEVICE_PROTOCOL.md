@@ -91,7 +91,7 @@ are one-use.
 
 ## Heartbeat
 
-The normal heartbeat contains installation ID, player and OS versions, uptime, free storage, network type, active manifest version, and current asset ID. On Android, free storage comes from the native cache's safe `availableBytes` value after filesystem reserve and in-flight reservations, rather than the WebView quota estimate. The server returns the next interval. Command delivery and jittered scheduling are required before fleet rollout but are not enabled in this prototype.
+The normal heartbeat contains installation ID, player and OS versions, uptime, free storage, network type, active manifest version, and current asset ID. Player uptime is derived from a monotonic elapsed-time clock rather than wall-clock time, so NTP or manual clock rollback cannot produce negative telemetry. On Android, free storage comes from the native cache's safe `availableBytes` value after filesystem reserve and in-flight reservations, rather than the WebView quota estimate. The server returns the next interval. Command delivery and jittered scheduling are required before fleet rollout but are not enabled in this prototype.
 
 The UI derives online/warning/offline state from server receipt time, never from a device-supplied clock alone.
 
@@ -145,6 +145,9 @@ pre-production gate.
 
 Manifest staging serializes pre-prune, prefetch, state activation, and
 post-prune while retaining active and rollback assets until the state commit.
+Every playable envelope refresh, including the same semantic version, rechecks
+all referenced cache entries and repairs missing or corrupt assets before
+activation.
 Recovery schedules cleanup behind staging but does not wait for a stalled
 download, and explicit rollback uses the independent state path. A native
 capacity or I/O error rejects the candidate release rather than replacing the

@@ -615,7 +615,7 @@ describe("manifest transaction", () => {
     expect((await manager.rollback(trust))?.version).toBe("v1");
   });
 
-  it("refreshes a repeated release envelope without rotating rollback history", async () => {
+  it("reverifies cached assets for a repeated release without rotating rollback history", async () => {
     const store = new MemoryStore();
     const assets = new MemoryAssets();
     const baseline = { ...valid, version: "v1" };
@@ -630,7 +630,7 @@ describe("manifest transaction", () => {
     };
     await manager.stageAndActivate(signed(refreshed), trust);
 
-    expect(assets.prefetched).toEqual(["asset-1"]);
+    expect(assets.prefetched).toEqual(["asset-1", "asset-1"]);
     expect(store.active).toEqual(refreshed);
     expect(store.previous).toEqual(baseline);
   });

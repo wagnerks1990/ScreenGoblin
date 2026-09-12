@@ -6,6 +6,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Derive heartbeat uptime from a monotonic elapsed-time clock so wall-clock
+  rollback cannot create invalid negative telemetry, and reverify every cached
+  asset during same-release manifest refreshes so evicted or corrupt future
+  playlist items are repaired before playback.
 - Ignore caller-supplied request IDs and generate server-owned UUIDs for error,
   log, and immutable audit correlation so clients cannot create collisions.
 - Preserve CSP, framing, permissions, referrer, and content-type protections on
