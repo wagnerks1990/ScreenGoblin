@@ -31,6 +31,8 @@ import type {
   ScreenRecord,
   SessionUser,
   UserMutationAuditContext,
+  UserSessionCreateInput,
+  UserSessionRecord,
 } from "../domain/types.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
 import {
@@ -51,6 +53,7 @@ const now = () => new Date().toISOString();
 
 export class MemoryStore implements DataStore {
   users: SessionUser[] = [];
+  userSessions: UserSessionRecord[] = [];
   screens: ScreenRecord[] = [];
   media: MediaRecord[] = [];
   playlists: PlaylistRecord[] = [];
@@ -105,6 +108,97 @@ export class MemoryStore implements DataStore {
           !u.disabledAt,
       ) ?? null
     );
+  }
+  async createUserSessionAndAudit(
+    organizationId: string,
+    input: UserSessionCreateInput,
+    audit: UserMutationAuditContext,
+  ) {
+    const timestamp = now();
+    const user = await this.findSessionUser(audit.actorUserId, organizationId);
+    if (
+      !user ||
+      user.passwordHash !== input.expectedPasswordHash ||
+      user.role !== input.expectedRole ||
+      input.expiresAt <= timestamp
+    )
+      return { created: false, reason: "FORBIDDEN" } as const;
+    const session: UserSessionRecord = {
+      id: id(),
+      organizationId,
+      userId: user.id,
+      tokenHash: input.tokenHash,
+      expiresAt: input.expiresAt,
+      createdAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId,
+      actorUserId: user.id,
+      actorType: "user",
+      action: "auth.login_succeeded",
+      entityType: "session",
+      entityId: session.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { expiresAt: session.expiresAt },
+    });
+    this.userSessions = [
+      ...this.userSessions.filter(
+        (candidate) => candidate.expiresAt > timestamp,
+      ),
+      session,
+    ];
+    this.audits.push(auditRecord);
+    return { created: true, session } as const;
+  }
+  async findActiveUserSession(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+  ) {
+    const timestamp = now();
+    const session = this.userSessions.find(
+      (candidate) =>
+        candidate.userId === userId &&
+        candidate.organizationId === organizationId &&
+        candidate.tokenHash === tokenHash &&
+        !candidate.revokedAt &&
+        candidate.expiresAt > timestamp,
+    );
+    return session ? await this.findSessionUser(userId, organizationId) : null;
+  }
+  async revokeUserSessionAndAudit(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+    audit: UserMutationAuditContext,
+  ) {
+    const timestamp = now();
+    const user = await this.findSessionUser(userId, organizationId);
+    const session = this.userSessions.find(
+      (candidate) =>
+        candidate.userId === userId &&
+        candidate.organizationId === organizationId &&
+        candidate.tokenHash === tokenHash &&
+        !candidate.revokedAt &&
+        candidate.expiresAt > timestamp,
+    );
+    if (!user || !session || audit.actorUserId !== userId)
+      return { revoked: false, reason: "NOT_FOUND" } as const;
+    const auditRecord = this.buildAuditRecord({
+      organizationId,
+      actorUserId: userId,
+      actorType: "user",
+      action: "auth.logout",
+      entityType: "session",
+      entityId: session.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {},
+    });
+    session.revokedAt = timestamp;
+    this.audits.push(auditRecord);
+    return { revoked: true } as const;
   }
   private publicScreen(screen: ScreenRecord): ScreenRecord {
     const safe = { ...screen };

@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Replace eight-hour stateless user tokens with one-hour, individually tracked
+  sessions. Store only hashes of random session identities, recheck
+  expiry/revocation and current membership on every authenticated request, and
+  make current-session logout atomic with its audit event. Later logins prune
+  expired rows without revoking a user's other active sessions.
+
 - Bind every proof-v1 manifest signature to the one-use challenge consumed for
   its request, require the Player to verify that exact response binding, and
   reject online activation of an envelope older than persisted active state or

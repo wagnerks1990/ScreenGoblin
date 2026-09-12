@@ -5,12 +5,38 @@ import { MemoryStore } from "../src/store/memory.js";
 import type { FastifyInstance } from "fastify";
 import { MemoryRateLimitBudget } from "../src/utils/rate-limit.js";
 import { MEDIA_MAX_ASSET_BYTES } from "@screengoblin/contracts";
+import { randomToken, sha256 } from "../src/utils/crypto.js";
+import type { SessionUser } from "../src/domain/types.js";
 
 const secret = "test-secret-that-is-longer-than-thirty-two-characters";
 const signingKey = Buffer.alloc(32, 7).toString("base64url");
 let app: FastifyInstance;
 let store: MemoryStore;
 let token: string;
+const issueTestToken = (
+  user: SessionUser,
+  storedExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+) => {
+  const sessionId = randomToken();
+  store.userSessions.push({
+    id: crypto.randomUUID(),
+    organizationId: user.organizationId,
+    userId: user.id,
+    tokenHash: sha256(sessionId),
+    expiresAt: storedExpiresAt,
+    createdAt: new Date().toISOString(),
+  });
+  return app.jwt.sign(
+    {
+      sub: user.id,
+      email: user.email,
+      organizationId: user.organizationId,
+      role: user.role,
+      sessionId,
+    },
+    { expiresIn: "1h" },
+  );
+};
 beforeEach(async () => {
   store = new MemoryStore();
   store.users.push(
@@ -39,12 +65,7 @@ beforeEach(async () => {
     deviceAuthMode: "development-bearer",
     mediaAllowedOrigins: ["https://media.example.test"],
   });
-  token = app.jwt.sign({
-    sub: store.users[0]!.id,
-    email: store.users[0]!.email,
-    organizationId: "org-a",
-    role: "OWNER",
-  });
+  token = issueTestToken(store.users[0]!);
 });
 
 afterEach(() => {
@@ -52,6 +73,7 @@ afterEach(() => {
 });
 
 const pairDevice = async (installationId: string) => {
+  token = issueTestToken(store.users[0]!);
   const code = (
     await app.inject({
       method: "POST",
@@ -226,6 +248,126 @@ describe("authentication and organization RBAC", () => {
     expect(r.json().accessToken).toBeTypeOf("string");
     expect(r.body).not.toContain("passwordHash");
   });
+  it("stores only a hash of the bounded session identity and prunes expiry", async () => {
+    store.userSessions.push({
+      id: "expired-session",
+      organizationId: "org-a",
+      userId: store.users[0]!.id,
+      tokenHash: "f".repeat(64),
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      createdAt: new Date(Date.now() - 2_000).toISOString(),
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: {
+        email: "admin@example.test",
+        password: "correct horse battery staple",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().expiresIn).toBe(3_600);
+    const decoded = app.jwt.decode(response.json().accessToken) as {
+      sessionId: string;
+    };
+    const session = store.userSessions.find(
+      (candidate) => candidate.tokenHash === sha256(decoded.sessionId),
+    );
+    expect(session).toBeDefined();
+    expect(session?.tokenHash).not.toBe(decoded.sessionId);
+    expect(
+      store.userSessions.some(
+        (candidate) => candidate.id === "expired-session",
+      ),
+    ).toBe(false);
+    expect(response.body).not.toContain(decoded.sessionId);
+    expect(store.audits.at(-1)).toMatchObject({
+      action: "auth.login_succeeded",
+      entityType: "session",
+      entityId: session?.id,
+      metadata: { expiresAt: session?.expiresAt },
+    });
+  });
+
+  it("rejects legacy and expired session identities", async () => {
+    const legacy = app.jwt.sign({
+      sub: store.users[0]!.id,
+      email: store.users[0]!.email,
+      organizationId: "org-a",
+      role: "OWNER",
+    } as never);
+    const expired = issueTestToken(
+      store.users[0]!,
+      new Date(Date.now() - 1_000).toISOString(),
+    );
+    for (const candidate of [legacy, expired]) {
+      const response = await app.inject({
+        url: "/api/v1/auth/me",
+        headers: { authorization: `Bearer ${candidate}` },
+      });
+      expect(response.statusCode).toBe(401);
+      expect(response.json().error.code).toBe("SESSION_REVOKED");
+    }
+  });
+
+  it("revokes only the current session and handles concurrent logout safely", async () => {
+    const login = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: {
+          email: "admin@example.test",
+          password: "correct horse battery staple",
+        },
+      });
+    const [first, second] = await Promise.all([login(), login()]);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    const firstToken = first.json().accessToken as string;
+    const secondToken = second.json().accessToken as string;
+    const firstSessionId = (app.jwt.decode(firstToken) as { sessionId: string })
+      .sessionId;
+    const firstSession = store.userSessions.find(
+      (candidate) => candidate.tokenHash === sha256(firstSessionId),
+    );
+
+    const logout = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/auth/logout",
+        headers: { authorization: `Bearer ${firstToken}` },
+      });
+    const logoutResponses = await Promise.all([logout(), logout()]);
+    expect(
+      logoutResponses.some((response) => response.statusCode === 204),
+    ).toBe(true);
+    expect(
+      logoutResponses.every((response) =>
+        [204, 401].includes(response.statusCode),
+      ),
+    ).toBe(true);
+    expect(
+      store.audits.filter(
+        (event) =>
+          event.action === "auth.logout" && event.entityId === firstSession?.id,
+      ),
+    ).toHaveLength(1);
+
+    const revoked = await app.inject({
+      url: "/api/v1/auth/me",
+      headers: { authorization: `Bearer ${firstToken}` },
+    });
+    expect(revoked.statusCode).toBe(401);
+    expect(revoked.json().error.code).toBe("SESSION_REVOKED");
+
+    const stillActive = await app.inject({
+      url: "/api/v1/auth/me",
+      headers: { authorization: `Bearer ${secondToken}` },
+    });
+    expect(stillActive.statusCode).toBe(200);
+    expect(stillActive.body).not.toContain("sessionId");
+  });
+
   it("limits login attempts for the same normalized account", async () => {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const response = await app.inject({
@@ -253,12 +395,7 @@ describe("authentication and organization RBAC", () => {
     expect(limited.json().error.code).toBe("RATE_LIMITED");
   });
   it("denies a viewer mutation", async () => {
-    const viewer = app.jwt.sign({
-      sub: store.users[1]!.id,
-      email: store.users[1]!.email,
-      organizationId: "org-a",
-      role: "VIEWER",
-    });
+    const viewer = issueTestToken(store.users[1]!);
     const r = await app.inject({
       method: "POST",
       url: "/api/v1/screens",
@@ -476,12 +613,7 @@ describe("immutable ordinary release publication", () => {
     let publishedScheduleId = "";
     for (const role of ["OWNER", "ADMIN", "PUBLISHER"] as const) {
       store.users[0]!.role = role;
-      const roleToken = app.jwt.sign({
-        sub: store.users[0]!.id,
-        email: store.users[0]!.email,
-        organizationId: "org-a",
-        role,
-      });
+      const roleToken = issueTestToken(store.users[0]!);
       const publication = await app.inject({
         method: "POST",
         url: "/api/v1/schedules",
@@ -502,12 +634,7 @@ describe("immutable ordinary release publication", () => {
     }
 
     store.users[0]!.role = "VIEWER";
-    const viewerToken = app.jwt.sign({
-      sub: store.users[0]!.id,
-      email: store.users[0]!.email,
-      organizationId: "org-a",
-      role: "VIEWER",
-    });
+    const viewerToken = issueTestToken(store.users[0]!);
     const denied = await app.inject({
       method: "POST",
       url: "/api/v1/schedules",
@@ -1783,12 +1910,7 @@ describe("emergency safety gate", () => {
       resolution: "1920x1080",
       tags: [],
     });
-    const viewer = app.jwt.sign({
-      sub: store.users[1]!.id,
-      email: store.users[1]!.email,
-      organizationId: "org-a",
-      role: "VIEWER",
-    });
+    const viewer = issueTestToken(store.users[1]!);
     const payload = {
       title: "Denied drill",
       message: "Must not activate",

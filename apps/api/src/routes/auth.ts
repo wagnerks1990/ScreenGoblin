@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { compare } from "bcryptjs";
 import { z } from "zod";
 import { ApiError } from "../utils/http.js";
+import { randomToken, sha256 } from "../utils/crypto.js";
 import {
   enforceRateLimitBudget,
   opaqueRateLimitKey,
@@ -11,6 +12,7 @@ import {
 // does not exist. It is not a credential for any ScreenGoblin account.
 const DUMMY_PASSWORD_HASH =
   "$2b$12$C6UzMDM.H6dfI/f/IKcEe.82jG7y4g4AY8I8HibLFSWafVkx8S4hS";
+const SESSION_LIFETIME_SECONDS = 60 * 60;
 
 const loginSchema = z
   .object({
@@ -69,29 +71,44 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           "INVALID_CREDENTIALS",
           "Email or password is incorrect",
         );
+      const sessionId = randomToken();
+      const expiresAt = new Date(
+        Date.now() + SESSION_LIFETIME_SECONDS * 1000,
+      ).toISOString();
       const accessToken = await request.server.jwt.sign(
         {
           sub: user.id,
           email: user.email,
           organizationId: user.organizationId,
           role: user.role,
+          sessionId,
         },
-        { expiresIn: "8h" },
+        { expiresIn: SESSION_LIFETIME_SECONDS },
       );
-      await app.store.audit({
-        organizationId: user.organizationId,
-        actorUserId: user.id,
-        actorType: "user",
-        action: "auth.login_succeeded",
-        entityType: "session",
-        ipAddress: request.ip,
-        requestId: request.id,
-        metadata: {},
-      });
+      const created = await app.store.createUserSessionAndAudit(
+        user.organizationId,
+        {
+          tokenHash: sha256(sessionId),
+          expiresAt,
+          expectedPasswordHash: user.passwordHash,
+          expectedRole: user.role,
+        },
+        {
+          actorUserId: user.id,
+          ipAddress: request.ip,
+          requestId: request.id,
+        },
+      );
+      if (!created.created)
+        throw new ApiError(
+          401,
+          "INVALID_CREDENTIALS",
+          "Email or password is incorrect",
+        );
       return {
         accessToken,
         tokenType: "Bearer",
-        expiresIn: 28800,
+        expiresIn: SESSION_LIFETIME_SECONDS,
         user: {
           id: user.id,
           email: user.email,
@@ -103,6 +120,28 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     },
   );
   app.get("/auth/me", { onRequest: [app.authenticate] }, async (request) => ({
-    user: request.user,
+    user: {
+      sub: request.user.sub,
+      email: request.user.email,
+      organizationId: request.user.organizationId,
+      role: request.user.role,
+    },
   }));
+  app.post(
+    "/auth/logout",
+    { onRequest: [app.authenticate] },
+    async (request, reply) => {
+      await app.store.revokeUserSessionAndAudit(
+        request.user.sub,
+        request.user.organizationId,
+        sha256(request.user.sessionId),
+        {
+          actorUserId: request.user.sub,
+          ipAddress: request.ip,
+          requestId: request.id,
+        },
+      );
+      return reply.code(204).send();
+    },
+  );
 };

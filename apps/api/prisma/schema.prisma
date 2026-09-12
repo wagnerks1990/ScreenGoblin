@@ -106,9 +106,24 @@ model Membership {
   user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   publishedReleases  PublishedRelease[]  @relation("PublishedReleaseCreatorMembership")
   releaseAssignments ReleaseAssignment[] @relation("ReleaseAssignmentCreatorMembership")
+  userSessions       UserSession[]
 
   @@unique([organizationId, userId])
   @@index([userId])
+}
+
+model UserSession {
+  id             String     @id @default(cuid())
+  organizationId String
+  userId         String
+  tokenHash      String     @unique
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  createdAt      DateTime   @default(now())
+  membership     Membership @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Cascade)
+
+  @@index([organizationId, userId])
+  @@index([expiresAt])
 }
 
 model Screen {

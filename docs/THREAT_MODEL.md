@@ -37,6 +37,13 @@ ScreenGoblin is not currently a certified emergency-notification or life-safety 
 | Database/object loss            | Lost schedules/media/audit                             | Encrypted versioned backups, restore drills, retention and off-host copies                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Screenshot privacy leak         | Unintended personal data                               | Role-gate, audit, short retention, encryption, disable per location where required                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
+User access tokens expire after one hour and carry a random per-login
+session identity whose SHA-256 hash is stored. Every authenticated user request
+checks that exact session's expiry and revocation together with live user,
+membership, organization, and role state. Current-session logout commits the
+revocation and audit event atomically without revoking other sessions. External
+IdP, SSO, MFA, and step-up authentication remain pre-production requirements.
+
 The isolated non-production emergency fixture path rechecks current emergency
 capabilities, locks organization-scoped targets, and commits each activation or
 clear with its audit event in one transaction. Production remains hard-disabled

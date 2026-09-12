@@ -1819,6 +1819,198 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).resolves.toMatchObject({ organizationId: beta.id, role: "VIEWER" });
   });
 
+  it("tracks, prunes, and independently revokes user sessions", async () => {
+    const [organization, otherOrganization] = await Promise.all([
+      createOrganization("user-sessions"),
+      createOrganization("user-sessions-other"),
+    ]);
+    const actor = await createMember(organization.id, "OWNER", "sessions");
+    const expiredHash = "c".repeat(64);
+    await prisma.userSession.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        tokenHash: expiredHash,
+        expiresAt: new Date(Date.now() - 1_000),
+      },
+    });
+    const createSession = (tokenHash: string) =>
+      store.createUserSessionAndAudit(
+        organization.id,
+        {
+          tokenHash,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          expectedPasswordHash: actor.passwordHash,
+          expectedRole: "OWNER",
+        },
+        { actorUserId: actor.id, requestId: `login-${tokenHash[0]}` },
+      );
+    const firstHash = "a".repeat(64);
+    const secondHash = "b".repeat(64);
+    const first = await createSession(firstHash);
+    const second = await createSession(secondHash);
+    expect(first).toMatchObject({ created: true });
+    expect(second).toMatchObject({ created: true });
+    expect(
+      await prisma.userSession.findUnique({
+        where: { tokenHash: expiredHash },
+      }),
+    ).toBeNull();
+    await expect(
+      store.findActiveUserSession(actor.id, organization.id, firstHash),
+    ).resolves.toMatchObject({ id: actor.id, role: "OWNER" });
+    await expect(
+      store.findActiveUserSession(actor.id, otherOrganization.id, firstHash),
+    ).resolves.toBeNull();
+
+    const revocations = await Promise.all([
+      store.revokeUserSessionAndAudit(actor.id, organization.id, firstHash, {
+        actorUserId: actor.id,
+        requestId: "logout-first",
+      }),
+      store.revokeUserSessionAndAudit(actor.id, organization.id, firstHash, {
+        actorUserId: actor.id,
+        requestId: "logout-race",
+      }),
+    ]);
+    expect(revocations.filter((result) => result.revoked)).toHaveLength(1);
+    expect(
+      revocations.filter(
+        (result) => !result.revoked && result.reason === "NOT_FOUND",
+      ),
+    ).toHaveLength(1);
+    await expect(
+      store.findActiveUserSession(actor.id, organization.id, firstHash),
+    ).resolves.toBeNull();
+    await expect(
+      store.findActiveUserSession(actor.id, organization.id, secondHash),
+    ).resolves.toMatchObject({ id: actor.id });
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          organizationId: organization.id,
+          action: "auth.logout",
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it("rolls back session creation and revocation when audit insertion fails", async () => {
+    const organization = await createOrganization("session-audit-rollback");
+    const actor = await createMember(
+      organization.id,
+      "ADMIN",
+      "session-audit-rollback",
+    );
+    const existingHash = "d".repeat(64);
+    await prisma.userSession.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        tokenHash: existingHash,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_session_audits" CHECK ("action" NOT IN (\'auth.login_succeeded\', \'auth.logout\'))',
+    );
+    const rejectedHash = "e".repeat(64);
+    try {
+      await expect(
+        store.createUserSessionAndAudit(
+          organization.id,
+          {
+            tokenHash: rejectedHash,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            expectedPasswordHash: actor.passwordHash,
+            expectedRole: "ADMIN",
+          },
+          { actorUserId: actor.id },
+        ),
+      ).rejects.toThrow();
+      await expect(
+        store.revokeUserSessionAndAudit(
+          actor.id,
+          organization.id,
+          existingHash,
+          { actorUserId: actor.id },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_session_audits"',
+      );
+    }
+    expect(
+      await prisma.userSession.findUnique({
+        where: { tokenHash: rejectedHash },
+      }),
+    ).toBeNull();
+    await expect(
+      prisma.userSession.findUniqueOrThrow({
+        where: { tokenHash: existingHash },
+      }),
+    ).resolves.toMatchObject({ revokedAt: null });
+  });
+
+  it("rejects session issuance after credential or membership state changes", async () => {
+    const organization = await createOrganization("session-revalidation");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "session-revalidation",
+    );
+    const input = {
+      tokenHash: "f".repeat(64),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      expectedPasswordHash: actor.passwordHash,
+      expectedRole: "OWNER" as const,
+    };
+    await prisma.membership.update({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+      data: { role: "VIEWER" },
+    });
+    await expect(
+      store.createUserSessionAndAudit(organization.id, input, {
+        actorUserId: actor.id,
+      }),
+    ).resolves.toEqual({ created: false, reason: "FORBIDDEN" });
+
+    await prisma.membership.update({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+      data: { role: "OWNER" },
+    });
+    await prisma.user.update({
+      where: { id: actor.id },
+      data: { passwordHash: "changed-password-hash" },
+    });
+    await expect(
+      store.createUserSessionAndAudit(organization.id, input, {
+        actorUserId: actor.id,
+      }),
+    ).resolves.toEqual({ created: false, reason: "FORBIDDEN" });
+    expect(
+      await prisma.userSession.count({
+        where: { organizationId: organization.id },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.auditEvent.count({
+        where: { organizationId: organization.id },
+      }),
+    ).toBe(0);
+  });
+
   it("rechecks release capabilities from locked current memberships before writes", async () => {
     const [organization, otherOrganization] = await Promise.all([
       createOrganization("release-capabilities"),

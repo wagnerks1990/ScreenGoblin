@@ -8,6 +8,7 @@ import {
 } from "../src/device-proof/canonical.js";
 import { sha256Base64Url } from "../src/device-proof/crypto.js";
 import { MemoryStore } from "../src/store/memory.js";
+import { randomToken, sha256 } from "../src/utils/crypto.js";
 
 const jwtSecret = "test-secret-that-is-longer-than-thirty-two-characters";
 const manifestSigningKey = Buffer.alloc(32, 7).toString("base64url");
@@ -82,12 +83,25 @@ describe("proof-v1 device routes", () => {
       deviceAuthMode: "proof-v1",
       mediaAllowedOrigins: ["https://media.example.test"],
     });
-    ownerToken = app.jwt.sign({
-      sub: store.users[0]!.id,
-      email: store.users[0]!.email,
+    const sessionId = randomToken();
+    store.userSessions.push({
+      id: crypto.randomUUID(),
       organizationId: "org-a",
-      role: "OWNER",
+      userId: store.users[0]!.id,
+      tokenHash: sha256(sessionId),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      createdAt: new Date().toISOString(),
     });
+    ownerToken = app.jwt.sign(
+      {
+        sub: store.users[0]!.id,
+        email: store.users[0]!.email,
+        organizationId: "org-a",
+        role: "OWNER",
+        sessionId,
+      },
+      { expiresIn: "1h" },
+    );
   });
 
   afterEach(async () => {
