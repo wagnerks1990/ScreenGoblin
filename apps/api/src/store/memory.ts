@@ -38,6 +38,7 @@ import {
   releaseSnapshotDigest,
 } from "../releases/canonical.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
+import { mediaPublicationFailure } from "../utils/media-policy.js";
 import { hasCapability } from "../authorization/policy.js";
 import { CAPABILITIES } from "@screengoblin/contracts";
 import { randomToken } from "../utils/crypto.js";
@@ -1404,6 +1405,8 @@ export class MemoryStore implements DataStore {
       )
     )
       return { published: false, reason: "ASSET_NOT_ALLOWED" };
+    const mediaFailure = mediaPublicationFailure(sourceAssets, new Date());
+    if (mediaFailure) return { published: false, reason: mediaFailure };
 
     let snapshot;
     try {

@@ -45,13 +45,18 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   current role-to-capability map is only a compatibility adapter; do not treat it
   as scoped authorization or an approval workflow.
 - Tenant-owned database relationships must carry and enforce the same organization ID at the foreign-key boundary; migrations must abort for investigation rather than silently relabel cross-tenant legacy rows.
-- Production media must match an explicit canonical HTTPS origin. Direct player delivery still requires controlled DNS and egress because hostname allowlisting alone cannot prevent rebinding to private addresses.
+- Production media must match an explicit canonical HTTPS origin. The current
+  metadata-only boundary accepts only pre-provisioned JPEG, PNG, MP4, and JSON
+  template assets, disables web content, and enforces 128 MiB per asset and
+  512 MiB per release. Direct player delivery still requires controlled DNS and
+  egress because hostname allowlisting alone cannot prevent rebinding to private
+  addresses.
 - Remote shell is not a default capability. Any future implementation needs explicit authorization, consent, scope, expiry, strong audit, and product-level review.
 
 ## Deliberately disabled or incomplete
 
-Emergency activation, remote commands, screenshots, proof of play,
-uploads/scanning, release approvals, scoped location authorization, MFA/SSO,
+Emergency activation, remote commands, screenshots, proof of play, binary
+uploads/scanning/transcoding/private delivery, release approvals, scoped location authorization, MFA/SSO,
 update rings, device hardware/application attestation, automatic overlapping
 credential rotation, verified local erasure, offline recall, and representative
 physical-device validation are not complete release capabilities. Staged

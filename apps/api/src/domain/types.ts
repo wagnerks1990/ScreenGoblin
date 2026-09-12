@@ -181,6 +181,9 @@ export type SchedulePublicationResult =
         | "SCREEN_NOT_FOUND"
         | "ASSET_NOT_FOUND"
         | "ASSET_NOT_ALLOWED"
+        | "ASSET_UNSUPPORTED"
+        | "ASSET_EXPIRED"
+        | "RELEASE_TOO_LARGE"
         | "NO_PLAYABLE_ITEMS"
         | "FORBIDDEN";
     };

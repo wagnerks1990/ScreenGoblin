@@ -9,6 +9,8 @@ export interface PlayerAsset {
   checksumSha256: string;
   sizeBytes: number;
   durationSeconds: number;
+  /** Signed hard boundary after which this asset must not play offline. */
+  expiresAt?: string;
 }
 
 export interface PlayerManifest {

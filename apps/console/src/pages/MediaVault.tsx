@@ -1,52 +1,139 @@
-import { useMemo, useState } from "react";
+import type { MediaAsset } from "@screengoblin/contracts";
+import { useEffect, useMemo, useState } from "react";
 import {
   Grid3X3,
   List,
-  Upload,
   Image as ImageIcon,
   Video,
   Globe2,
   LayoutTemplate,
-  MoreHorizontal,
   FileQuestion,
+  TriangleAlert,
+  LockKeyhole,
 } from "lucide-react";
-import { assets } from "../data";
+import { assets, type Asset } from "../data";
+import { api } from "../api";
 import {
   Button,
   EmptyState,
-  Modal,
   PageHeader,
   SearchBox,
   Select,
-  Field,
 } from "../components";
+
+type VaultAsset = Asset & { source: "live" | "provisioned" };
+
+const typeName = (kind: MediaAsset["kind"]): Asset["type"] =>
+  (
+    ({
+      image: "Image",
+      video: "Video",
+      web: "Web",
+      template: "Template",
+    }) as const
+  )[kind];
+
+const formatBytes = (bytes: number) => {
+  if (bytes === 0) return "0 B";
+  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), 3);
+  return `${(bytes / 1024 ** unit).toFixed(unit === 0 ? 0 : 1)} ${["B", "KB", "MB", "GB"][unit]}`;
+};
+
+const formatDate = (value: string) =>
+  new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
+    new Date(value),
+  );
+
+const presentLiveAsset = (asset: MediaAsset): VaultAsset => ({
+  id: asset.id,
+  name: asset.name,
+  type: typeName(asset.kind),
+  ratio: asset.mimeType,
+  size: formatBytes(asset.sizeBytes),
+  updated: formatDate(asset.createdAt),
+  ...(asset.expiresAt ? { expires: formatDate(asset.expiresAt) } : {}),
+  color: { image: "violet", video: "blue", web: "cyan", template: "green" }[
+    asset.kind
+  ],
+  source: "live",
+});
 
 export function MediaVault() {
   const [query, setQuery] = useState("");
   const [type, setType] = useState("All types");
   const [view, setView] = useState<"grid" | "list">("grid");
-  const [upload, setUpload] = useState(false);
+  const liveSession = api.hasLiveSession();
+  const [inventory, setInventory] = useState<VaultAsset[]>(
+    liveSession
+      ? []
+      : assets.map((asset) => ({ ...asset, source: "provisioned" })),
+  );
+  const [loading, setLoading] = useState(liveSession);
+  const [loadError, setLoadError] = useState("");
+  useEffect(() => {
+    if (!liveSession) return;
+    let active = true;
+    api
+      .media()
+      .then((result) => {
+        if (!active) return;
+        setInventory(result.data.map(presentLiveAsset));
+        setLoadError("");
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setInventory([]);
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Live media inventory could not be loaded",
+        );
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [liveSession]);
   const filtered = useMemo(
     () =>
-      assets.filter(
+      inventory.filter(
         (asset) =>
           asset.name.toLowerCase().includes(query.toLowerCase()) &&
           (type === "All types" || asset.type === type),
       ),
-    [query, type],
+    [inventory, query, type],
   );
   return (
     <>
       <PageHeader
         eyebrow="Content"
         title="Media vault"
-        description="Upload, organize, and review every asset in one place."
-        actions={
-          <Button icon={<Upload size={18} />} onClick={() => setUpload(true)}>
-            Upload media
-          </Button>
-        }
+        description="Review media already provisioned through an approved content pipeline."
       />
+      <div className="vault-boundary" role="status">
+        <LockKeyhole size={18} />
+        <span>
+          <b>
+            {liveSession
+              ? "Live inventory · read only"
+              : "Pre-provisioned sample inventory · read only"}
+          </b>
+          {liveSession
+            ? " Upload and web-content creation are unavailable in this console."
+            : " Connect to the live API to inspect your organization’s inventory; these samples are not live records."}
+        </span>
+      </div>
+      {loadError && (
+        <div className="operational-error" role="alert">
+          <TriangleAlert size={18} />
+          <span>
+            <b>Live media unavailable.</b> {loadError}. No sample records have
+            been substituted.
+          </span>
+        </div>
+      )}
       <div className="toolbar">
         <SearchBox
           value={query}
@@ -77,7 +164,13 @@ export function MediaVault() {
           </button>
         </div>
       </div>
-      {filtered.length ? (
+      {loading ? (
+        <EmptyState
+          icon={<ImageIcon />}
+          title="Loading media inventory"
+          message="Requesting current records from the live API."
+        />
+      ) : filtered.length ? (
         <div className={`asset-${view}`}>
           {filtered.map((asset) => (
             <article key={asset.id} className="asset-card">
@@ -93,14 +186,11 @@ export function MediaVault() {
                     {asset.type} · {asset.size}
                   </small>
                 </span>
-                <button
-                  className="icon-button"
-                  aria-label={`More options for ${asset.name}`}
-                >
-                  <MoreHorizontal size={18} />
-                </button>
               </div>
-              <div className="asset-meta">Updated {asset.updated}</div>
+              <div className="asset-meta">
+                {asset.source === "live" ? "Created" : "Sample updated"}{" "}
+                {asset.updated}
+              </div>
             </article>
           ))}
         </div>
@@ -108,52 +198,28 @@ export function MediaVault() {
         <EmptyState
           icon={<FileQuestion />}
           title="No media found"
-          message="Try a broader search or remove a filter."
+          message={
+            loadError
+              ? "The live API returned no usable inventory. Retry after connectivity is restored."
+              : inventory.length
+                ? "Try a broader search or remove a filter."
+                : "No media has been provisioned for this organization."
+          }
           action={
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setQuery("");
-                setType("All types");
-              }}
-            >
-              Clear filters
-            </Button>
+            inventory.length ? (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setQuery("");
+                  setType("All types");
+                }}
+              >
+                Clear filters
+              </Button>
+            ) : undefined
           }
         />
       )}
-      <Modal
-        open={upload}
-        onClose={() => setUpload(false)}
-        title="Upload media"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setUpload(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => setUpload(false)}>Add to vault</Button>
-          </>
-        }
-      >
-        <div className="dropzone">
-          <Upload />
-          <b>Drop files here, or choose files</b>
-          <span>Images and videos up to 500 MB</span>
-          <Button variant="secondary">Choose files</Button>
-        </div>
-        <div className="form-row">
-          <Field label="Folder">
-            <select>
-              <option>All media</option>
-              <option>Announcements</option>
-              <option>Events</option>
-            </select>
-          </Field>
-          <Field label="Expires">
-            <input type="date" />
-          </Field>
-        </div>
-      </Modal>
     </>
   );
 }

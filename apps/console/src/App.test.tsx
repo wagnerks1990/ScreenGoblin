@@ -140,6 +140,62 @@ describe("ScreenGoblin console", () => {
     ).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Clear filters" }));
     expect(screen.getByText("Club Fair — September")).toBeTruthy();
+    expect(
+      screen.getByText(/pre-provisioned sample inventory · read only/i),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /upload media/i })).toBeNull();
+  });
+
+  it("renders only live media records for an authenticated session", async () => {
+    setAdminSession();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "media-live-1",
+                name: "Approved safety notice",
+                kind: "image",
+                mimeType: "image/png",
+                url: "https://media.example.test/notice.png",
+                checksumSha256: "a".repeat(64),
+                sizeBytes: 2048,
+                createdAt: "2030-01-02T00:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/media"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Approved safety notice")).toBeTruthy();
+    expect(screen.queryByText("Club Fair — September")).toBeNull();
+    expect(screen.getByText(/live inventory · read only/i)).toBeTruthy();
+  });
+
+  it("shows an explicit live media error without sample substitution", async () => {
+    setAdminSession();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    render(
+      <MemoryRouter initialEntries={["/media"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /no sample records have been substituted/i,
+    );
+    expect(screen.queryByText("Club Fair — September")).toBeNull();
   });
 
   it("opens screen details from the fleet table", async () => {

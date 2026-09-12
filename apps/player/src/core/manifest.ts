@@ -9,9 +9,59 @@ const MAX_ITEMS = 500;
 const MAX_ASSET_BYTES = 128 * 1024 * 1024;
 const MAX_RELEASE_BYTES = 512 * 1024 * 1024;
 
+function isAllowedKindAndMime(
+  item: PlayerManifest["items"][number],
+  priority: PlayerManifest["priority"],
+): boolean {
+  if (
+    priority === "emergency" &&
+    item.kind === "template" &&
+    item.mimeType === "application/vnd.screengoblin.emergency+json"
+  )
+    return true;
+  return (
+    (item.kind === "image" &&
+      ["image/jpeg", "image/png"].includes(item.mimeType)) ||
+    (item.kind === "video" && item.mimeType === "video/mp4") ||
+    (item.kind === "template" && item.mimeType === "application/json")
+  );
+}
+
+export function manifestPlaybackEndsAt(
+  manifest: PlayerManifest,
+): number | undefined {
+  const boundaries = [
+    manifest.playbackEndsAt,
+    ...manifest.items.map((item) => item.expiresAt),
+  ]
+    .filter((value): value is string => value !== undefined)
+    .map(Date.parse)
+    .filter(Number.isFinite);
+  return boundaries.length > 0 ? Math.min(...boundaries) : undefined;
+}
+
+function isStoredManifestPlayable(
+  manifest: PlayerManifest | undefined,
+): manifest is PlayerManifest {
+  if (!manifest || manifest.withdrawn) return false;
+  try {
+    assertManifest(manifest);
+  } catch {
+    return false;
+  }
+  if (
+    manifest.priority === "emergency" &&
+    Date.parse(manifest.validUntil) <= Date.now()
+  )
+    return false;
+  const boundary = manifestPlaybackEndsAt(manifest);
+  return boundary === undefined || boundary > Date.now();
+}
+
 function isAllowedAssetUrl(url: string, emergencyTemplate: boolean): boolean {
   try {
     const parsed = new URL(url);
+    if (parsed.username || parsed.password) return false;
     if (parsed.protocol === "https:") return true;
     if (
       parsed.protocol === "http:" &&
@@ -85,20 +135,27 @@ export function assertManifest(
           item.kind === "template" &&
           item.mimeType === "application/vnd.screengoblin.emergency+json",
       ) ||
-      !["image", "video", "web", "template"].includes(item.kind) ||
+      !isAllowedKindAndMime(item, manifest.priority) ||
       !Number.isInteger(item.durationSeconds) ||
       item.durationSeconds < 1 ||
       item.durationSeconds > 86_400 ||
       !Number.isSafeInteger(item.sizeBytes) ||
-      item.sizeBytes < 0 ||
+      item.sizeBytes < 1 ||
       item.sizeBytes > MAX_ASSET_BYTES
     )
       throw new ManifestError(`Asset ${item.id || "unknown"} is invalid`);
     releaseBytes += item.sizeBytes;
     if (releaseBytes > MAX_RELEASE_BYTES)
       throw new ManifestError("Manifest release exceeds the size limit");
-    if (item.kind !== "web" && !/^[a-f\d]{64}$/i.test(item.checksumSha256))
+    if (!/^[a-f\d]{64}$/i.test(item.checksumSha256))
       throw new ManifestError(`Asset ${item.id} has no valid SHA-256 checksum`);
+    if (
+      item.expiresAt !== undefined &&
+      (typeof item.expiresAt !== "string" ||
+        !Number.isFinite(Date.parse(item.expiresAt)) ||
+        Date.parse(item.expiresAt) <= Date.parse(manifest.generatedAt))
+    )
+      throw new ManifestError(`Asset ${item.id} expiry is invalid`);
   }
 }
 
@@ -130,14 +187,12 @@ export class ManifestManager {
     if (Date.parse(candidate.validUntil) <= Date.now())
       throw new ManifestError("Manifest has already expired");
     const active = await this.store.getActiveManifest();
+    const playbackBoundary = manifestPlaybackEndsAt(candidate);
     const playbackEnded =
-      candidate.playbackEndsAt !== undefined &&
-      Date.parse(candidate.playbackEndsAt) <= Date.now();
+      playbackBoundary !== undefined && playbackBoundary <= Date.now();
     if (active?.version !== candidate.version && !playbackEnded)
       await Promise.all(
-        candidate.items
-          .filter((item) => item.kind !== "web")
-          .map((item) => this.assets.prefetch(item)),
+        candidate.items.map((item) => this.assets.prefetch(item)),
       );
     await this.store.activateManifest(candidate);
     if (this.assets.prune) {
@@ -163,11 +218,6 @@ export class ManifestManager {
     // last-known-good playback. `playbackEndsAt` is the signed hard schedule
     // boundary and blanks locally without reviving an older release.
     if (
-      active?.playbackEndsAt !== undefined &&
-      Date.parse(active.playbackEndsAt) <= Date.now()
-    )
-      return undefined;
-    if (
       active?.priority === "emergency" &&
       Date.parse(active.validUntil) <= Date.now()
     ) {
@@ -178,23 +228,20 @@ export class ManifestManager {
       )
         return undefined;
       const previous = await this.store.rollback(active.version);
-      return previous?.withdrawn ? undefined : previous;
+      return isStoredManifestPlayable(previous) ? previous : undefined;
     }
+    if (active && !isStoredManifestPlayable(active)) return undefined;
     if (active) return active;
     const previous = await this.store.rollback();
-    return previous?.withdrawn ? undefined : previous;
+    return isStoredManifestPlayable(previous) ? previous : undefined;
   }
 
   async rollback(
     expectedActiveVersion?: string,
   ): Promise<PlayerManifest | undefined> {
     const resultingActive = await this.store.rollback(expectedActiveVersion);
-    if (
-      resultingActive?.withdrawn ||
-      (resultingActive?.playbackEndsAt !== undefined &&
-        Date.parse(resultingActive.playbackEndsAt) <= Date.now())
-    )
-      return undefined;
-    return resultingActive;
+    return isStoredManifestPlayable(resultingActive)
+      ? resultingActive
+      : undefined;
   }
 }

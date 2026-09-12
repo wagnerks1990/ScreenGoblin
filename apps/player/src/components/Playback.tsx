@@ -157,6 +157,8 @@ function PlaybackContent({
 
     void (async () => {
       try {
+        if (itemKind === "web")
+          throw new Error("Web content playback is disabled");
         const url = await assets.resolve({
           id: itemId,
           kind: itemKind,
@@ -293,16 +295,6 @@ function PlaybackContent({
           playsInline
           onPlaying={() => markReady(generation, item.id)}
           onEnded={() => advance(generation)}
-          onError={() => fail(generation)}
-        />
-      )}
-      {currentSource && item.kind === "web" && (
-        <iframe
-          src={currentSource}
-          title="Signage web content"
-          sandbox="allow-scripts"
-          referrerPolicy="no-referrer"
-          onLoad={() => markReady(generation, item.id)}
           onError={() => fail(generation)}
         />
       )}

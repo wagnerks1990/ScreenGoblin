@@ -215,7 +215,10 @@ export function App() {
                 />
               }
             />
-            <Route path="/media" element={<MediaVault />} />
+            <Route
+              path="/media"
+              element={<MediaVault key={liveSession ? "live" : "demo"} />}
+            />
             <Route path="/playlists" element={<Playlists />} />
             <Route path="/schedules" element={<Schedules />} />
             <Route
@@ -272,20 +275,6 @@ export function App() {
             </span>
             <b>Start from template</b>
             <small>Use an approved district layout</small>
-          </button>
-          <button>
-            <span className="creation-icon blue">
-              <Images />
-            </span>
-            <b>Upload media</b>
-            <small>Add an image or video</small>
-          </button>
-          <button>
-            <span className="creation-icon violet">
-              <CalendarDays />
-            </span>
-            <b>Connect data</b>
-            <small>Calendar, webpage, or feed</small>
           </button>
           <button>
             <span className="creation-icon amber">

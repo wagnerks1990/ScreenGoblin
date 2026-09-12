@@ -35,6 +35,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Protect short pairing codes at rest with a deployment-specific HMAC pepper.
 - Add audit records for pairing creation and media, playlist, and schedule lifecycle mutations.
 - Reject non-HTTPS media locations except explicit loopback development URLs and support an approved-origin allowlist.
+- Lock the metadata-only media boundary to pre-provisioned JPEG, PNG, MP4,
+  and JSON template assets; disable web media; normalize SHA-256 values; and
+  enforce 128 MiB per-asset, 512 MiB per-release, and future-expiry rules at
+  both registration and transactional publication boundaries.
 - Restrict proxy trust, cap API request bodies at 2 MiB, emit `Cache-Control: no-store` for API responses, disable the Caddy admin endpoint, and add browser security headers.
 - Enforce the configured API log level and reject unsafe production origins or reused trust secrets.
 - Make container filesystem scanning fail on unresolved HIGH/CRITICAL findings.
@@ -91,6 +95,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   repeated starts use the later occurrence, and repeated ends use the earlier
   occurrence so ended content cannot reactivate.
 - Stop authenticated Console failures from silently displaying demo fleet data.
+- Make the Media Vault a truthful read-only live inventory, remove simulated
+  upload/web creation controls, and never substitute samples after a live API
+  failure.
 - Load the Fleet page from the live API and visibly disable unimplemented device commands.
 - Clear passwords from Console state after close and every login attempt.
 - Make `npm run validate` generate Prisma types so the documented clean-checkout workflow is reproducible.

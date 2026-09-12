@@ -95,6 +95,22 @@ describe("authenticated live data boundary", () => {
     expect(result.data.length).toBeGreaterThan(0);
   });
 
+  it("loads media from the authenticated API without a live fallback", async () => {
+    window.sessionStorage.setItem("sg_access_token", "live-token");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ data: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const result = await api.media();
+    expect(result).toEqual({ data: [], source: "live" });
+  });
+
   it("uses the authenticated staged device replacement endpoints", async () => {
     window.sessionStorage.setItem("sg_access_token", "admin-token");
     const fetchMock = vi

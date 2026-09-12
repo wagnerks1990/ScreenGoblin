@@ -622,6 +622,96 @@ describe("immutable ordinary release publication", () => {
     expect(store.releaseAssignments).toEqual([]);
     expect(store.audits).toEqual([]);
   });
+
+  it("rejects expired, unsupported, and oversized aggregate releases atomically", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Lobby",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const publish = (playlistId: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/schedules",
+        headers: { authorization: `Bearer ${token}` },
+        payload: schedulePayload(playlistId, screen.id),
+      });
+    const createSingleAssetPlaylist = async (
+      name: string,
+      overrides: Partial<Parameters<MemoryStore["createMedia"]>[1]>,
+    ) => {
+      const asset = await store.createMedia("org-a", {
+        name,
+        kind: "image",
+        mimeType: "image/png",
+        url: `https://media.example.test/${name}.png`,
+        checksumSha256: "d".repeat(64),
+        sizeBytes: 1,
+        ...overrides,
+      });
+      return store.createPlaylist("org-a", {
+        name,
+        description: "",
+        items: [
+          {
+            id: "ignored",
+            assetId: asset.id,
+            position: 0,
+            durationSeconds: 10,
+          },
+        ],
+      });
+    };
+
+    const expired = await createSingleAssetPlaylist("Expired", {
+      expiresAt: new Date(Date.now() - 1).toISOString(),
+    });
+    const expiredResponse = await publish(expired.id);
+    expect(expiredResponse.statusCode).toBe(422);
+    expect(expiredResponse.json().error.code).toBe("MEDIA_EXPIRED");
+
+    const unsupported = await createSingleAssetPlaylist("Unsupported", {
+      kind: "web",
+      mimeType: "text/html",
+    });
+    const unsupportedResponse = await publish(unsupported.id);
+    expect(unsupportedResponse.statusCode).toBe(422);
+    expect(unsupportedResponse.json().error.code).toBe(
+      "MEDIA_TYPE_NOT_SUPPORTED",
+    );
+
+    const aggregateAssets = await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        store.createMedia("org-a", {
+          name: `Large ${index}`,
+          kind: "video",
+          mimeType: "video/mp4",
+          url: `https://media.example.test/large-${index}.mp4`,
+          checksumSha256: String(index).repeat(64),
+          sizeBytes: 128 * 1024 * 1024,
+        }),
+      ),
+    );
+    const aggregate = await store.createPlaylist("org-a", {
+      name: "Aggregate too large",
+      description: "",
+      items: aggregateAssets.map((asset, position) => ({
+        id: "ignored",
+        assetId: asset.id,
+        position,
+        durationSeconds: 10,
+      })),
+    });
+    const aggregateResponse = await publish(aggregate.id);
+    expect(aggregateResponse.statusCode).toBe(422);
+    expect(aggregateResponse.json().error.code).toBe("RELEASE_TOO_LARGE");
+    expect(store.schedules).toEqual([]);
+    expect(store.releases).toEqual([]);
+    expect(store.releaseAssignments).toEqual([]);
+    expect(store.audits).toEqual([]);
+  });
 });
 
 describe("device lifecycle", () => {
@@ -898,6 +988,73 @@ describe("device lifecycle", () => {
     });
   });
 
+  it("withdraws legacy frozen web and unsupported media at manifest time", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("legacy-web-release-device");
+    await scheduledPlaylist(device.screenId);
+    const frozenAsset = store.releases[0]!.items[0]!.asset;
+
+    frozenAsset.kind = "web";
+    frozenAsset.mimeType = "text/html";
+    const webManifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(webManifest).toMatchObject({
+      priority: "normal",
+      withdrawn: true,
+      items: [],
+    });
+
+    frozenAsset.kind = "image";
+    frozenAsset.mimeType = "image/svg+xml";
+    const unsupportedManifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(unsupportedManifest).toMatchObject({
+      priority: "normal",
+      withdrawn: true,
+      items: [],
+    });
+
+    frozenAsset.mimeType = "image/png";
+    frozenAsset.url = "https://user:secret@media.example.test/legacy.png";
+    const credentialedUrlManifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(credentialedUrlManifest).toMatchObject({
+      priority: "normal",
+      withdrawn: true,
+      items: [],
+    });
+  });
+
+  it("carries the frozen asset expiry in the signed manifest", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("expiring-release-device");
+    await scheduledPlaylist(device.screenId);
+    const expiresAt = "2026-09-14T13:45:00.000Z";
+    store.releases[0]!.items[0]!.asset.expiresAt = expiresAt;
+
+    const manifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(manifest.items[0].asset.expiresAt).toBe(expiresAt);
+  });
+
   it("ignores legacy schedules that have no immutable release", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
@@ -936,7 +1093,7 @@ describe("device lifecycle", () => {
     expect(manifest).not.toHaveProperty("playbackEndsAt");
   });
 
-  it("publishes a signed withdrawal when every scheduled asset is expired", async () => {
+  it("rejects publication when every scheduled asset is expired", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
     const device = await pairDevice("expired-playlist-device");
@@ -974,20 +1131,16 @@ describe("device lifecycle", () => {
       { actorUserId: store.users[0]!.id },
       { mediaAllowedOrigins: ["https://media.example.test"] },
     );
-    expect(publication.published).toBe(true);
-
-    const manifest = (
-      await app.inject({
-        url: "/api/v1/device/manifest",
-        headers: device.headers,
-      })
-    ).json();
-    expect(manifest).toMatchObject({
-      priority: "normal",
-      withdrawn: true,
-      items: [],
-      signatureAlgorithm: "Ed25519",
+    expect(publication).toEqual({
+      published: false,
+      reason: "ASSET_EXPIRED",
     });
+    expect(store.schedules).toEqual([]);
+    expect(store.releases).toEqual([]);
+    expect(store.releaseAssignments).toEqual([]);
+    expect(
+      store.audits.filter((audit) => audit.action === "release.published"),
+    ).toEqual([]);
   });
 
   it("publishes the selected schedule end separately from the envelope lease", async () => {
@@ -1098,6 +1251,88 @@ describe("device lifecycle", () => {
 });
 
 describe("media trust boundary", () => {
+  it("accepts only supported kind and MIME pairs and disables web content", async () => {
+    for (const payload of [
+      {
+        name: "Disabled web content",
+        kind: "web",
+        mimeType: "text/html",
+        url: "https://media.example.test/page.html",
+      },
+      {
+        name: "Mismatched image",
+        kind: "image",
+        mimeType: "video/mp4",
+        url: "https://media.example.test/image.mp4",
+      },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/media",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          ...payload,
+          checksumSha256: "a".repeat(64),
+          sizeBytes: 1,
+        },
+      });
+      expect(response.statusCode).toBe(422);
+      expect(response.json().error.code).toBe("MEDIA_TYPE_NOT_SUPPORTED");
+    }
+    expect(store.media).toEqual([]);
+  });
+
+  it("canonicalizes checksums and requires bounded, unexpired media", async () => {
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Canonical image",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/image.png",
+        checksumSha256: "A".repeat(64),
+        sizeBytes: 128 * 1024 * 1024,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    expect(accepted.statusCode).toBe(201);
+    expect(accepted.json().checksumSha256).toBe("a".repeat(64));
+
+    const oversized = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Oversized image",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/large.png",
+        checksumSha256: "b".repeat(64),
+        sizeBytes: 128 * 1024 * 1024 + 1,
+      },
+    });
+    expect(oversized.statusCode).toBe(400);
+
+    const expired = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Expired image",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/expired.png",
+        checksumSha256: "c".repeat(64),
+        sizeBytes: 1,
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      },
+    });
+    expect(expired.statusCode).toBe(422);
+    expect(expired.json().error.code).toBe("MEDIA_EXPIRY_INVALID");
+  });
+
   it("rejects executable and non-HTTPS media URLs", async () => {
     const response = await app.inject({
       method: "POST",

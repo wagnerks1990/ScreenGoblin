@@ -60,7 +60,12 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
   pilot/release gates.
 - Staff email login is case-insensitive. PostgreSQL enforces a functional unique index on `LOWER(email)`; its migration aborts without changing data when legacy case-only duplicates exist, and runtime lookup also fails closed if it encounters ambiguous identity data.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
-- Media upload/transcoding and object-storage presigning are intentionally adapter boundaries. This prototype stores validated metadata only.
+- Media upload/scanning/transcoding and private object delivery are intentionally
+  adapter boundaries. The prototype registers only pre-provisioned allowlisted
+  JPEG, PNG, MP4, and JSON template metadata; web media is disabled. Registration
+  canonicalizes SHA-256 values and rejects zero/oversized (over 128 MiB) or
+  already-expired assets. Publication transactionally revalidates legacy rows
+  and rejects releases exceeding 512 MiB.
 
 ## Validation
 

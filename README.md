@@ -64,6 +64,12 @@ Point `SCREEN_GOBLIN_HOST` and `PLAYER_HOST` DNS records at the host. Caddy obta
 
 The MinIO bootstrap grants anonymous read access to the media bucket so standalone players can fetch published assets. Treat media URLs as public. Before storing confidential content, replace this with short-lived signed URLs or an authenticated CDN.
 
+The Console media inventory is intentionally read-only. This prototype has no
+browser upload pipeline: an approved external process may pre-provision only
+non-sensitive JPEG, PNG, MP4, or JSON template objects, after which their
+allowlisted immutable metadata can be registered with the API. Web media is
+disabled. Metadata validation is not malware scanning or safe transcoding.
+
 ## Android player
 
 The web player is the shared playback core. When the Android wrapper is present, build it from `apps/player` using its documented Capacitor/Gradle tasks. CI detects `apps/player/android/gradlew` and builds a debug APK. A signed release requires an organization-controlled keystore and a protected CI environment; keystores must never be committed.

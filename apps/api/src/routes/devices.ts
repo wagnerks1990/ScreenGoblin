@@ -18,7 +18,12 @@ import {
   enforceRateLimitBudget,
   opaqueRateLimitKey,
 } from "../utils/rate-limit.js";
-import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
+import {
+  hasMediaUrlCredentials,
+  mediaUrlMatchesAllowedOrigin,
+  usesAllowedMediaScheme,
+} from "../utils/media-url.js";
+import { mediaPublicationFailure } from "../utils/media-policy.js";
 import {
   decodeCanonicalBase64Url,
   DeviceProofFormatError,
@@ -667,6 +672,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           checksumSha256: string;
           sizeBytes: number;
           createdAt: string;
+          expiresAt?: string;
         };
         position: number;
         durationSeconds: number;
@@ -720,30 +726,48 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         );
         const selected = releases[0];
         if (selected) {
-          items = selected.release.items
-            .filter(
-              (item) =>
+          const eligibleItems = selected.release.items.filter((item) => {
+            try {
+              const url = new URL(item.asset.url);
+              return (
+                !hasMediaUrlCredentials(url) &&
+                usesAllowedMediaScheme(url) &&
                 mediaUrlMatchesAllowedOrigin(
                   item.asset.url,
                   app.config.mediaAllowedOrigins,
                 ) &&
-                (!item.asset.expiresAt || item.asset.expiresAt > generatedAt),
-            )
-            .map((item) => ({
-              id: item.id,
-              asset: {
-                id: item.asset.id,
-                name: item.asset.name,
-                kind: item.asset.kind,
-                mimeType: item.asset.mimeType,
-                url: item.asset.url,
-                checksumSha256: item.asset.checksumSha256,
-                sizeBytes: item.asset.sizeBytes,
-                createdAt: item.asset.createdAt,
-              },
-              position: item.position,
-              durationSeconds: item.durationSeconds,
-            }));
+                mediaPublicationFailure([item.asset], generatedDate) ===
+                  undefined
+              );
+            } catch {
+              return false;
+            }
+          });
+          const releaseTooLarge =
+            mediaPublicationFailure(
+              eligibleItems.map((item) => item.asset),
+              generatedDate,
+            ) === "RELEASE_TOO_LARGE";
+          items = releaseTooLarge
+            ? []
+            : eligibleItems.map((item) => ({
+                id: item.id,
+                asset: {
+                  id: item.asset.id,
+                  name: item.asset.name,
+                  kind: item.asset.kind,
+                  mimeType: item.asset.mimeType,
+                  url: item.asset.url,
+                  checksumSha256: item.asset.checksumSha256,
+                  sizeBytes: item.asset.sizeBytes,
+                  createdAt: item.asset.createdAt,
+                  ...(item.asset.expiresAt
+                    ? { expiresAt: item.asset.expiresAt }
+                    : {}),
+                },
+                position: item.position,
+                durationSeconds: item.durationSeconds,
+              }));
           // An applicable schedule without a playable item must clear playback.
           // Publishing an empty non-withdrawn release would be rejected by the
           // player and could leave stale content on screen indefinitely.

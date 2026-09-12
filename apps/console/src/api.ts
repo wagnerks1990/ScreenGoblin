@@ -1,4 +1,8 @@
-import type { FleetSummary, ScreenSummary } from "@screengoblin/contracts";
+import type {
+  FleetSummary,
+  MediaAsset,
+  ScreenSummary,
+} from "@screengoblin/contracts";
 import { demoFleet, screens } from "./data";
 
 export type ApiResult<T> = { data: T; source: "live" | "demo" };
@@ -191,5 +195,11 @@ export const api = {
       data: result.data.data,
       source: result.source,
     };
+  },
+  media: async (): Promise<ApiResult<MediaAsset[]>> => {
+    const result = await request<{ data: MediaAsset[] }>("/media", {
+      data: [],
+    });
+    return { data: result.data.data, source: result.source };
   },
 };
