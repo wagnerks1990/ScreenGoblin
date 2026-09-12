@@ -6,11 +6,13 @@ const ROLE_CAPABILITIES = {
     CAPABILITIES.releasePublish,
     CAPABILITIES.releaseWithdraw,
     CAPABILITIES.screenCredentialRevoke,
+    CAPABILITIES.screenCredentialReenroll,
   ],
   ADMIN: [
     CAPABILITIES.releasePublish,
     CAPABILITIES.releaseWithdraw,
     CAPABILITIES.screenCredentialRevoke,
+    CAPABILITIES.screenCredentialReenroll,
   ],
   PUBLISHER: [CAPABILITIES.releasePublish, CAPABILITIES.releaseWithdraw],
   VIEWER: [],

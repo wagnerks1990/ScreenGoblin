@@ -80,6 +80,9 @@ describe("release capability policy", () => {
     expect(hasCapability(role, CAPABILITIES.screenCredentialRevoke)).toBe(
       allowed,
     );
+    expect(hasCapability(role, CAPABILITIES.screenCredentialReenroll)).toBe(
+      allowed,
+    );
   });
 
   it.each(["VIEWER", "disabled", "missing", "cross-organization"] as const)(

@@ -87,6 +87,35 @@ button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+.pairing-pending {
+  display: grid;
+  gap: 0.65rem;
+  padding: 1rem;
+  border: 1px solid var(--color-warning, #f2b84b);
+  border-radius: 0.5rem;
+}
+
+.pairing-pending code {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.replacement-control {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.replacement-control label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.replacement-control input {
+  width: auto;
+  margin-top: 0.2rem;
+}
 .eyebrow {
   margin: 0;
   color: #7cfc00;

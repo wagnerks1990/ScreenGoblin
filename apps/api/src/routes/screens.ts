@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import { randomInt } from "node:crypto";
 import { z } from "zod";
 import { CAPABILITIES } from "@screengoblin/contracts";
 import {
@@ -8,6 +9,11 @@ import {
   sendNotFound,
 } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
+import { pairingCodeHash } from "../utils/crypto.js";
+import {
+  enforceRateLimitBudget,
+  opaqueRateLimitKey,
+} from "../utils/rate-limit.js";
 
 const screen = z
   .object({
@@ -22,6 +28,11 @@ const screen = z
   })
   .strict();
 const params = z.object({ id: opaqueId });
+const reenrollmentParams = z.object({ id: opaqueId, grantId: opaqueId });
+const activationParams = reenrollmentParams.extend({ candidateId: opaqueId });
+const reenrollmentRequest = z
+  .object({ reason: z.string().trim().min(5).max(500) })
+  .strict();
 export const screenRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
   app.get("/screens", async (request) => ({
@@ -108,22 +119,213 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
     }
     return reply.code(204).send();
   });
+  app.post(
+    "/screens/:id/device-reenrollment",
+    {
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: "1 minute",
+          keyGenerator: (request) =>
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "reenrollment-create-source",
+              request.ip,
+            ),
+        },
+      },
+      preHandler: async (request) => {
+        requireCapability(request, CAPABILITIES.screenCredentialReenroll);
+        await Promise.all([
+          enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "reenrollment-create-org",
+              request.user.organizationId,
+            ),
+            20,
+          ),
+          enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "reenrollment-create-operator",
+              request.user.sub,
+            ),
+            10,
+          ),
+        ]);
+      },
+    },
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+      requireCapability(request, CAPABILITIES.screenCredentialReenroll);
+      const { id } = params.parse(request.params);
+      const { reason } = reenrollmentRequest.parse(request.body);
+      const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+        const result = await app.store.requestScreenReenrollmentAndAudit(
+          request.user.organizationId,
+          id,
+          pairingCodeHash(code, app.config.pairingCodePepper),
+          expiresAt,
+          reason,
+          {
+            actorUserId: request.user.sub,
+            ipAddress: request.ip,
+            requestId: request.id,
+          },
+        );
+        if (result.created)
+          return reply.code(201).send({
+            grantId: result.pairing.id,
+            screenId: id,
+            code,
+            expiresAt: result.pairing.expiresAt,
+            generation: result.pairing.expectedGeneration,
+          });
+        if (result.reason === "FORBIDDEN")
+          throw new ApiError(
+            403,
+            "FORBIDDEN",
+            "You do not have permission to perform this action",
+          );
+        if (result.reason === "NOT_FOUND") return sendNotFound(reply);
+      }
+      throw new ApiError(
+        409,
+        "REENROLLMENT_ALREADY_PENDING",
+        "A re-enrollment grant is already pending for this screen",
+      );
+    },
+  );
+  app.get(
+    "/screens/:id/device-reenrollment/:grantId",
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+      requireCapability(request, CAPABILITIES.screenCredentialReenroll);
+      const { id, grantId } = reenrollmentParams.parse(request.params);
+      const status = await app.store.getReenrollmentStatus(
+        request.user.organizationId,
+        id,
+        grantId,
+        request.user.sub,
+      );
+      if (!status) return sendNotFound(reply);
+      return reply.send({
+        grantId,
+        screenId: id,
+        status: status.status.toLowerCase(),
+        expiresAt: status.expiresAt,
+        candidates: status.candidates.map((candidate) => ({
+          id: candidate.id,
+          keyId: candidate.keyId,
+          fingerprint: candidate.fingerprint,
+          securityLevel: candidate.securityLevel,
+          device: {
+            installationId: candidate.installationId,
+            model: candidate.model,
+            osVersion: candidate.osVersion,
+            playerVersion: candidate.playerVersion,
+          },
+          provedAt: candidate.provedAt,
+        })),
+      });
+    },
+  );
+  app.post(
+    "/screens/:id/device-reenrollment/:grantId/candidates/:candidateId/activate",
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+      requireCapability(request, CAPABILITIES.screenCredentialReenroll);
+      const { id, grantId, candidateId } = activationParams.parse(
+        request.params,
+      );
+      const result = await app.store.activateReenrollmentCandidateAndAudit(
+        request.user.organizationId,
+        id,
+        grantId,
+        candidateId,
+        {
+          actorUserId: request.user.sub,
+          ipAddress: request.ip,
+          requestId: request.id,
+        },
+      );
+      if (!result.activated) {
+        if (result.reason === "FORBIDDEN")
+          throw new ApiError(
+            403,
+            "FORBIDDEN",
+            "You do not have permission to perform this action",
+          );
+        if (result.reason === "STALE")
+          throw new ApiError(
+            409,
+            "REENROLLMENT_STALE",
+            "This re-enrollment can no longer be activated",
+          );
+        return sendNotFound(reply);
+      }
+      return reply.send({
+        grantId,
+        screenId: id,
+        candidateId,
+        credentialId: result.credential.id,
+        keyId: result.credential.keyId,
+        activatedAt: result.credential.createdAt,
+        status: "activated",
+      });
+    },
+  );
+  app.delete(
+    "/screens/:id/device-reenrollment/:grantId",
+    async (request, reply) => {
+      requireCapability(request, CAPABILITIES.screenCredentialReenroll);
+      const { id, grantId } = reenrollmentParams.parse(request.params);
+      const result = await app.store.cancelScreenReenrollmentAndAudit(
+        request.user.organizationId,
+        id,
+        grantId,
+        {
+          actorUserId: request.user.sub,
+          ipAddress: request.ip,
+          requestId: request.id,
+        },
+      );
+      if (!result.cancelled) {
+        if (result.reason === "FORBIDDEN")
+          throw new ApiError(
+            403,
+            "FORBIDDEN",
+            "You do not have permission to perform this action",
+          );
+        return sendNotFound(reply);
+      }
+      return reply.code(204).send();
+    },
+  );
   app.delete("/screens/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN"]);
     const { id } = params.parse(request.params);
-    if (!(await app.store.deleteScreen(request.user.organizationId, id)))
-      return sendNotFound(reply);
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "screen.deleted",
-      entityType: "screen",
-      entityId: id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: {},
-    });
+    const result = await app.store.deleteScreenAndAudit(
+      request.user.organizationId,
+      id,
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
+    );
+    if (result === "FORBIDDEN")
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to perform this action",
+      );
+    if (result === "NOT_FOUND") return sendNotFound(reply);
     return reply.code(204).send();
   });
 };

@@ -361,6 +361,128 @@ a:focus-visible {
 .pairing-result small {
   color: var(--text-muted);
 }
+.device-identity-section p {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+.reenrollment-warning {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #a9682b;
+  border-radius: 10px;
+  background: #2b2118;
+}
+.reenrollment-reason {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 7px;
+  margin-top: 16px;
+}
+.reenrollment-reason textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+.reenrollment-warning svg {
+  flex: 0 0 auto;
+  color: #fbbf24;
+}
+.reenrollment-warning h3,
+.reenrollment-success h3,
+.reenrollment-terminal h3 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+}
+.reenrollment-warning p,
+.reenrollment-success p,
+.reenrollment-terminal p {
+  margin: 0;
+  color: #d8e0e8;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+.reenrollment-success {
+  padding: 14px;
+  border: 1px solid var(--green);
+  border-radius: 10px;
+}
+.reenrollment-terminal {
+  padding: 14px;
+  border: 1px solid #a9682b;
+  border-radius: 10px;
+}
+.reenrollment-state {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+.candidate-list {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 0;
+  border: 0;
+}
+.candidate-list legend {
+  margin-bottom: 10px;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+.candidate-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.candidate-card.selected {
+  border-width: 2px;
+  border-color: var(--green);
+  padding: 11px;
+}
+.candidate-card:focus-within {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+.candidate-card > span {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+.candidate-card code {
+  overflow-wrap: anywhere;
+  color: #fff;
+  font-size: 0.75rem;
+}
+.candidate-card small {
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.candidate-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #a9682b;
+  border-radius: 9px;
+  color: #f5e8d7;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+.candidate-confirmation:focus-within {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+.candidate-card input,
+.candidate-confirmation input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
 .menu-button {
   display: none;
 }

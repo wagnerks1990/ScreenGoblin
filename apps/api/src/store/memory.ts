@@ -16,6 +16,7 @@ import type {
   PairingCreateResult,
   PairingAttemptRecord,
   PairingProofVerifier,
+  ReenrollmentActivationResult,
   PlaylistRecord,
   PublishedReleaseRecord,
   ReleaseAssignmentRecord,
@@ -58,6 +59,7 @@ export class MemoryStore implements DataStore {
   deviceCredentials: DeviceCredentialRecord[] = [];
   deviceAuthChallenges: DeviceAuthChallengeRecord[] = [];
   pairingAttempts: PairingAttemptRecord[] = [];
+  usedDeviceKeyIds = new Set<string>();
   async ping() {}
   protected buildAuditRecord(
     event: Omit<AuditRecord, "id" | "createdAt">,
@@ -164,6 +166,57 @@ export class MemoryStore implements DataStore {
     }
     return n !== this.screens.length;
   }
+  async deleteScreenAndAudit(
+    org: string,
+    screenId: string,
+    audit: DeviceCredentialRevokeAuditContext,
+  ) {
+    const actor = this.users.find(
+      (u) =>
+        u.id === audit.actorUserId && u.organizationId === org && !u.disabledAt,
+    );
+    if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+      return "FORBIDDEN" as const;
+    const screen = this.screens.find(
+      (x) => x.id === screenId && x.organizationId === org,
+    );
+    if (!screen) return "NOT_FOUND" as const;
+    const timestamp = now();
+    for (const credential of this.deviceCredentials) {
+      if (
+        credential.organizationId === org &&
+        credential.screenId === screenId
+      ) {
+        credential.detached = true;
+        credential.revokedAt ??= timestamp;
+        for (const challenge of this.deviceAuthChallenges)
+          if (
+            challenge.credentialId === credential.id &&
+            !challenge.consumedAt &&
+            challenge.expiresAt > timestamp
+          )
+            challenge.consumedAt = timestamp;
+      }
+    }
+    for (const grant of this.pairings)
+      if (grant.targetScreenId === screenId && grant.status === "PENDING")
+        grant.status = "REVOKED";
+    this.screens = this.screens.filter((x) => x !== screen);
+    this.audits.push(
+      this.buildAuditRecord({
+        organizationId: org,
+        actorUserId: audit.actorUserId,
+        actorType: "user",
+        action: "screen.decommissioned",
+        entityType: "screen",
+        entityId: screenId,
+        ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+        ...(audit.requestId ? { requestId: audit.requestId } : {}),
+        metadata: {},
+      }),
+    );
+    return "DELETED" as const;
+  }
   async createPairing(org: string, codeHash: string, expiresAt: string) {
     const result = await this.tryCreatePairing(org, codeHash, expiresAt);
     if (!result.created) throw new Error("Pairing code collision");
@@ -250,6 +303,319 @@ export class MemoryStore implements DataStore {
     this.audits.push(auditRecord);
     return { created: true, pairing };
   }
+  async requestScreenReenrollmentAndAudit(
+    org: string,
+    screenId: string,
+    codeHash: string,
+    expiresAt: string,
+    reason: string,
+    audit: PairingCreateAuditContext,
+  ) {
+    const actor = this.users.find(
+      (u) =>
+        u.id === audit.actorUserId && u.organizationId === org && !u.disabledAt,
+    );
+    if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+      return { created: false as const, reason: "FORBIDDEN" as const };
+    const screen = this.screens.find(
+      (s) => s.id === screenId && s.organizationId === org,
+    );
+    if (!screen)
+      return { created: false as const, reason: "NOT_FOUND" as const };
+    const timestamp = now();
+    if (
+      this.pairings.some(
+        (p) =>
+          p.status === "PENDING" &&
+          p.expiresAt > timestamp &&
+          p.codeHash === codeHash,
+      )
+    )
+      return { created: false as const, reason: "CODE_COLLISION" as const };
+    for (const p of this.pairings) {
+      if (p.targetScreenId === screenId && p.status === "PENDING") {
+        p.status = "REVOKED";
+        for (const attempt of this.pairingAttempts)
+          if (attempt.pairingCodeId === p.id && !attempt.boundCredentialId)
+            attempt.cancelledAt = timestamp;
+      }
+    }
+    for (const credential of this.deviceCredentials) {
+      if (
+        credential.organizationId === org &&
+        credential.screenId === screenId &&
+        !credential.detached
+      ) {
+        credential.revokedAt ??= timestamp;
+        credential.detached = true;
+        for (const challenge of this.deviceAuthChallenges)
+          if (
+            challenge.credentialId === credential.id &&
+            !challenge.consumedAt &&
+            challenge.expiresAt > timestamp
+          )
+            challenge.consumedAt = timestamp;
+      }
+    }
+    screen.credentialRevokedAt = timestamp;
+    screen.deviceTokenHash = undefined;
+    screen.credentialGeneration = (screen.credentialGeneration ?? 0) + 1;
+    const priorCredential = this.deviceCredentials.find(
+      (c) =>
+        c.organizationId === org &&
+        c.screenId === screenId &&
+        c.revokedAt === timestamp,
+    );
+    const pairing: PairingRecord = {
+      id: id(),
+      organizationId: org,
+      codeHash,
+      expiresAt,
+      status: "PENDING",
+      purpose: "REENROLL",
+      targetScreenId: screenId,
+      targetScreenReferenceId: screenId,
+      expectedGeneration: screen.credentialGeneration,
+      authorizedByUserId: audit.actorUserId,
+      requestReason: reason,
+      ...(priorCredential ? { priorCredentialId: priorCredential.id } : {}),
+    };
+    this.pairings.push(pairing);
+    this.audits.push(
+      this.buildAuditRecord({
+        organizationId: org,
+        actorUserId: audit.actorUserId,
+        actorType: "user",
+        action: "device.reenrollment.requested",
+        entityType: "screen",
+        entityId: screenId,
+        ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+        ...(audit.requestId ? { requestId: audit.requestId } : {}),
+        metadata: {
+          grantId: pairing.id,
+          expectedGeneration: pairing.expectedGeneration,
+          reason,
+        },
+      }),
+    );
+    return { created: true as const, pairing };
+  }
+  async getReenrollmentStatus(
+    org: string,
+    screenId: string,
+    grantId: string,
+    actorUserId: string,
+  ) {
+    const actor = this.users.find(
+      (u) => u.id === actorUserId && u.organizationId === org && !u.disabledAt,
+    );
+    if (actor?.role !== "OWNER" && actor?.role !== "ADMIN") return null;
+    const grant = this.pairings.find(
+      (p) =>
+        p.id === grantId &&
+        p.organizationId === org &&
+        p.targetScreenId === screenId &&
+        p.purpose === "REENROLL",
+    );
+    if (!grant) return null;
+    const candidates = this.pairingAttempts
+      .filter(
+        (a) => a.pairingCodeId === grantId && !!a.provedAt && !a.cancelledAt,
+      )
+      .map((a) => ({
+        id: a.id,
+        grantId: a.pairingCodeId,
+        screenId,
+        keyId: a.keyId,
+        fingerprint: a.keyId,
+        securityLevel: a.securityLevel,
+        installationId: a.installationId!,
+        model: a.model!,
+        osVersion: a.osVersion!,
+        playerVersion: a.playerVersion!,
+        provedAt: a.provedAt!,
+        expiresAt: a.expiresAt,
+      }));
+    return {
+      grantId,
+      screenId,
+      status:
+        grant.status === "PENDING" && grant.expiresAt <= now()
+          ? ("EXPIRED" as const)
+          : grant.status,
+      expiresAt: grant.expiresAt,
+      candidates,
+    };
+  }
+  async activateReenrollmentCandidateAndAudit(
+    org: string,
+    screenId: string,
+    grantId: string,
+    candidateId: string,
+    audit: PairingCreateAuditContext,
+  ): Promise<ReenrollmentActivationResult> {
+    const actor = this.users.find(
+      (u) =>
+        u.id === audit.actorUserId && u.organizationId === org && !u.disabledAt,
+    );
+    if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+      return { activated: false, reason: "FORBIDDEN" };
+    const attempt = this.pairingAttempts.find(
+      (a) => a.id === candidateId && a.organizationId === org,
+    );
+    const grant = this.pairings.find(
+      (p) =>
+        p.id === grantId &&
+        p.id === attempt?.pairingCodeId &&
+        p.targetScreenId === screenId &&
+        p.purpose === "REENROLL",
+    );
+    const issuer = this.users.find(
+      (u) =>
+        u.id === grant?.authorizedByUserId &&
+        u.organizationId === org &&
+        !u.disabledAt,
+    );
+    if (grant && issuer?.role !== "OWNER" && issuer?.role !== "ADMIN")
+      return { activated: false, reason: "STALE" };
+    if (
+      (attempt?.consumedAt || attempt?.activatedAt) &&
+      attempt.boundCredentialId
+    ) {
+      const credential = this.deviceCredentials.find(
+        (c) => c.id === attempt.boundCredentialId,
+      );
+      const screen = this.screens.find(
+        (s) => s.id === screenId && s.organizationId === org,
+      );
+      return credential &&
+        screen &&
+        !credential.revokedAt &&
+        !credential.detached &&
+        screen.credentialGeneration === (grant?.expectedGeneration ?? -2) + 1
+        ? {
+            activated: true,
+            credential: { ...credential },
+            screen: this.publicScreen(screen),
+          }
+        : { activated: false, reason: "STALE" };
+    }
+    if (!attempt || !grant || !attempt.provedAt || attempt.cancelledAt)
+      return { activated: false, reason: "NOT_FOUND" };
+    const screen = this.screens.find(
+      (s) => s.id === screenId && s.organizationId === org,
+    );
+    if (
+      !screen ||
+      grant.status !== "PENDING" ||
+      grant.expiresAt <= now() ||
+      grant.expectedGeneration !== (screen.credentialGeneration ?? 0)
+    )
+      return { activated: false, reason: "STALE" };
+    if (
+      this.deviceCredentials.some((c) => c.keyId === attempt.keyId) ||
+      this.usedDeviceKeyIds.has(attempt.keyId)
+    )
+      return { activated: false, reason: "STALE" };
+    const timestamp = now();
+    const credential: DeviceCredentialRecord = {
+      id: id(),
+      organizationId: org,
+      screenId,
+      detached: false,
+      keyId: attempt.keyId,
+      publicKeySpki: attempt.publicKeySpki,
+      algorithm: "ES256",
+      securityLevel: attempt.securityLevel,
+      ...(attempt.credentialExpiresAt
+        ? { expiresAt: attempt.credentialExpiresAt }
+        : {}),
+      createdAt: timestamp,
+    };
+    Object.assign(screen, {
+      installationId: attempt.installationId,
+      model: attempt.model,
+      osVersion: attempt.osVersion,
+      playerVersion: attempt.playerVersion,
+      credentialRevokedAt: undefined,
+      deviceTokenHash: undefined,
+      credentialGeneration: (screen.credentialGeneration ?? 0) + 1,
+      status: "online",
+      lastSeenAt: timestamp,
+      updatedAt: timestamp,
+    });
+    this.deviceCredentials.push(credential);
+    this.usedDeviceKeyIds.add(credential.keyId);
+    attempt.activatedAt = timestamp;
+    attempt.boundCredentialId = credential.id;
+    grant.status = "CLAIMED";
+    grant.screenId = screenId;
+    for (const a of this.pairingAttempts)
+      if (a.pairingCodeId === grant.id && a.id !== attempt.id)
+        a.cancelledAt ??= timestamp;
+    for (const p of this.pairings)
+      if (p.targetScreenId === screenId && p.status === "PENDING")
+        p.status = "REVOKED";
+    this.audits.push(
+      this.buildAuditRecord({
+        organizationId: org,
+        actorUserId: audit.actorUserId,
+        actorType: "user",
+        action: "device.reenrollment.activated",
+        entityType: "screen",
+        entityId: screenId,
+        ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+        ...(audit.requestId ? { requestId: audit.requestId } : {}),
+        metadata: {
+          grantId: grant.id,
+          candidateId,
+          credentialId: credential.id,
+          keyId: credential.keyId,
+          reason: grant.requestReason,
+        },
+      }),
+    );
+    return { activated: true, screen: this.publicScreen(screen), credential };
+  }
+  async cancelScreenReenrollmentAndAudit(
+    org: string,
+    screenId: string,
+    grantId: string,
+    audit: PairingCreateAuditContext,
+  ) {
+    const actor = this.users.find(
+      (u) =>
+        u.id === audit.actorUserId && u.organizationId === org && !u.disabledAt,
+    );
+    if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+      return { cancelled: false as const, reason: "FORBIDDEN" as const };
+    const grant = this.pairings.find(
+      (p) =>
+        p.id === grantId &&
+        p.organizationId === org &&
+        p.targetScreenId === screenId &&
+        p.status === "PENDING",
+    );
+    if (!grant)
+      return { cancelled: false as const, reason: "NOT_FOUND" as const };
+    const timestamp = now();
+    grant.status = "REVOKED";
+    for (const a of this.pairingAttempts)
+      if (a.pairingCodeId === grant.id && !a.consumedAt)
+        a.cancelledAt = timestamp;
+    this.audits.push(
+      this.buildAuditRecord({
+        organizationId: org,
+        actorUserId: audit.actorUserId,
+        actorType: "user",
+        action: "device.reenrollment.cancelled",
+        entityType: "screen",
+        entityId: screenId,
+        metadata: { grantId: grant.id },
+      }),
+    );
+    return { cancelled: true as const };
+  }
   private claimPairingRecord(
     codeHash: string,
     device: {
@@ -263,6 +629,7 @@ export class MemoryStore implements DataStore {
     const p = this.pairings.find(
       (x) =>
         x.codeHash === codeHash &&
+        (x.purpose ?? "NEW_SCREEN") === "NEW_SCREEN" &&
         x.status === "PENDING" &&
         x.expiresAt > now(),
     );
@@ -356,6 +723,7 @@ export class MemoryStore implements DataStore {
       this.deviceCredentials.some(
         (candidate) => candidate.keyId === input.credential.keyId,
       ) ||
+      this.usedDeviceKeyIds.has(input.credential.keyId) ||
       this.pairingAttempts.some(
         (candidate) =>
           candidate.challengeHashSha256 === input.challengeHashSha256,
@@ -431,7 +799,10 @@ export class MemoryStore implements DataStore {
       }))
     )
       return { paired: false as const, reason: "INVALID" as const };
-    if (attempt.consumedAt && attempt.boundCredentialId) {
+    if (
+      (attempt.consumedAt || attempt.activatedAt) &&
+      attempt.boundCredentialId
+    ) {
       const credential = this.deviceCredentials.find(
         (candidate) =>
           candidate.id === attempt.boundCredentialId &&
@@ -454,6 +825,22 @@ export class MemoryStore implements DataStore {
         : { paired: false as const, reason: "INVALID" as const };
     }
     if (
+      pairing.purpose === "REENROLL" &&
+      attempt.provedAt &&
+      !attempt.cancelledAt &&
+      pairing.status === "PENDING" &&
+      pairing.expiresAt > now()
+    ) {
+      return {
+        paired: false as const,
+        reason: "PENDING_APPROVAL" as const,
+        grantId: pairing.id,
+        candidateId: attempt.id,
+        keyId: attempt.keyId,
+        expiresAt: pairing.expiresAt,
+      };
+    }
+    if (
       attempt.expiresAt <= now() ||
       pairing.expiresAt <= now() ||
       pairing.status !== "PENDING" ||
@@ -462,6 +849,58 @@ export class MemoryStore implements DataStore {
       )
     )
       return { paired: false as const, reason: "INVALID" as const };
+    if (pairing.purpose === "REENROLL") {
+      const issuer = this.users.find(
+        (user) =>
+          user.id === pairing.authorizedByUserId &&
+          user.organizationId === pairing.organizationId &&
+          !user.disabledAt,
+      );
+      if (
+        !pairing.targetScreenId ||
+        (issuer?.role !== "OWNER" && issuer?.role !== "ADMIN") ||
+        this.pairingAttempts.filter(
+          (candidate) =>
+            candidate.pairingCodeId === pairing.id &&
+            !!candidate.provedAt &&
+            !candidate.cancelledAt,
+        ).length >= 4
+      )
+        return { paired: false as const, reason: "INVALID" as const };
+      const provedAt = now();
+      Object.assign(attempt, {
+        provedAt,
+        installationId: input.device.installationId,
+        model: input.device.model,
+        osVersion: input.device.osVersion,
+        playerVersion: input.device.playerVersion,
+      });
+      this.audits.push(
+        this.buildAuditRecord({
+          organizationId: pairing.organizationId,
+          actorType: "device",
+          action: "device.reenrollment.candidate_proved",
+          entityType: "screen",
+          entityId: pairing.targetScreenId,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: {
+            grantId: pairing.id,
+            candidateId: attempt.id,
+            keyId: attempt.keyId,
+            installationId: input.device.installationId,
+          },
+        }),
+      );
+      return {
+        paired: false as const,
+        reason: "PENDING_APPROVAL" as const,
+        grantId: pairing.id,
+        candidateId: attempt.id,
+        keyId: attempt.keyId,
+        expiresAt: pairing.expiresAt,
+      };
+    }
     const timestamp = now();
     const screen: ScreenRecord = {
       id: id(),
@@ -508,6 +947,7 @@ export class MemoryStore implements DataStore {
     });
     this.screens.push(screen);
     this.deviceCredentials.push(credential);
+    this.usedDeviceKeyIds.add(credential.keyId);
     pairing.status = "CLAIMED";
     pairing.screenId = screen.id;
     attempt.consumedAt = timestamp;
@@ -682,16 +1122,63 @@ export class MemoryStore implements DataStore {
     );
     if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
       return { revoked: false as const, reason: "FORBIDDEN" as const };
-    const credential = this.deviceCredentials.find(
+    const credential =
+      this.deviceCredentials.find(
+        (candidate) =>
+          candidate.screenId === screenId &&
+          candidate.organizationId === org &&
+          !candidate.detached,
+      ) ??
+      this.deviceCredentials.find(
+        (candidate) =>
+          candidate.screenId === screenId &&
+          candidate.organizationId === org &&
+          !!candidate.revokedAt,
+      );
+    const screen = this.screens.find(
       (candidate) =>
-        candidate.screenId === screenId &&
-        candidate.organizationId === org &&
-        !candidate.detached,
+        candidate.id === screenId && candidate.organizationId === org,
     );
-    if (!credential)
+    if (!screen)
       return { revoked: false as const, reason: "NOT_FOUND" as const };
-    if (credential.revokedAt)
-      return { revoked: false as const, reason: "ALREADY_REVOKED" as const };
+    if (!credential || credential.revokedAt) {
+      const pending = this.pairings.filter(
+        (grant) =>
+          grant.organizationId === org &&
+          grant.targetScreenId === screenId &&
+          grant.status === "PENDING",
+      );
+      if (pending.length === 0)
+        return credential
+          ? { revoked: false as const, reason: "ALREADY_REVOKED" as const }
+          : { revoked: false as const, reason: "NOT_FOUND" as const };
+      const reassertedAt = now();
+      for (const grant of pending) {
+        grant.status = "REVOKED";
+        for (const attempt of this.pairingAttempts)
+          if (attempt.pairingCodeId === grant.id && !attempt.consumedAt)
+            attempt.cancelledAt = reassertedAt;
+      }
+      screen.credentialGeneration = (screen.credentialGeneration ?? 0) + 1;
+      screen.credentialRevokedAt = reassertedAt;
+      screen.deviceTokenHash = undefined;
+      screen.status = "offline";
+      this.audits.push(
+        this.buildAuditRecord({
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "device.credential.revocation_reasserted",
+          entityType: credential ? "device_credential" : "screen",
+          entityId: credential?.id ?? screenId,
+          metadata: { screenId, cancelledGrantIds: pending.map((x) => x.id) },
+        }),
+      );
+      return {
+        revoked: true as const,
+        ...(credential ? { credential: { ...credential } } : {}),
+      };
+    }
     const revokedAt = now();
     const auditRecord = this.buildAuditRecord({
       organizationId: org,
@@ -705,11 +1192,10 @@ export class MemoryStore implements DataStore {
       metadata: { screenId: credential.screenId, keyId: credential.keyId },
     });
     credential.revokedAt = revokedAt;
-    const screen = this.screens.find(
-      (candidate) =>
-        candidate.id === screenId && candidate.organizationId === org,
-    );
-    if (screen) screen.credentialRevokedAt = revokedAt;
+    credential.detached = true;
+    screen.credentialRevokedAt = revokedAt;
+    screen.deviceTokenHash = undefined;
+    screen.credentialGeneration = (screen.credentialGeneration ?? 0) + 1;
     for (const challenge of this.deviceAuthChallenges) {
       if (
         challenge.credentialId === credential.id &&
@@ -717,6 +1203,14 @@ export class MemoryStore implements DataStore {
         challenge.expiresAt > revokedAt
       )
         challenge.consumedAt = revokedAt;
+    }
+    for (const grant of this.pairings) {
+      if (grant.targetScreenId === screenId && grant.status === "PENDING") {
+        grant.status = "REVOKED";
+        for (const attempt of this.pairingAttempts)
+          if (attempt.pairingCodeId === grant.id && !attempt.consumedAt)
+            attempt.cancelledAt = revokedAt;
+      }
     }
     this.audits.push(auditRecord);
     return { revoked: true as const, credential: { ...credential } };

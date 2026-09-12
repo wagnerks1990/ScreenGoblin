@@ -7,18 +7,29 @@ import App from "./App";
 const mocks = vi.hoisted(() => ({
   clear: vi.fn(),
   getCredentials: vi.fn(),
+  getPendingPairing: vi.fn(),
+  putPendingPairing: vi.fn(),
+  completePairing: vi.fn(),
+  deletePendingPairing: vi.fn(),
+  clearProvisionedState: vi.fn(),
   removeAll: vi.fn(),
   recover: vi.fn(),
   stageAndActivate: vi.fn(),
   manifest: vi.fn(),
   heartbeat: vi.fn(),
   hasNativeDeviceIdentity: vi.fn(),
+  finalizeDeviceIdentityRotation: vi.fn(),
+  pairingProps: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock("./core/storage", () => ({
   IndexedDbPlayerStore: class {
     getCredentials = mocks.getCredentials;
-    putCredentials = vi.fn();
+    getPendingPairing = mocks.getPendingPairing;
+    putPendingPairing = mocks.putPendingPairing;
+    completePairing = mocks.completePairing;
+    deletePendingPairing = mocks.deletePendingPairing;
+    clearProvisionedState = mocks.clearProvisionedState;
     clear = mocks.clear;
   },
 }));
@@ -50,13 +61,17 @@ vi.mock("./core/api", async (importOriginal) => {
 
 vi.mock("./core/device", () => ({
   freeStorageBytes: () => Promise.resolve(1_000_000),
+  finalizeDeviceIdentityRotation: mocks.finalizeDeviceIdentityRotation,
   hasNativeDeviceIdentity: mocks.hasNativeDeviceIdentity,
   installationId: () => Promise.resolve("installation-123"),
   networkType: () => "wifi",
 }));
 
 vi.mock("./components/Pairing", () => ({
-  Pairing: () => <div>Pair this screen</div>,
+  Pairing: (props: Record<string, unknown>) => {
+    mocks.pairingProps = props;
+    return <div>Pair this screen</div>;
+  },
 }));
 
 vi.mock("./components/Playback", () => ({
@@ -86,12 +101,19 @@ const manifest: PlayerManifest = {
 beforeEach(() => {
   mocks.clear.mockReset().mockResolvedValue(undefined);
   mocks.getCredentials.mockReset().mockResolvedValue(credentials);
+  mocks.getPendingPairing.mockReset().mockResolvedValue(undefined);
+  mocks.putPendingPairing.mockReset().mockResolvedValue(undefined);
+  mocks.completePairing.mockReset().mockResolvedValue(undefined);
+  mocks.deletePendingPairing.mockReset().mockResolvedValue(undefined);
+  mocks.clearProvisionedState.mockReset().mockResolvedValue(undefined);
   mocks.removeAll.mockReset().mockResolvedValue(undefined);
   mocks.recover.mockReset().mockResolvedValue(manifest);
   mocks.stageAndActivate.mockReset().mockResolvedValue(manifest);
   mocks.manifest.mockReset().mockResolvedValue(manifest);
   mocks.heartbeat.mockReset().mockResolvedValue(undefined);
   mocks.hasNativeDeviceIdentity.mockReset().mockReturnValue(false);
+  mocks.finalizeDeviceIdentityRotation.mockReset().mockResolvedValue(undefined);
+  mocks.pairingProps = undefined;
   Object.defineProperty(navigator, "onLine", {
     configurable: true,
     value: true,
@@ -152,6 +174,92 @@ describe("device revocation", () => {
 });
 
 describe("boot credential validation", () => {
+  it("deletes an expired recovery record before allowing pairing", async () => {
+    mocks.getCredentials.mockResolvedValue(undefined);
+    mocks.recover.mockResolvedValue(undefined);
+    mocks.getPendingPairing.mockResolvedValue({
+      version: 1,
+      stage: "prepared",
+      apiBaseUrl: "https://signage.example.test",
+      finalBody: "contains-short-lived-code",
+      expectedKeyId: "installation-123",
+      installationId: "installation-123",
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
+    expect(mocks.deletePendingPairing).toHaveBeenCalledOnce();
+    expect(mocks.pairingProps?.pendingPairing).toBeUndefined();
+  });
+
+  it("stores activated credentials before attempting alias cleanup", async () => {
+    mocks.getCredentials.mockResolvedValue(undefined);
+    mocks.recover.mockResolvedValue(undefined);
+    mocks.hasNativeDeviceIdentity.mockReturnValue(true);
+    mocks.finalizeDeviceIdentityRotation.mockRejectedValue(
+      new Error("keystore unavailable"),
+    );
+    const proof: Credentials = {
+      authMode: "proof-v1",
+      installationId: "installation-123",
+      screenId: "screen-1",
+      credentialId: "credential-1",
+      keyId: "installation-123",
+      apiBaseUrl: "https://signage.example.test/api/v1/device",
+      heartbeatIntervalSeconds: 60,
+      manifestVerificationKey: "public-key",
+    };
+
+    render(<App />);
+    expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
+    const onPaired = mocks.pairingProps?.onPaired as (
+      value: Credentials,
+    ) => Promise<void>;
+    await expect(onPaired(proof)).rejects.toThrow("Restart to retry cleanup");
+
+    expect(mocks.completePairing).toHaveBeenCalledWith(proof);
+    expect(mocks.completePairing.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.finalizeDeviceIdentityRotation.mock.invocationCallOrder[0]!,
+    );
+    expect(
+      await screen.findByText("Player needs attention"),
+    ).toBeInTheDocument();
+  });
+
+  it("retries activated proof-key cleanup before starting playback", async () => {
+    mocks.hasNativeDeviceIdentity.mockReturnValue(true);
+    mocks.getCredentials.mockResolvedValue({
+      authMode: "proof-v1",
+      installationId: "installation-123",
+      screenId: "screen-1",
+      credentialId: "credential-1",
+      keyId: "installation-123",
+      apiBaseUrl: "https://signage.example.test/api/v1/device",
+      heartbeatIntervalSeconds: 60,
+      manifestVerificationKey: "public-key",
+    });
+    mocks.finalizeDeviceIdentityRotation.mockRejectedValue(
+      new Error("keystore unavailable"),
+    );
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Player needs attention"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Activated device credentials require secure key cleanup",
+      ),
+    ).toBeInTheDocument();
+    expect(mocks.finalizeDeviceIdentityRotation).toHaveBeenCalledWith(
+      "installation-123",
+    );
+    expect(mocks.clear).not.toHaveBeenCalled();
+  });
+
   it("purges orphaned manifests and assets when credentials are absent", async () => {
     mocks.getCredentials.mockResolvedValue(undefined);
 

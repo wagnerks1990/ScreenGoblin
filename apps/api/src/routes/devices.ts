@@ -413,7 +413,9 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         await enforceRateLimitBudget(
           app.rateLimitBudget,
           opaqueRateLimitKey(app.config.pairingCodePepper, "pair-code", code),
-          5,
+          // A pending re-enrollment polls the same signature-bound proof about
+          // four times/minute; leave room for the first request and jitter.
+          8,
         );
       },
     },
@@ -465,6 +467,15 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
             ),
           { ipAddress: request.ip, requestId: request.id },
         );
+        if (!paired.paired && paired.reason === "PENDING_APPROVAL")
+          return reply.code(202).send({
+            status: "pending-approval",
+            grantId: paired.grantId,
+            candidateId: paired.candidateId,
+            keyId: paired.keyId,
+            fingerprint: paired.keyId,
+            expiresAt: paired.expiresAt,
+          });
         if (!paired.paired)
           throw new ApiError(
             404,

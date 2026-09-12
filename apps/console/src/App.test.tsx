@@ -7,6 +7,109 @@ import { App } from "./App";
 beforeEach(() => window.sessionStorage.clear());
 afterEach(() => vi.unstubAllGlobals());
 
+const replacementTestScreen = {
+  id: "screen-replacement-test",
+  name: "Replacement Test Screen",
+  location: "Test building",
+  status: "online",
+  orientation: "landscape",
+  resolution: "1920 × 1080",
+  lastSeenAt: "Just now",
+  nowPlaying: "Welcome",
+  playerVersion: "1.0.0",
+  tags: ["test"],
+};
+
+function setAdminSession() {
+  window.sessionStorage.setItem("sg_access_token", "admin-token");
+  window.sessionStorage.setItem(
+    "sg_session_user",
+    JSON.stringify({
+      name: "Administrator",
+      email: "admin@example.test",
+      role: "ADMIN",
+      organizationId: "org-a",
+    }),
+  );
+}
+
+async function openReplacementWithStatus(
+  status: string,
+  candidates: unknown[] = [],
+  activationError?: string,
+) {
+  setAdminSession();
+  const json = (value: unknown, responseStatus = 200) =>
+    new Response(JSON.stringify(value), {
+      status: responseStatus,
+      headers: { "Content-Type": "application/json" },
+    });
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/screens")) {
+        return json({ data: [replacementTestScreen] });
+      }
+      if (url.endsWith("/device-reenrollment") && init?.method === "POST") {
+        return json({
+          grantId: "grant-status-test",
+          screenId: replacementTestScreen.id,
+          code: "112233",
+          expiresAt: "2030-01-01T12:00:00.000Z",
+          generation: 2,
+        });
+      }
+      if (
+        url.endsWith("/device-reenrollment/grant-status-test") &&
+        init?.method === "GET"
+      ) {
+        return json({
+          grantId: "grant-status-test",
+          screenId: replacementTestScreen.id,
+          status,
+          expiresAt: "2030-01-01T12:00:00.000Z",
+          candidates,
+        });
+      }
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.includes("/candidates/") && init?.method === "POST") {
+        return activationError
+          ? json({ error: { message: activationError } }, 409)
+          : json({ screenId: replacementTestScreen.id });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter initialEntries={["/screens"]}>
+      <App />
+    </MemoryRouter>,
+  );
+  await user.click(await screen.findByText(replacementTestScreen.name));
+  await user.click(
+    screen.getByRole("button", { name: "Replace device identity" }),
+  );
+  await user.type(
+    screen.getByLabelText("Reason for replacement"),
+    "Test replacement",
+  );
+  await user.click(
+    screen.getByRole("button", { name: "Create replacement code" }),
+  );
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url).endsWith("/device-reenrollment/grant-status-test") &&
+          init?.method === "GET",
+      ),
+    ).toBe(true),
+  );
+  return { fetchMock, user };
+}
+
 describe("ScreenGoblin console", () => {
   it("renders an actionable dashboard with an explicit demo state", async () => {
     render(
@@ -49,6 +152,356 @@ describe("ScreenGoblin console", () => {
     await user.click(screen.getByText("Main Lobby"));
     expect(screen.getByRole("dialog", { name: "Main Lobby" })).toBeTruthy();
     expect(screen.getByText("Device health")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Replace device identity" }),
+    ).toBeNull();
+  });
+
+  it("requires exact candidate confirmation before device replacement", async () => {
+    window.sessionStorage.setItem("sg_access_token", "admin-token");
+    window.sessionStorage.setItem(
+      "sg_session_user",
+      JSON.stringify({
+        name: "Administrator",
+        email: "admin@example.test",
+        role: "ADMIN",
+        organizationId: "org-a",
+      }),
+    );
+    const liveScreen = {
+      id: "screen-live-1",
+      name: "Live Lobby",
+      location: "Main building",
+      status: "online",
+      orientation: "landscape",
+      resolution: "1920 × 1080",
+      lastSeenAt: "Just now",
+      nowPlaying: "Welcome",
+      playerVersion: "1.0.0",
+      tags: ["lobby"],
+    };
+    let resolveActivation!: (response: Response) => void;
+    const activationResponse = new Promise<Response>((resolve) => {
+      resolveActivation = resolve;
+    });
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const json = (value: unknown) =>
+          new Response(JSON.stringify(value), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        if (
+          url.endsWith("/screens") &&
+          (!init?.method || init.method === "GET")
+        ) {
+          return json({ data: [liveScreen] });
+        }
+        if (
+          url.endsWith("/screens/screen-live-1/device-reenrollment") &&
+          init?.method === "POST"
+        ) {
+          return json({
+            grantId: "grant-1",
+            screenId: "screen-live-1",
+            code: "654321",
+            expiresAt: "2030-01-01T12:00:00.000Z",
+            generation: 2,
+          });
+        }
+        if (
+          url.endsWith("/device-reenrollment/grant-1") &&
+          init?.method === "GET"
+        ) {
+          return json({
+            grantId: "grant-1",
+            screenId: "screen-live-1",
+            status: "PENDING_APPROVAL",
+            expiresAt: "2030-01-01T12:00:00.000Z",
+            candidates: [
+              {
+                id: "candidate-1",
+                keyId: "key-1",
+                fingerprint: "SHA256:ABCD-EFGH-1234",
+                securityLevel: "HARDWARE_BACKED",
+                device: {
+                  manufacturer: "Acme",
+                  model: "Player One",
+                  osVersion: "Android 15",
+                  playerVersion: "1.2.3",
+                  installationId: "install-123",
+                  appVersion: "1.2.3",
+                },
+                provedAt: "2029-12-31T12:00:00.000Z",
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/candidates/candidate-1/activate")) {
+          return activationResponse;
+        }
+        throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/screens"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByText("Live Lobby"));
+    await user.click(
+      screen.getByRole("button", { name: "Replace device identity" }),
+    );
+    expect(
+      screen.getByText(/immediately revokes the current credential/i),
+    ).toBeTruthy();
+    const createCode = screen.getByRole("button", {
+      name: "Create replacement code",
+    });
+    expect(createCode).toBeDisabled();
+    await user.type(
+      screen.getByLabelText("Reason for replacement"),
+      "Player hardware replacement",
+    );
+    expect(createCode).toBeEnabled();
+    await user.click(createCode);
+    expect(await screen.findByText("654321")).toBeTruthy();
+    const candidate = await screen.findByRole("radio", {
+      name: /SHA256:ABCD-EFGH-1234/i,
+    });
+    expect(candidate).toHaveAccessibleName(/Player One/i);
+    expect(candidate).toHaveAccessibleName(/Android 15/i);
+    expect(candidate).toHaveAccessibleName(/install-123/i);
+    await user.click(candidate);
+    const activate = screen.getByRole("button", {
+      name: "Activate exact candidate",
+    });
+    expect(activate).toBeDisabled();
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: /I verified this exact fingerprint/i,
+      }),
+    );
+    expect(activate).toBeEnabled();
+    await user.click(activate);
+    expect(screen.getByRole("button", { name: "Activating…" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Close dialog" }));
+    expect(
+      screen.getByRole("dialog", { name: /Replace device identity/i }),
+    ).toBeTruthy();
+    resolveActivation(
+      new Response(
+        JSON.stringify({
+          screenId: "screen-live-1",
+          credentialId: "credential-2",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    expect(await screen.findByText("Replacement activated")).toBeTruthy();
+    expect(screen.getByText("screen-live-1")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/screens/screen-live-1/device-reenrollment/grant-1/candidates/candidate-1/activate",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it.each([
+    ["CLAIMED", /activated by another administrator/i],
+    ["REVOKED", /Replacement request revoked/i],
+    ["EXPIRED", /Replacement request expired/i],
+  ])("renders %s as a terminal replacement state", async (status, heading) => {
+    await openReplacementWithStatus(status);
+
+    expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Cancel replacement" }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
+  });
+
+  it("passively dismisses and resumes a live grant without cancelling it", async () => {
+    const { fetchMock, user } = await openReplacementWithStatus("PENDING");
+
+    await user.click(screen.getByRole("button", { name: "Close dialog" }));
+    expect(
+      screen.queryByRole("dialog", { name: /Replace device identity/i }),
+    ).toBeNull();
+    await user.click(
+      screen.getByRole("button", { name: "Replace device identity" }),
+    );
+    expect(screen.getByText("112233")).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: /Replace device identity/i }),
+    ).toBeNull();
+    await user.click(
+      screen.getByRole("button", { name: "Replace device identity" }),
+    );
+    const backdrop = document.querySelector<HTMLElement>(".modal-overlay");
+    expect(backdrop).not.toBeNull();
+    await user.click(backdrop!);
+    expect(
+      screen.queryByRole("dialog", { name: /Replace device identity/i }),
+    ).toBeNull();
+
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE"),
+    ).toHaveLength(0);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).endsWith("/device-reenrollment") &&
+          init?.method === "POST",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("blocks dismissal while replacement creation is in flight", async () => {
+    setAdminSession();
+    let resolveCreation!: (response: Response) => void;
+    const creationResponse = new Promise<Response>((resolve) => {
+      resolveCreation = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/screens")) {
+          return new Response(
+            JSON.stringify({ data: [replacementTestScreen] }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (init?.method === "POST") return creationResponse;
+        if (init?.method === "GET") {
+          return new Response(
+            JSON.stringify({
+              grantId: "grant-busy",
+              screenId: replacementTestScreen.id,
+              status: "PENDING",
+              expiresAt: "2030-01-01T12:00:00.000Z",
+              candidates: [],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+      }),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/screens"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    await user.click(await screen.findByText(replacementTestScreen.name));
+    await user.click(
+      screen.getByRole("button", { name: "Replace device identity" }),
+    );
+    await user.type(
+      screen.getByLabelText("Reason for replacement"),
+      "Busy request test",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Create replacement code" }),
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Creating code…" }),
+    ).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Close dialog" }));
+    await user.keyboard("{Escape}");
+    expect(
+      screen.getByRole("dialog", { name: /Replace device identity/i }),
+    ).toBeTruthy();
+    resolveCreation(
+      new Response(
+        JSON.stringify({
+          grantId: "grant-busy",
+          screenId: replacementTestScreen.id,
+          code: "445566",
+          expiresAt: "2030-01-01T12:00:00.000Z",
+          generation: 2,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    expect(await screen.findByText("445566")).toBeTruthy();
+  });
+
+  it("requires acknowledgement before explicitly cancelling a grant", async () => {
+    const { fetchMock, user } = await openReplacementWithStatus("PENDING");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+
+    await user.click(
+      screen.getByRole("button", { name: "Cancel replacement" }),
+    );
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE"),
+    ).toHaveLength(0);
+    confirm.mockReturnValueOnce(true);
+    await user.click(
+      screen.getByRole("button", { name: "Cancel replacement" }),
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: /Replacement request revoked/i,
+      }),
+    ).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE"),
+    ).toHaveLength(1);
+  });
+
+  it("keeps exact metadata visible when stale activation is rejected", async () => {
+    const candidate = {
+      id: "candidate-stale",
+      keyId: "key-stale",
+      fingerprint: "SHA256:STALE-EXACT-FINGERPRINT",
+      securityLevel: "HARDWARE_BACKED",
+      device: {
+        model: "Exact Model",
+        osVersion: "Android 16",
+        playerVersion: "2.0.0",
+        installationId: "install-exact-789",
+      },
+      provedAt: "2029-12-31T12:00:00.000Z",
+    };
+    const { user } = await openReplacementWithStatus(
+      "PENDING_APPROVAL",
+      [candidate],
+      "Replacement request is stale",
+    );
+    await user.click(
+      await screen.findByRole("radio", {
+        name: /SHA256:STALE-EXACT-FINGERPRINT/i,
+      }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: /I verified this exact fingerprint/i,
+      }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Activate exact candidate" }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Replacement request is stale",
+    );
+    expect(screen.getByText("SHA256:STALE-EXACT-FINGERPRINT")).toBeTruthy();
+    expect(screen.getByText(/Exact Model/)).toHaveTextContent("Android 16");
+    expect(screen.getByText(/Exact Model/)).toHaveTextContent("2.0.0");
+    expect(screen.getByText(/Exact Model/)).toHaveTextContent(
+      "install-exact-789",
+    );
   });
 
   it("keeps emergency activation disabled in pilot mode", () => {

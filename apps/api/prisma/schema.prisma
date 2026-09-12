@@ -47,6 +47,11 @@ enum PairingStatus {
   REVOKED
 }
 
+enum PairingPurpose {
+  NEW_SCREEN
+  REENROLL
+}
+
 enum ReleaseAssignmentState {
   ASSIGNED
   WITHDRAWN
@@ -127,11 +132,13 @@ model Screen {
   networkType              String?
   lastSeenAt               DateTime?
   credentialRevokedAt      DateTime?
+  credentialGeneration     Int                       @default(0)
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
   organization             Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   schedules                ScheduleTarget[]
-  pairingCodes             PairingCode[]
+  pairingCodes             PairingCode[]             @relation("PairingResultScreen")
+  reenrollmentGrants       PairingCode[]             @relation("PairingTargetScreen")
   releaseAssignmentTargets ReleaseAssignmentTarget[]
   deviceCredentials        DeviceCredential[]
 
@@ -140,22 +147,32 @@ model Screen {
 }
 
 model PairingCode {
-  id                   String           @id @default(cuid())
-  organizationId       String
-  screenId             String?
-  screenOrganizationId String?
-  codeHash             String
-  status               PairingStatus    @default(PENDING)
-  expiresAt            DateTime
-  claimedAt            DateTime?
-  createdAt            DateTime         @default(now())
-  organization         Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  screen               Screen?          @relation(fields: [screenId, screenOrganizationId], references: [id, organizationId], onDelete: SetNull)
-  attempts             PairingAttempt[]
+  id                      String           @id @default(cuid())
+  organizationId          String
+  screenId                String?
+  screenOrganizationId    String?
+  purpose                 PairingPurpose   @default(NEW_SCREEN)
+  targetScreenId          String?
+  targetScreenReferenceId String?
+  targetOrganizationId    String?
+  expectedGeneration      Int?
+  authorizedByUserId      String?
+  priorCredentialId       String?
+  requestReason           String?
+  codeHash                String
+  status                  PairingStatus    @default(PENDING)
+  expiresAt               DateTime
+  claimedAt               DateTime?
+  createdAt               DateTime         @default(now())
+  organization            Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  screen                  Screen?          @relation("PairingResultScreen", fields: [screenId, screenOrganizationId], references: [id, organizationId], onDelete: SetNull)
+  targetScreen            Screen?          @relation("PairingTargetScreen", fields: [targetScreenId, targetOrganizationId], references: [id, organizationId], onDelete: SetNull)
+  attempts                PairingAttempt[]
 
   @@unique([id, organizationId])
   @@index([organizationId, status, expiresAt])
   @@index([codeHash])
+  @@index([targetScreenId, targetOrganizationId, status])
 }
 
 model DeviceCredential {
@@ -182,6 +199,13 @@ model DeviceCredential {
   @@index([organizationId, screenId, createdAt])
 }
 
+/// Organization-independent key history. This intentionally survives tenant
+/// deletion so a previously enrolled hardware key can never be reused.
+model DeviceKeyTombstone {
+  keyId       String   @id
+  firstSeenAt DateTime @default(now())
+}
+
 model PairingAttempt {
   id                     String            @id
   organizationId         String
@@ -196,6 +220,13 @@ model PairingAttempt {
   transcriptDigestSha256 String
   expiresAt              DateTime
   consumedAt             DateTime?
+  provedAt               DateTime?
+  activatedAt            DateTime?
+  cancelledAt            DateTime?
+  installationId         String?
+  model                  String?
+  osVersion              String?
+  playerVersion          String?
   boundCredentialId      String?
   createdAt              DateTime          @default(now())
   organization           Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)

@@ -41,6 +41,41 @@ response has `authMode: proof-v1`, `credentialId`, and `keyId`; the player
 rejects a response or native signature whose key ID differs from the enrolled
 identity.
 
+For targeted re-enrollment, an authorized operator first creates a target-bound
+grant, which revokes and detaches the prior credential. Proving a replacement
+candidate does not activate or restore it. The Player requires an explicit local
+acknowledgement before rotating to a fresh Keystore key;
+an invalid code, pairing failure, or unauthorized response must never trigger a
+rotation. After fresh-key proof, the final pairing endpoint returns HTTP `202`
+with `status: "pending-approval"`, `grantId`, `candidateId`, `keyId`,
+`fingerprint`, and `expiresAt`. The Player displays that exact fingerprint for
+physical comparison and cannot use the candidate for manifests or heartbeats.
+
+An OWNER or ADMIN separately activates the matching candidate. The Player then
+retries the identical serialized final request and proof: it continues receiving
+the same `202` while pending and receives the ordinary `201` proof credential
+response after activation. The server preserves the existing screen and its
+assignments. Cancelled, expired, superseded, revoked, or generation-stale grants
+fail closed; a formerly enrolled key cannot be reused.
+
+The Player polls no more often than every 15 seconds so it remains below the
+device-pairing rate limit, stops at the earlier of the server expiry or a local
+ten-minute bound, and allows the local wait to be paused. Before the first final
+POST, the Player stores the exact canonical proof body, API URL, key binding,
+and bounded expiry in IndexedDB. This record temporarily contains the pairing
+code and is retained only until successful credential persistence, terminal
+failure, or expiry. Startup automatically resumes those exact bytes; pause,
+network loss, and process termination preserve them. A second identity rotation
+is blocked while the record remains unresolved. The Player retains the
+prior managed Keystore alias while approval is pending so a generation or
+storage failure does not destroy the old identity. Only after a strict `201`
+response matches the active key ID does the native bridge delete superseded
+ScreenGoblin aliases; it verifies the active alias and never deletes unrelated
+application keys. Physical-device evidence that deletion is effective remains
+a release gate. The Player persists activated credentials before requesting
+this cleanup and retries cleanup during boot, preventing a local deletion
+failure from orphaning the server-side activation.
+
 Manifest and heartbeat access first requests a challenge with `X-Screen-Id`
 and `X-Device-Key-Id`. Its body names the operation and a lowercase hexadecimal
 SHA-256: empty bytes for manifest, or the exact canonical heartbeat JSON bytes.
@@ -82,9 +117,12 @@ requires network access; native/WebView offline behavior remains a device gate.
 
 Emergency manifests use priority `emergency`; the player visibly labels them. Normal schedules are restored by publishing a new normal manifest.
 
-Device-key rotation, remote attestation, operator confirmation of a pairing-key
-fingerprint, and verified deletion of a revoked Android Keystore alias are
-explicitly outside proof-v1. `securityLevel` is self-reported diagnostic data,
-not attestation. A compromised trusted WebView can still invoke the signing
-bridge, so proof-v1 protects an exported credential from off-device use but is
-not a defense against execution inside the player origin.
+Automatic device-key rotation with old/new overlap, remote attestation, initial
+enrollment fingerprint confirmation, verified deletion of a revoked Android
+Keystore alias, offline media erasure, and proof that a replacement is the same
+physical device remain outside proof-v1. Targeted re-enrollment adds a manual
+exact-fingerprint approval step but does not close those gates. `securityLevel`
+is self-reported diagnostic data, not attestation. A compromised trusted WebView
+can still invoke the signing bridge, so proof-v1 protects an exported credential
+from off-device use but is not a defense against execution inside the player
+origin.

@@ -7,6 +7,7 @@ export const CAPABILITIES = {
   releasePublish: "release.publish",
   releaseWithdraw: "release.withdraw",
   screenCredentialRevoke: "screen.credential.revoke",
+  screenCredentialReenroll: "screen.credential.reenroll",
 } as const;
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
@@ -111,6 +112,17 @@ export interface PairingResponse {
   apiBaseUrl: string;
   heartbeatIntervalSeconds: number;
   manifestVerificationKey: string;
+}
+
+/** A proved replacement key awaiting explicit operator activation. */
+export interface PairingPendingApprovalResponse {
+  status: "pending-approval";
+  grantId: string;
+  candidateId: string;
+  keyId: string;
+  /** Canonical SHA-256 base64url public-key fingerprint; equal to keyId in proof-v1. */
+  fingerprint: string;
+  expiresAt: string;
 }
 
 export type DeviceProofOperation = "manifest" | "heartbeat";

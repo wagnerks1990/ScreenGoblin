@@ -30,6 +30,9 @@ All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the
 - `GET /api/v1/audit-events`
 - `POST /api/v1/pairing-codes`
 - `POST /api/v1/screens/:id/device-credential/revoke`
+- `POST /api/v1/screens/:id/device-reenrollment` (required operational reason)
+- `GET|DELETE /api/v1/screens/:id/device-reenrollment/:grantId`
+- `POST /api/v1/screens/:id/device-reenrollment/:grantId/candidates/:candidateId/activate`
 
 Production Player endpoints use the two-stage `proof-v1` protocol:
 
@@ -48,7 +51,13 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
 - OWNER/ADMIN control screens and emergency takeovers; PUBLISHER may manage ordinary content and schedules; VIEWER is read-only.
 - Emergency publishing is supplemental—not a life-safety or mass-notification system—and is disabled by default. Set `EMERGENCY_FEATURE_ENABLED=true` only after local policy, authorization, failover, and end-to-end device acknowledgment have been validated.
 - Database queries include organization scope. Public screen responses exclude bearer verifier hashes and private device-authentication state. Pairing codes use a deployment-specific HMAC pepper at rest. Proof challenges are short-lived, stored only as hashes, durably bounded, and consumed once after valid signature verification. OWNER/ADMIN revocation transactionally disables a credential, invalidates outstanding challenges, marks the screen, and appends one audit record.
-- Proof-v1 does not yet provide server-verified hardware/application attestation, credential/key rotation, targeted re-enrollment, offline recall, or verified native erasure; those remain pilot/release gates.
+- Proof-v1 supports manual, targeted, zero-overlap re-enrollment of an
+  existing screen. The request immediately revokes the old identity; fresh-key
+  proof stages a candidate; and a separate OWNER/ADMIN exact-fingerprint
+  activation is required. It does not provide server-verified
+  hardware/application attestation, automatic overlapping key rotation, offline
+  recall, verified native erasure, or physical-device identity; those remain
+  pilot/release gates.
 - Staff email login is case-insensitive. PostgreSQL enforces a functional unique index on `LOWER(email)`; its migration aborts without changing data when legacy case-only duplicates exist, and runtime lookup also fails closed if it encounters ambiguous identity data.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
 - Media upload/transcoding and object-storage presigning are intentionally adapter boundaries. This prototype stores validated metadata only.

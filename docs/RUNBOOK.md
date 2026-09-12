@@ -15,7 +15,7 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 5. During the maintenance window, run `docker compose --env-file deploy/.env pull` for referenced images and `docker compose --env-file deploy/.env build --pull` for application images.
 6. Run `docker compose --env-file deploy/.env up -d` and inspect `docker compose --env-file deploy/.env ps`.
 7. On a new installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Confirm the owner can sign in, then remove all `SEED_*` values from the host environment.
-8. Verify readiness, login, two-stage Android Keystore pairing, proof-authorized heartbeat and manifest delivery, atomic pairing/audit, Ed25519 manifest verification, media checksum, signed withdrawal, schedule-boundary blanking, last-known-good playback, and OWNER/ADMIN credential revocation. Confirm replayed proofs fail and a revoked online player returns to enrollment without retaining managed media.
+8. Verify readiness, login, two-stage Android Keystore pairing, proof-authorized heartbeat and manifest delivery, atomic pairing/audit, Ed25519 manifest verification, media checksum, signed withdrawal, schedule-boundary blanking, last-known-good playback, and OWNER/ADMIN credential revocation. Confirm replayed proofs fail. Do not claim that a revoked online player erased managed media until verified native erasure is implemented and evidenced.
 
 Tenant-integrity and normalized-email migrations deliberately abort if they find cross-organization relationships or case-colliding accounts. Before applying them, stop writers, take a verified backup, run the documented preflight queries in a restored staging copy, and investigate every conflict; do not bypass the checks or relabel records automatically.
 
@@ -79,4 +79,17 @@ After containment, rotate exposed secrets, retain audit/log evidence, identify a
 
 - Weekly: review offline screens, failed jobs, capacity, certificate expiry, and security alerts.
 - Monthly: patch staging, promote through release rings, restore a small backup sample, and review privileged users.
-- Quarterly: full restore drill, lab device revoke/re-enrollment exercise, incident exercise, and access review. Credential/key rotation is not yet implemented and must remain a tracked release gate rather than a claimed maintenance control.
+- Quarterly: full restore drill, lab device revoke/re-enrollment exercise,
+  incident exercise, and access review. The re-enrollment exercise must record
+  the target screen, required operational reason, and starting generation;
+  immediate old-key revocation and the resulting offline state;
+  explicit local Player key reset; exact candidate fingerprint comparison on the
+  physical display and Console; separate OWNER/ADMIN activation; preservation of
+  screen assignments; denial of the old key; and cancellation of stale grants.
+  Treat expiry or a fingerprint mismatch as a stop condition and cancel the
+  grant. Do not activate an unverified candidate.
+
+  This manual zero-overlap recovery flow causes intentional downtime and is not
+  automatic credential rotation. Hardware/application attestation, old/new key
+  overlap, verified Keystore/media erasure, offline recall, and representative
+  physical-device evidence remain tracked release gates.

@@ -48,8 +48,10 @@ idempotently recoverable only when it repeats the identical successfully
 verified transcript and proof, preventing response loss from creating a second
 screen or audit record. Source/code distributed rate limits also apply.
 
-Operator confirmation, attestation, targeted safe re-enrollment, credential/key
-rotation, and verified decommissioning remain release gates.
+Operator confirmation for initial enrollment, attestation, automatic overlapping
+credential rotation, and verified decommissioning remain release gates. A
+separately authorized, zero-overlap targeted re-enrollment flow is described
+below; it is a manual recovery control, not automatic rotation.
 
 ### Android challenge-signing contract
 
@@ -129,7 +131,7 @@ Before commands are enabled, they must have unique IDs, issue/expiry timestamps,
 
 HTTPS polling is the baseline transport. A push channel may reduce latency but polling remains the recovery path. Mutating acknowledgements are idempotent. Clients use capped exponential backoff with jitter and honor `Retry-After`. Certificate validation must never be disabled outside a dedicated local development build.
 
-## Credential rotation and decommissioning
+## Credential revocation and targeted re-enrollment
 
 An `OWNER` or `ADMIN` can invoke
 `POST /api/v1/screens/:id/device-credential/revoke`. The API transactionally
@@ -141,9 +143,59 @@ or authenticate a subsequent online operation.
 Revocation is not offline recall. A disconnected player can continue already
 verified cached playback until a signed local playback boundary requires it to
 stop, and the server cannot remotely erase that cache. Targeted re-enrollment,
-key/credential rotation, verified native factory-reset erasure, device-owner
-attestation, fleet decommission evidence, and physical proof of removal remain
-release gates.
+automatic overlapping key/credential rotation, verified native factory-reset
+erasure, device-owner attestation, fleet decommission evidence, and physical
+proof of removal remain release gates.
+
+Targeted re-enrollment replaces the credential for an existing `Screen`
+without recreating the screen or changing its assignments:
+
+1. An `OWNER` or `ADMIN` supplies a required operational reason and requests
+   re-enrollment for one screen. The API
+   transactionally revalidates authorization, increments the screen's credential
+   generation, immediately revokes and detaches its old identity, invalidates
+   outstanding device challenges and older grants, creates a ten-minute grant,
+   and audits the reason-bearing request. The response includes the grant ID,
+   six-digit code, screen ID, expiry, and generation. This containment-first
+   request takes the screen offline; activation does not defer the initial
+   revocation.
+2. The Player requires an explicit local re-enrollment action before deleting
+   its former Keystore alias and generating a fresh P-256 key. Merely receiving
+   a pairing error or entering an invalid code must never rotate a key.
+3. The Player completes the normal transcript-bound pairing challenge with the
+   fresh key. `POST /api/v1/device/pair` returns `202` with
+   `status: "pending-approval"`, the grant and candidate IDs, key ID,
+   fingerprint, and expiry. No credential is created and the candidate cannot
+   obtain an operational device challenge at this stage.
+4. An `OWNER` or `ADMIN` retrieves the targeted grant and its proved candidates,
+   verifies the exact displayed key fingerprint against the physical Player,
+   and activates that candidate. Possession of the six-digit code alone can
+   therefore never install a replacement credential.
+5. Activation revalidates membership and the grant's captured credential
+   generation, then atomically creates and attaches the globally new credential,
+   updates device-reported screen metadata, clears the screen revocation marker,
+   consumes the grant, cancels competing candidates, and appends one audit
+   event. The stable screen ID, name, location, tags, schedules, and release
+   assignments are preserved.
+6. The Player repeats the identical final proof. While approval is pending it
+   continues to receive `202`; after activation it receives the ordinary proof
+   credential response without another cutover or audit event.
+
+Only one pending targeted grant is permitted per screen. Cancelling a grant,
+issuing a newer grant, explicit credential revocation, deleting the target, or
+any intervening credential-generation change makes stale activation fail. A
+previously enrolled key ID is never reusable, including after revocation.
+Concurrent activation, cancellation, revocation, and heartbeat operations are
+serialized through the screen generation and transactional locks: at most one
+candidate becomes live, and no proof from the detached identity may mutate the
+screen after replacement.
+
+This workflow deliberately has a service interruption between the initial
+revocation and explicit activation. It does not prove that the replacement is
+the same physical device, attest Android hardware/application state, erase
+offline media, or implement old/new credential overlap, autonomous renewal,
+grace periods, or rollback. Those controls and representative physical-device
+evidence remain pre-production gates.
 
 ## Deployment modes
 
