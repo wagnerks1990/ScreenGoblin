@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMonotonicUptime } from "./uptime";
 
 describe("createMonotonicUptime", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("is unaffected by a backward wall-clock correction", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-12T12:00:00.000Z"));
@@ -12,7 +14,6 @@ describe("createMonotonicUptime", () => {
     vi.setSystemTime(new Date("2026-09-12T11:00:00.000Z"));
 
     expect(uptime()).toBe(3);
-    vi.useRealTimers();
   });
 
   it("never reports a negative or decreasing value", () => {
