@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/recovery-drill.yml"
+      - "package-lock.json"
       - "apps/api/prisma/**"
       - "deploy/scripts/**"
       - "deploy/docker/**"

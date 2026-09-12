@@ -84,10 +84,11 @@ The restore requires the adjacent checksum and refuses to replace any existing d
 
 Object storage needs a matching versioned backup and integrity inventory; the PostgreSQL scripts do not back up MinIO. Test restoration into an isolated environment at least quarterly and verify a sample manifest can be reconstructed with its media. `.github/workflows/recovery-drill.yml` applies the real Prisma migration chain, restores a representative tenant/content/schedule/immutable-release/audit graph, validates its constraints and references, matches restored database media metadata to a restored MinIO object's exact size and SHA-256, and exercises retained-image rollback. It runs monthly, when recovery implementation changes, and when Prisma migrations change. It pulls exact fixture tags once, records their resolved repository digests, and uses those immutable digests with `--pull never` during the drill.
 
-Dependency-only pull requests do not match the recovery workflow's automatic
-path filters. When promotion policy requires recovery evidence for one, manually
-dispatch the workflow against the exact pull-request head; do not substitute a
-run from `main`, an earlier commit, or another dependency group.
+Root lockfile changes match the recovery workflow's automatic pull-request path
+filter so dependency updates receive recovery evidence for their exact head.
+For dependency changes without a root lockfile change, manually dispatch the
+workflow against the exact pull-request head; do not substitute a run from
+`main`, an earlier commit, or another dependency group.
 
 Download the short-lived `recovery-drill-evidence-<commit>` artifact and verify
 `SHA256SUMS` before reviewing `result.txt`, `measurements.json`, and the
