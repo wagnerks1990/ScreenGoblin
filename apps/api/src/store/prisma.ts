@@ -570,7 +570,6 @@ export class PrismaStore implements DataStore {
           description: data.description,
           items: {
             create: data.items.map((i) => ({
-              organizationId: org,
               assetId: i.assetId,
               position: i.position,
               durationSeconds: i.durationSeconds,
@@ -626,7 +625,6 @@ export class PrismaStore implements DataStore {
           enabled: data.enabled,
           targets: {
             create: data.screenIds.map((screenId) => ({
-              organizationId: org,
               screenId,
             })),
           },
