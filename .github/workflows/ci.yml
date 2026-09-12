@@ -46,7 +46,11 @@ jobs:
       - run: npm ci
       - run: npm run prisma:generate -w @screengoblin/api
       - run: npm run prisma:migrate -w @screengoblin/api
-      - run: npm run format:check
+      - name: Emit canonical workflow-pin test formatting
+        run: |
+          npx prettier --write deploy/scripts/workflow-actions.test.mjs
+          git diff -- deploy/scripts/workflow-actions.test.mjs
+          exit 1
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test:coverage
