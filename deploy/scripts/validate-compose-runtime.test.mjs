@@ -27,6 +27,8 @@ case " $* " in
     ;;
   *" down --volumes --remove-orphans "*) exit 0 ;;
   *" ps --all "*) printf 'NAME STATUS\\nsmoke healthy\\n'; exit 0 ;;
+  *" ps --quiet "*) printf 'container-%s\\n' "${!#}"; exit 0 ;;
+  *" inspect container-"*) printf 'null\\n'; exit 0 ;;
   *" logs --no-color "*)
     printf 'JWT_SECRET=%s\\n' "$JWT_SECRET"
     printf '%s' "$JWT_SECRET" > "$FAKE_LEAK_CAPTURE"
@@ -118,6 +120,8 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     const commands = readFileSync(f.commandLog, "utf8");
     assert.match(commands, /up --detach --wait --wait-timeout 180/);
     assert.match(commands, /network inspect screengoblin-smoke-test_backend/);
+    assert.match(commands, /ps --quiet console/);
+    assert.match(commands, /inspect container-console/);
     assert.match(commands, /run --rm --no-deps --entrypoint/);
     assert.match(commands, /down --volumes --remove-orphans --timeout 20/);
     assert.match(

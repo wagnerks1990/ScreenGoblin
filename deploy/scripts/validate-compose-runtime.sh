@@ -207,11 +207,17 @@ for service_port in \
   "postgres 5432" "redis 6379" "minio 9000" "minio 9001" \
   "api 3001" "console 8080" "player-web 8080"; do
   read -r service port <<<"$service_port"
-  if published="$("${compose[@]}" port "$service" "$port" 2>/dev/null)" &&
-    [[ -n "$published" ]]; then
-    echo "$service unexpectedly publishes port $port" >&2
+  container_id="$("${compose[@]}" ps --quiet "$service")"
+  [[ -n "$container_id" ]] || {
+    echo "Could not resolve the $service container" >&2
     exit 1
-  fi
+  }
+  bindings="$("$DOCKER_BIN" inspect "$container_id" \
+    --format "{{json (index .NetworkSettings.Ports \"${port}/tcp\")}}")"
+  [[ "$bindings" == null ]] || {
+    echo "$service unexpectedly has host bindings for port $port: $bindings" >&2
+    exit 1
+  }
 done
 for caddy_port in 80 443; do
   published="$("${compose[@]}" port caddy "$caddy_port")"

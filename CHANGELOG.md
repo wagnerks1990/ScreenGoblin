@@ -175,7 +175,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Exercise the complete production-mode Compose stack in CI with ephemeral
   secrets and local TLS. Bound startup, probe API/Console/Player/media routing
   and browser headers through Caddy, verify private service ports and the
-  internal backend network, retain redacted failure evidence, and always remove
+  internal backend network, inspect actual Docker host-port bindings, retain
+  redacted failure evidence, and always remove
   disposable containers and volumes. Render the MinIO bootstrap policy using
   only POSIX shell built-ins available in the pinned client image. Require a
   nonempty ACME account contact so Caddy configuration cannot render an invalid
