@@ -12,22 +12,13 @@ const workflows = [
 ];
 
 const expected = new Map([
-  [
-    "actions/checkout",
-    "3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
-  ],
-  [
-    "actions/setup-node",
-    "820762786026740c76f36085b0efc47a31fe5020 # v7.0.0",
-  ],
+  ["actions/checkout", "3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"],
+  ["actions/setup-node", "820762786026740c76f36085b0efc47a31fe5020 # v7.0.0"],
   [
     "actions/upload-artifact",
     "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
   ],
-  [
-    "actions/setup-java",
-    "de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1",
-  ],
+  ["actions/setup-java", "de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1"],
   [
     "gradle/actions/setup-gradle",
     "9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0",
@@ -63,7 +54,11 @@ test("security workflows use the reviewed full-SHA action set", async () => {
       assert.ok(pin);
       const reviewed = expected.get(action);
       assert.ok(reviewed, `${workflow} uses unreviewed action ${action}`);
-      assert.equal(pin.trim(), reviewed, `${workflow} has a stale pin for ${action}`);
+      assert.equal(
+        pin.trim(),
+        reviewed,
+        `${workflow} has a stale pin for ${action}`,
+      );
       observed.add(action);
     }
   }
