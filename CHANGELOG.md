@@ -180,7 +180,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   disposable containers and volumes. Render the MinIO bootstrap policy using
   only POSIX shell built-ins available in the pinned client image. Require a
   nonempty ACME account contact so Caddy configuration cannot render an invalid
-  empty email directive. Preserve the
+  empty email directive, and make the public readiness denial an ordered
+  terminal route that cannot fall through to the Console. Preserve the
   API production dependencies in a clean production-only install, copy the
   API workspace's nested modules and generated Prisma client explicitly, and
   fail the build unless imports resolve from the compiled server's directory. Install the pinned

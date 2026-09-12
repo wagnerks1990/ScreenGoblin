@@ -7,7 +7,9 @@
   encode zstd gzip
 
   @readiness path /health/ready
-  respond @readiness 404
+  handle @readiness {
+    respond 404
+  }
 
   @api path /api /api/* /health/live
   handle @api {
