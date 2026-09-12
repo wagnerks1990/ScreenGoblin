@@ -11,7 +11,8 @@ public final class BootReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
+        if (intent == null || intent.getAction() == null ||
+            !intent.getAction().equals(Intent.ACTION_BOOT_COMPLETED)) return;
 
         Intent player = new Intent(context, MainActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);

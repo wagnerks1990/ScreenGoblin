@@ -6,6 +6,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Add commit-pinned, first-party-blocking CodeQL `security-extended` analysis for
+  JavaScript/TypeScript, native Java, and Actions workflows with retained SARIF
+  evidence; upgrade generic Trivy SARIF uploads to the same CodeQL Action v4
+  pin; and checksum-lock the Gradle 8.11.1 distribution. Android dependency
+  metadata and immutable container inputs remain open supply-chain gates.
 - Retain the exact Ed25519 manifest signing bytes in both Player cache slots and
   reverify them against the pinned key and screen before staging, boot recovery,
   or rollback. Remove legacy/altered records, refuse previous-slot revival when

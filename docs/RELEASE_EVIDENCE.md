@@ -4,12 +4,35 @@ ScreenGoblin CI builds the final API, Console, and web-player container stages a
 
 ## Pull-request and scheduled scanning
 
+`.github/workflows/codeql.yml` runs GitHub CodeQL's `security-extended` suite
+for JavaScript/TypeScript, the native Java Player sources, and GitHub Actions on
+pull requests, `main`, a weekly schedule, and manual dispatch. The action is
+commit-pinned. GitHub Code Scanning default setup already owns repository alert
+uploads, so this workflow writes per-language SARIF evidence and fails on any
+first-party finding instead of attempting a conflicting advanced-setup upload.
+Java analysis traces a real debug compilation after regenerating the Capacitor
+Android project. Findings in installed or generated dependency sources remain in
+the retained SARIF but do not block this repository's gate and require explicit
+review or upstream remediation. Dependency review separately blocks newly
+introduced dependencies with known moderate-or-higher vulnerabilities.
+
+The Java gate contains one hash-bound false-positive acceptance for
+`java/improper-intent-verification` on `BootReceiver`. The receiver is explicitly
+non-exported and null-safely rejects every action except `BOOT_COMPLETED`, matching
+the query's recommendation. The exception activates only while both that source
+file and its manifest declaration retain their reviewed SHA-256 values; a change
+to either makes the alert blocking again. The full result remains in SARIF.
+
 `.github/workflows/container-scan.yml` performs two blocking checks:
 
 - repository filesystem scanning for unresolved `HIGH` and `CRITICAL` findings; and
 - final-image builds followed by unresolved `HIGH` and `CRITICAL` image scanning.
 
 The image job also emits CycloneDX SBOMs, Trivy SARIF, Docker image inspection records, image IDs, source commit/tree/archive digests, Dockerfile digests, and SHA-256 checksums. SARIF is uploaded to GitHub code scanning and the remaining evidence is retained as a short-lived workflow artifact. The builder refuses a dirty worktree or a requested evidence ID that differs from the checked-out commit.
+
+Gradle verifies the pinned 8.11.1 distribution ZIP against the checksum
+published for that exact distribution. Maven/plugin dependency verification and
+immutable container base/runtime inputs remain separate gates.
 
 `--ignore-unfixed` is intentional: findings without an upstream fix remain visible in reports but do not independently block this prototype workflow. This policy must be reviewed before production approval. An exception must never be created merely to obtain a green build.
 
