@@ -809,6 +809,23 @@ describe("device lifecycle", () => {
     expect(attempts).toBe(8);
   });
 
+  it("stops pairing-code allocation when transaction-time authority is lost", async () => {
+    let attempts = 0;
+    store.tryCreatePairingAndAudit = async () => {
+      attempts += 1;
+      return { created: false, reason: "FORBIDDEN" };
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/pairing-codes",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error.code).toBe("FORBIDDEN");
+    expect(attempts).toBe(1);
+  });
+
   it("limits repeated guesses of the same pairing code", async () => {
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const response = await app.inject({

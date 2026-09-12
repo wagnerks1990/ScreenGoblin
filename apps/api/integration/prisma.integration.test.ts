@@ -833,24 +833,69 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).resolves.toMatchObject({ id: alphaMedia.id });
   });
 
-  it("rolls back pairing creation when its required audit actor is invalid", async () => {
+  it("rolls back pairing creation when its required audit cannot be written", async () => {
     const organization = await createOrganization("pairing-create-rollback");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "pairing-create-rollback-owner",
+    );
     const codeHash = `failed-audit-${randomUUID()}`;
 
-    await expect(
-      store.tryCreatePairingAndAudit(
-        organization.id,
-        codeHash,
-        new Date(Date.now() + 60_000).toISOString(),
-        { actorUserId: `missing-user-${randomUUID()}` },
-      ),
-    ).rejects.toMatchObject({ code: "P2003" });
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_pairing_create_audit" CHECK ("action" <> 'pairing.created')`,
+    );
+    try {
+      await expect(
+        store.tryCreatePairingAndAudit(
+          organization.id,
+          codeHash,
+          new Date(Date.now() + 60_000).toISOString(),
+          { actorUserId: actor.id },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_pairing_create_audit"',
+      );
+    }
     expect(await prisma.pairingCode.count({ where: { codeHash } })).toBe(0);
     expect(
       await prisma.auditEvent.count({
         where: { organizationId: organization.id, action: "pairing.created" },
       }),
     ).toBe(0);
+  });
+
+  it("revalidates current pairing-code authority inside the transaction", async () => {
+    const [organization, otherOrganization] = await Promise.all([
+      createOrganization("pairing-create-authorization"),
+      createOrganization("pairing-create-authorization-other"),
+    ]);
+    const [viewer, disabledAdmin, otherAdmin] = await Promise.all([
+      createMember(organization.id, "VIEWER", "pairing-create-viewer"),
+      createMember(
+        organization.id,
+        "ADMIN",
+        "pairing-create-disabled-admin",
+        true,
+      ),
+      createMember(otherOrganization.id, "ADMIN", "pairing-create-other-admin"),
+    ]);
+
+    for (const actorUserId of [viewer.id, disabledAdmin.id, otherAdmin.id]) {
+      const codeHash = `forbidden-pairing-${randomUUID()}`;
+      await expect(
+        store.tryCreatePairingAndAudit(
+          organization.id,
+          codeHash,
+          new Date(Date.now() + 60_000).toISOString(),
+          { actorUserId },
+        ),
+      ).resolves.toEqual({ created: false, reason: "FORBIDDEN" });
+      expect(await prisma.pairingCode.count({ where: { codeHash } })).toBe(0);
+    }
+    expect(await prisma.auditEvent.count()).toBe(0);
   });
 
   it("claims a pairing code and records its audit exactly once under concurrent requests", async () => {

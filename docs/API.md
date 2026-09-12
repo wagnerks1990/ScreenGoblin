@@ -37,6 +37,13 @@ performs the mutation and appends its audit event. Screens require `OWNER` or
 demotion, cross-organization identifier, resource-in-use conflict, or audit
 write failure leaves both resource state and audit history unchanged.
 
+Pairing-code issuance requires `OWNER` or `ADMIN` at both the route and store
+boundaries. The store locks and revalidates the actor's current active
+membership before expiring colliding codes or creating the new ten-minute
+enrollment authority and audit event. A concurrent demotion, disablement, or
+membership removal returns `403` without retrying and changes neither pairing
+nor audit state.
+
 Device-credential revocation and targeted re-enrollment require their exact
 screen credential capabilities. The compatibility role adapter grants them only
 to `OWNER` and `ADMIN`. The route and transactional store both revalidate the

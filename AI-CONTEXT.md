@@ -44,6 +44,9 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   rollback chain, and stale callbacks may not roll back a newer active version.
 - Live operational data must fail visibly. Never replace a failed authenticated request with demo values.
 - Published content, schedules, commands, permissions, emergencies, and device lifecycle operations require durable audit coverage.
+- Pairing-code issuance revalidates current active `OWNER`/`ADMIN` membership
+  inside the code-and-audit transaction before any collision expiry or create;
+  authorization loss must return `FORBIDDEN` without retrying or changing state.
 - Screen creation/update and media/playlist creation/deletion revalidate the
   actor's active organization role and commit the resource mutation with its
   audit event in one transaction. Authorization, reference conflicts, and audit

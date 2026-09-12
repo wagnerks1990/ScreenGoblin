@@ -14,6 +14,7 @@ import type {
   PairingClaimAuditContext,
   PairingCreateAuditContext,
   PairingCreateResult,
+  AuditedPairingCreateResult,
   PairingAttemptRecord,
   PairingProofVerifier,
   ReenrollmentActivationResult,
@@ -348,7 +349,9 @@ export class MemoryStore implements DataStore {
     codeHash: string,
     expiresAt: string,
     audit: PairingCreateAuditContext,
-  ): Promise<PairingCreateResult> {
+  ): Promise<AuditedPairingCreateResult> {
+    if (!this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]))
+      return { created: false, reason: "FORBIDDEN" };
     const currentTime = now();
     const expired = this.pairings.filter(
       (pairing) =>

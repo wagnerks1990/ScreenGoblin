@@ -240,6 +240,10 @@ export type PairingCreateResult =
   | { created: true; pairing: PairingRecord }
   | { created: false; reason: "CODE_COLLISION" };
 
+export type AuditedPairingCreateResult =
+  | { created: true; pairing: PairingRecord }
+  | { created: false; reason: "CODE_COLLISION" | "FORBIDDEN" };
+
 export interface PairingClaimAuditContext {
   ipAddress?: string | undefined;
   requestId?: string | undefined;
@@ -481,7 +485,7 @@ export interface DataStore {
     codeHash: string,
     expiresAt: string,
     audit: PairingCreateAuditContext,
-  ): Promise<PairingCreateResult>;
+  ): Promise<AuditedPairingCreateResult>;
   requestScreenReenrollmentAndAudit(
     orgId: string,
     screenId: string,

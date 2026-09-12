@@ -17,6 +17,7 @@ import type {
   PairingClaimAuditContext,
   PairingCreateAuditContext,
   PairingCreateResult,
+  AuditedPairingCreateResult,
   PairingAttemptRecord,
   PairingProofVerifier,
   ReenrollmentActivationResult,
@@ -727,9 +728,12 @@ export class PrismaStore implements DataStore {
     codeHash: string,
     expiresAt: string,
     audit: PairingCreateAuditContext,
-  ): Promise<PairingCreateResult> {
+  ): Promise<AuditedPairingCreateResult> {
     try {
       return await this.prisma.$transaction(async (tx) => {
+        const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+        if (role !== "OWNER" && role !== "ADMIN")
+          return { created: false as const, reason: "FORBIDDEN" as const };
         await tx.pairingCode.updateMany({
           where: {
             codeHash,
