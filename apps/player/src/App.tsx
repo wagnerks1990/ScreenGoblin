@@ -14,7 +14,7 @@ import {
   installationId as getInstallationId,
   networkType,
 } from "./core/device";
-import { ManifestManager } from "./core/manifest";
+import { ManifestManager, manifestPlaybackEndsAt } from "./core/manifest";
 import { SingleFlight } from "./core/single-flight";
 import { IndexedDbPlayerStore } from "./core/storage";
 import type {
@@ -28,6 +28,7 @@ const store = new IndexedDbPlayerStore();
 const assetRepository = new CacheAssetRepository();
 const manager = new ManifestManager(store, assetRepository);
 const startedAt = Date.now();
+const MAX_BOUNDARY_TIMER_MS = 24 * 60 * 60_000;
 
 export default function App() {
   const [installationId, setInstallationId] = useState("");
@@ -203,21 +204,30 @@ export default function App() {
   }, [credentials, syncManifest]);
 
   useEffect(() => {
-    if (!manifest?.playbackEndsAt) return;
+    if (!manifest) return;
+    const boundary = manifestPlaybackEndsAt(manifest);
+    if (boundary === undefined) return;
     const expectedVersion = manifest.version;
-    const remaining = Date.parse(manifest.playbackEndsAt) - Date.now();
     const stop = () => {
       if (activeManifestVersionRef.current !== expectedVersion) return;
       playingRef.current = undefined;
       setManifest(undefined);
       setFallback(false);
     };
-    if (remaining <= 0) {
-      stop();
-      return;
-    }
-    const timer = window.setTimeout(stop, remaining);
-    return () => clearTimeout(timer);
+    let timer: number | undefined;
+    const checkBoundary = () => {
+      const remaining = boundary - Date.now();
+      if (remaining <= 0) stop();
+      else
+        timer = window.setTimeout(
+          checkBoundary,
+          Math.min(remaining, MAX_BOUNDARY_TIMER_MS),
+        );
+    };
+    checkBoundary();
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, [manifest]);
 
   useEffect(() => {

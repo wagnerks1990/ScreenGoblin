@@ -41,6 +41,15 @@ vi.mock("./core/assets", () => ({
 }));
 
 vi.mock("./core/manifest", () => ({
+  manifestPlaybackEndsAt: (value: PlayerManifest) => {
+    const boundaries = [
+      value.playbackEndsAt,
+      ...value.items.map((item) => item.expiresAt),
+    ]
+      .filter((candidate): candidate is string => candidate !== undefined)
+      .map(Date.parse);
+    return boundaries.length ? Math.min(...boundaries) : undefined;
+  },
   ManifestManager: class {
     recover = mocks.recover;
     stageAndActivate = mocks.stageAndActivate;
@@ -174,6 +183,40 @@ describe("device revocation", () => {
 });
 
 describe("boot credential validation", () => {
+  it("stops offline playback at the earliest signed asset expiry", async () => {
+    const expiringManifest: PlayerManifest = {
+      ...manifest,
+      items: [
+        {
+          id: "asset-expiring",
+          kind: "image",
+          url: "https://media.example.test/expiring.png",
+          mimeType: "image/png",
+          checksumSha256: "a".repeat(64),
+          sizeBytes: 1,
+          durationSeconds: 60,
+          expiresAt: new Date(Date.now() + 100).toISOString(),
+        },
+      ],
+    };
+    mocks.recover.mockResolvedValue(expiringManifest);
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: false,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Waiting for a published schedule…",
+        {},
+        { timeout: 1_000 },
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("deletes an expired recovery record before allowing pairing", async () => {
     mocks.getCredentials.mockResolvedValue(undefined);
     mocks.recover.mockResolvedValue(undefined);

@@ -42,6 +42,7 @@ import {
 } from "../releases/canonical.js";
 import { hasCapability } from "../authorization/policy.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
+import { mediaPublicationFailure } from "../utils/media-policy.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
 import { randomToken } from "../utils/crypto.js";
 
@@ -2216,6 +2217,10 @@ export class PrismaStore implements DataStore {
             if (screens.length !== screenIds.length)
               return { published: false, reason: "SCREEN_NOT_FOUND" };
 
+            const [clock] = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
+              SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+            if (!clock) throw new Error("Database clock is unavailable");
+
             const playlistRecord = playlistDto(playlist);
             const assets = playlist.items.map((item) => mediaDto(item.asset));
             if (
@@ -2228,6 +2233,11 @@ export class PrismaStore implements DataStore {
               )
             )
               return { published: false, reason: "ASSET_NOT_ALLOWED" };
+            const mediaFailure = mediaPublicationFailure(
+              assets,
+              clock.databaseNow,
+            );
+            if (mediaFailure) return { published: false, reason: mediaFailure };
 
             let snapshot;
             try {

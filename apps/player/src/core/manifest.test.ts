@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ManifestError, ManifestManager, assertManifest } from "./manifest";
+import {
+  ManifestError,
+  ManifestManager,
+  assertManifest,
+  manifestPlaybackEndsAt,
+} from "./manifest";
 import type {
   AssetRepository,
   Credentials,
@@ -253,6 +258,42 @@ describe("manifest transaction", () => {
     ).resolves.toEqual(leased);
   });
 
+  it("does not activate or recover media after its signed expiry", async () => {
+    const store = new MemoryStore();
+    const assets = new MemoryAssets();
+    const expired = {
+      ...valid,
+      generatedAt: "2020-01-01T00:00:00Z",
+      items: [
+        {
+          ...valid.items[0]!,
+          expiresAt: "2020-01-01T00:01:00Z",
+        },
+      ],
+    };
+    const manager = new ManifestManager(store, assets);
+
+    await expect(manager.stageAndActivate(expired)).resolves.toBeUndefined();
+    expect(assets.prefetched).toEqual([]);
+    await expect(manager.recover()).resolves.toBeUndefined();
+
+    store.active = { ...valid, version: "current" };
+    store.previous = expired;
+    await expect(manager.rollback("current")).resolves.toBeUndefined();
+  });
+
+  it("does not recover a legacy cached web manifest", async () => {
+    const store = new MemoryStore();
+    store.active = {
+      ...valid,
+      items: [{ ...valid.items[0]!, kind: "web", mimeType: "text/html" }],
+    };
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).recover(),
+    ).resolves.toBeUndefined();
+  });
+
   it("never recovers an expired emergency and restores normal content", async () => {
     const store = new MemoryStore();
     store.active = {
@@ -338,13 +379,77 @@ describe("manifest validation", () => {
       assertManifest({ ...valid, items: [valid.items[0], valid.items[0]] }),
     ).toThrow(ManifestError);
   });
-  it("permits web content without a content checksum", () => {
+  it("denies ordinary web content and unsupported MIME pairs", () => {
     expect(() =>
       assertManifest({
         ...valid,
-        items: [{ ...valid.items[0], kind: "web", checksumSha256: "" }],
+        items: [
+          {
+            ...valid.items[0],
+            kind: "web",
+            mimeType: "text/html",
+            checksumSha256: "",
+          },
+        ],
+      }),
+    ).toThrow(ManifestError);
+    expect(() =>
+      assertManifest({
+        ...valid,
+        items: [{ ...valid.items[0], mimeType: "image/svg+xml" }],
+      }),
+    ).toThrow(ManifestError);
+    expect(() =>
+      assertManifest({
+        ...valid,
+        items: [
+          {
+            ...valid.items[0],
+            url: "https://user:secret@cdn.test/legacy.png",
+          },
+        ],
+      }),
+    ).toThrow(ManifestError);
+  });
+
+  it("preserves the signed emergency template exception", () => {
+    expect(() =>
+      assertManifest({
+        ...valid,
+        priority: "emergency",
+        items: [
+          {
+            ...valid.items[0],
+            kind: "template",
+            mimeType: "application/vnd.screengoblin.emergency+json",
+            url: "data:application/json;base64,e30=",
+          },
+        ],
       }),
     ).not.toThrow();
+  });
+
+  it("validates signed asset expiry and uses the earliest playback boundary", () => {
+    const expiring = {
+      ...valid,
+      playbackEndsAt: "2099-09-12T00:02:00Z",
+      items: [
+        {
+          ...valid.items[0]!,
+          expiresAt: "2099-09-12T00:01:00Z",
+        },
+      ],
+    };
+    expect(() => assertManifest(expiring)).not.toThrow();
+    expect(manifestPlaybackEndsAt(expiring)).toBe(
+      Date.parse("2099-09-12T00:01:00Z"),
+    );
+    expect(() =>
+      assertManifest({
+        ...valid,
+        items: [{ ...valid.items[0]!, expiresAt: "not-a-date" }],
+      }),
+    ).toThrow("expiry is invalid");
   });
   it("rejects executable URLs and oversized assets", () => {
     expect(() =>

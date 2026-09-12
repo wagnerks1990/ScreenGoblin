@@ -1685,30 +1685,30 @@ td b {
   background: var(--green);
   color: #09200a;
 }
-.dropzone {
-  min-height: 205px;
-  border: 1px dashed #3b566c;
-  border-radius: 11px;
-  background: #0b1826;
+.vault-boundary {
+  min-height: 58px;
+  border: 1px solid #30475b;
+  border-radius: 10px;
+  background: #102033;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  gap: 12px;
+  padding: 12px 14px;
   color: #b5c5d2;
   margin-bottom: 18px;
 }
-.dropzone > svg {
+.vault-boundary > svg {
+  flex: 0 0 auto;
   color: var(--green);
-  margin-bottom: 4px;
 }
-.dropzone b {
-  font-size: 0.78rem;
+.vault-boundary span {
+  font-size: 0.68rem;
+  line-height: 1.45;
 }
-.dropzone span {
-  color: var(--muted);
-  font-size: 0.64rem;
-  margin-bottom: 8px;
+.vault-boundary b {
+  display: block;
+  color: #e2ebf2;
+  font-size: 0.73rem;
 }
 .form-row {
   display: grid;

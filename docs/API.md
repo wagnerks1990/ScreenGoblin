@@ -18,7 +18,7 @@ Shared request and response shapes are defined in `packages/contracts`. The Open
 | -------------- | ---------------------------------------------------------------- | --------------- |
 | Authentication | Sign-in and current session                                      | User            |
 | Screens        | Fleet inventory, state, tags, and assignment                     | User            |
-| Media          | Asset metadata; binary upload is not yet implemented             | User            |
+| Media          | Bounded pre-provisioned metadata; Console inventory is read-only | User            |
 | Playlists      | Ordered media and durations                                      | User            |
 | Schedules      | Time rules, priority, and targets                                | User            |
 | Pairing        | Short-lived enrollment code exchange                             | User/device     |
@@ -41,15 +41,32 @@ idempotent and does not append a second audit event.
 
 Ordinary release publication and withdrawal use a closed, deny-by-default capability adapter. The API checks the capability at the route boundary, and the transactional store re-evaluates the actor's current organization membership and capability before writing release state or audit history. For compatibility, `OWNER`, `ADMIN`, and `PUBLISHER` currently receive `release.publish` and `release.withdraw`; `VIEWER` receives neither. This adapter does not yet provide resource scopes, custom grants, or reviewer/publisher separation.
 
-Media metadata creation and manifest publication are fail-closed: each URL origin must exactly match an explicitly configured allowlist entry. Production entries are origin-only HTTPS URLs using non-local DNS hostnames; URL credentials are rejected. The API stores metadata and does not fetch the URL. Players reject redirects while downloading binary assets. Web frames can still load navigation and subresources from their allowlisted entry point, and a hostname can later resolve to a private address, so web content needs a separately controlled content origin, DNS controls, and player-network egress policy before fleet use.
+Media metadata creation and manifest publication are fail-closed: each URL
+origin must exactly match an explicitly configured allowlist entry. Production
+entries are origin-only HTTPS URLs using non-local DNS hostnames; URL credentials
+are rejected. The metadata-only pilot boundary accepts exact MIME/kind pairs for
+JPEG, PNG, MP4, and JSON templates, requires a positive size no greater than
+128 MiB, canonicalizes SHA-256 to lowercase, and accepts only future expiries.
+Web assets are disabled. The API stores metadata and does not fetch, sniff, scan,
+decode, transcode, or upload the object. Players reject redirects while
+downloading binary assets; a hostname can still resolve to a private address,
+so controlled DNS and player-network egress remain required.
 
 ## Caching and consistency
 
-Mutable management responses use `Cache-Control: no-store`. Published media may be immutable and long-lived when addressed by checksum. Manifests include a stable semantic version, envelope validity window, signed `withdrawn` state, optional signed `playbackEndsAt` schedule boundary, checksums, `signatureAlgorithm: Ed25519`, and a signature. Pairing pins `manifestVerificationKey`; a player verifies the signed envelope and screen binding, then activates only after every required asset has been verified. A normal-priority withdrawal with no items intentionally clears playback when no schedule or playable asset applies. Players may retain normal last-known-good playback past the routinely refreshed `validUntil` lease during an outage, but must stop it at `playbackEndsAt`.
+Mutable management responses use `Cache-Control: no-store`. Published media may be immutable and long-lived when addressed by checksum. Manifests include a stable semantic version, envelope validity window, signed `withdrawn` state, optional signed `playbackEndsAt` schedule boundary, optional signed asset expiries, checksums, `signatureAlgorithm: Ed25519`, and a signature. Pairing pins `manifestVerificationKey`; a player verifies the signed envelope and screen binding, then activates only after every required asset has been verified. A normal-priority withdrawal with no items intentionally clears playback when no schedule or playable asset applies. Players may retain normal last-known-good playback past the routinely refreshed `validUntil` lease during an outage, but must stop it at `playbackEndsAt` or the earliest asset expiry.
 
 ## Ordinary release publication
 
-`POST /schedules` atomically freezes playlist metadata, ordered item and asset playback facts, target screen IDs, and the scheduling window into an immutable release assignment. It also writes the required audit event in the same transaction. The existing schedule response remains compatible and adds `releaseId` and `assignmentId`. Repeating an identical active assignment returns the existing records. Publication fails without partial records when a source or target is missing, the playlist is empty, or any snapshotted asset URL violates the exact-origin policy.
+`POST /schedules` atomically freezes playlist metadata, ordered item and asset
+playback facts, target screen IDs, and the scheduling window into an immutable
+release assignment. It also writes the required audit event in the same
+transaction. The existing schedule response remains compatible and adds
+`releaseId` and `assignmentId`. Repeating an identical active assignment returns
+the existing records. Publication fails without partial records when a source
+or target is missing, the playlist is empty, an asset is expired, unsupported,
+malformed, larger than 128 MiB, outside the exact-origin policy, or the release
+would exceed 512 MiB.
 
 `DELETE /schedules/:id` appends an immutable withdrawal assignment and its audit event instead of deleting release history. It is idempotent after the first withdrawal. Ordinary device manifests are selected exclusively from frozen release and assignment snapshots; later source edits or deletion attempts cannot rewrite an already published release.
 

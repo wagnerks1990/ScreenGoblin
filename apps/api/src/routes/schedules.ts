@@ -81,6 +81,15 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
           "MEDIA_ORIGIN_NOT_ALLOWED",
           "Playlist contains media outside the approved origin policy",
         ],
+        ASSET_UNSUPPORTED: [
+          "MEDIA_TYPE_NOT_SUPPORTED",
+          "Playlist contains unsupported media",
+        ],
+        ASSET_EXPIRED: ["MEDIA_EXPIRED", "Playlist contains expired media"],
+        RELEASE_TOO_LARGE: [
+          "RELEASE_TOO_LARGE",
+          "Release media exceeds the aggregate size limit",
+        ],
         NO_PLAYABLE_ITEMS: [
           "EMPTY_RELEASE",
           "A schedule must publish at least one item",

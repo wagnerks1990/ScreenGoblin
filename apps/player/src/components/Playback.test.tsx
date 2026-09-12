@@ -222,7 +222,6 @@ describe("player playback state", () => {
   it.each([
     ["image", "img", "load"],
     ["video", "video", "playing"],
-    ["web", "iframe", "load"],
   ] as const)(
     "reports %s playback only after the element is ready",
     async (kind, selector, event) => {
@@ -251,6 +250,29 @@ describe("player playback state", () => {
       expect(playing).toHaveBeenCalledWith("asset-1");
     },
   );
+
+  it("fails closed if legacy web content reaches the renderer", async () => {
+    const playbackError = vi.fn();
+    const assets = repository(async () => "https://media.example.test/page");
+    const { container } = render(
+      <Playback
+        manifest={{
+          ...manifest,
+          items: [{ ...manifest.items[0]!, kind: "web" }],
+        }}
+        assets={assets}
+        offline={false}
+        fallback={false}
+        identify={false}
+        onPlaying={vi.fn()}
+        onPlaybackError={playbackError}
+      />,
+    );
+
+    await waitFor(() => expect(playbackError).toHaveBeenCalledOnce());
+    expect(assets.resolve).not.toHaveBeenCalled();
+    expect(container.querySelector("iframe")).toBeNull();
+  });
 
   it("reports template playback only after validated content renders", async () => {
     const playing = vi.fn();

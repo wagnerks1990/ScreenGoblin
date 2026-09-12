@@ -1987,6 +1987,106 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect(await prisma.schedule.count()).toBe(1);
   });
 
+  it("rejects expired and aggregate-oversized media inside PostgreSQL publication", async () => {
+    const organization = await createOrganization("media-policy");
+    const actor = await createUser(`media-policy-${randomUUID()}@example.test`);
+    await prisma.membership.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        role: "PUBLISHER",
+      },
+    });
+    const screen = await store.createScreen(organization.id, {
+      name: "Media policy screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const publish = (playlistId: string) =>
+      store.publishScheduleAndAudit(
+        organization.id,
+        {
+          playlistId,
+          name: `Media policy ${randomUUID()}`,
+          priority: "normal",
+          startsAt: new Date(Date.now() - 60_000).toISOString(),
+          timezone: "UTC",
+          daysOfWeek: [],
+          enabled: true,
+          screenIds: [screen.id],
+        },
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+      );
+
+    const expiredAsset = await store.createMedia(organization.id, {
+      name: "Expired",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/expired.png",
+      checksumSha256: "a".repeat(64),
+      sizeBytes: 1,
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const expiredPlaylist = await store.createPlaylist(organization.id, {
+      name: "Expired playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: expiredAsset.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+    await expect(publish(expiredPlaylist.id)).resolves.toEqual({
+      published: false,
+      reason: "ASSET_EXPIRED",
+    });
+    await prisma.mediaAsset.update({
+      where: { id: expiredAsset.id },
+      data: { kind: "WEB", mimeType: "text/html", expiresAt: null },
+    });
+    await expect(publish(expiredPlaylist.id)).resolves.toEqual({
+      published: false,
+      reason: "ASSET_UNSUPPORTED",
+    });
+
+    const assets = await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        store.createMedia(organization.id, {
+          name: `Large ${index}`,
+          kind: "video",
+          mimeType: "video/mp4",
+          url: `https://media.example.test/large-${index}.mp4`,
+          checksumSha256: String(index).repeat(64),
+          sizeBytes: 128 * 1024 * 1024,
+        }),
+      ),
+    );
+    const aggregatePlaylist = await store.createPlaylist(organization.id, {
+      name: "Aggregate playlist",
+      description: "",
+      items: assets.map((asset, position) => ({
+        id: "ignored",
+        assetId: asset.id,
+        position,
+        durationSeconds: 10,
+      })),
+    });
+    await expect(publish(aggregatePlaylist.id)).resolves.toEqual({
+      published: false,
+      reason: "RELEASE_TOO_LARGE",
+    });
+    expect(await prisma.publishedRelease.count()).toBe(0);
+    expect(await prisma.releaseAssignment.count()).toBe(0);
+    expect(await prisma.schedule.count()).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
+  });
+
   it("enforces case-insensitive email uniqueness in PostgreSQL", async () => {
     await createUser("Owner@Example.Test");
 

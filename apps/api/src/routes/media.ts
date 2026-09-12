@@ -1,4 +1,8 @@
 import type { FastifyPluginAsync } from "fastify";
+import {
+  MEDIA_MAX_ASSET_BYTES,
+  SUPPORTED_MEDIA_MIME_TYPES,
+} from "@screengoblin/contracts";
 import { z } from "zod";
 import { ApiError, requireRole, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
@@ -7,14 +11,18 @@ import {
   mediaUrlMatchesAllowedOrigin,
   usesAllowedMediaScheme,
 } from "../utils/media-url.js";
+import { isSupportedMedia } from "../utils/media-policy.js";
 const body = z
   .object({
     name: z.string().trim().min(1).max(180),
     kind: z.enum(["image", "video", "web", "template"]),
     mimeType: z.string().min(3).max(120),
     url: z.url().max(2048),
-    checksumSha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
-    sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    checksumSha256: z
+      .string()
+      .regex(/^[a-fA-F0-9]{64}$/)
+      .transform((value) => value.toLowerCase()),
+    sizeBytes: z.number().int().positive().max(MEDIA_MAX_ASSET_BYTES),
     durationSeconds: z.number().int().positive().max(86400).optional(),
     expiresAt: z.iso.datetime().optional(),
   })
@@ -48,6 +56,20 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
         422,
         "MEDIA_ORIGIN_NOT_ALLOWED",
         "Media must use an approved content origin",
+      );
+    if (!isSupportedMedia(input.kind, input.mimeType))
+      throw new ApiError(
+        422,
+        "MEDIA_TYPE_NOT_SUPPORTED",
+        input.kind === "web"
+          ? "Web content is disabled"
+          : `Supported ${input.kind} types: ${SUPPORTED_MEDIA_MIME_TYPES[input.kind].join(", ")}`,
+      );
+    if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now())
+      throw new ApiError(
+        422,
+        "MEDIA_EXPIRY_INVALID",
+        "Media expiry must be in the future",
       );
     const x = await app.store.createMedia(request.user.organizationId, input);
     await app.store.audit({
