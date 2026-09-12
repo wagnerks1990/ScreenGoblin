@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { CAPABILITIES } from "@screengoblin/contracts";
 import { mediaStorageKey } from "../media/delivery.js";
+import { isApprovedPasswordHash } from "../utils/crypto.js";
 import type {
   ActiveOrdinaryRelease,
   AuditRecord,
@@ -37,6 +38,7 @@ import type {
   ScheduleWithdrawalResult,
   ScreenRecord,
   SessionUser,
+  SystemIdentityMutationAuditContext,
   UserMutationAuditContext,
   UserSessionCreateInput,
 } from "../domain/types.js";
@@ -409,6 +411,14 @@ export class PrismaStore implements DataStore {
       FOR UPDATE OF membership, actor`;
     return actor?.role;
   }
+  private identityMutationMetadata(audit: SystemIdentityMutationAuditContext) {
+    const reason = audit.reason.trim();
+    if (!reason || reason.length > 500)
+      throw new Error(
+        "Identity mutation reason must contain 1 to 500 characters",
+      );
+    return { reason };
+  }
   async ping() {
     await this.prisma.$queryRaw`SELECT 1`;
   }
@@ -443,6 +453,8 @@ export class PrismaStore implements DataStore {
           passwordHash: x.passwordHash,
           organizationId: m.organizationId,
           role: m.role,
+          authenticationEpoch: x.authenticationEpoch,
+          authorizationEpoch: m.authorizationEpoch,
         } satisfies SessionUser)
       : null;
   }
@@ -501,6 +513,8 @@ export class PrismaStore implements DataStore {
           passwordHash: x.passwordHash,
           organizationId,
           role: membership.role,
+          authenticationEpoch: x.authenticationEpoch,
+          authorizationEpoch: membership.authorizationEpoch,
         }
       : null;
   }
@@ -515,12 +529,16 @@ export class PrismaStore implements DataStore {
           id: string;
           passwordHash: string;
           role: string;
+          authenticationEpoch: number;
+          authorizationEpoch: number;
           databaseNow: Date;
         }>
       >`
         SELECT actor."id",
                actor."passwordHash",
+               actor."authenticationEpoch",
                membership."role"::text AS "role",
+               membership."authorizationEpoch",
                CURRENT_TIMESTAMP AS "databaseNow"
         FROM "Membership" membership
         INNER JOIN "User" actor ON actor."id" = membership."userId"
@@ -533,6 +551,8 @@ export class PrismaStore implements DataStore {
         !current ||
         current.passwordHash !== input.expectedPasswordHash ||
         current.role !== input.expectedRole ||
+        current.authenticationEpoch !== input.expectedAuthenticationEpoch ||
+        current.authorizationEpoch !== input.expectedAuthorizationEpoch ||
         !Number.isFinite(expiresAt.getTime()) ||
         expiresAt <= current.databaseNow
       )
@@ -549,6 +569,8 @@ export class PrismaStore implements DataStore {
           organizationId,
           userId: current.id,
           tokenHash: input.tokenHash,
+          authenticationEpoch: current.authenticationEpoch,
+          authorizationEpoch: current.authorizationEpoch,
           expiresAt,
         },
       });
@@ -572,6 +594,8 @@ export class PrismaStore implements DataStore {
           organizationId: session.organizationId,
           userId: session.userId,
           tokenHash: session.tokenHash,
+          authenticationEpoch: session.authenticationEpoch,
+          authorizationEpoch: session.authorizationEpoch,
           expiresAt: session.expiresAt.toISOString(),
           ...(session.revokedAt
             ? { revokedAt: session.revokedAt.toISOString() }
@@ -593,13 +617,17 @@ export class PrismaStore implements DataStore {
         name: string;
         passwordHash: string;
         role: SessionUser["role"];
+        authenticationEpoch: number;
+        authorizationEpoch: number;
       }>
     >`
       SELECT actor."id",
              actor."email",
              actor."name",
              actor."passwordHash",
-             membership."role"::text AS "role"
+             membership."role"::text AS "role",
+             actor."authenticationEpoch",
+             membership."authorizationEpoch"
       FROM "UserSession" session
       INNER JOIN "Membership" membership
         ON membership."organizationId" = session."organizationId"
@@ -611,6 +639,8 @@ export class PrismaStore implements DataStore {
         AND session."revokedAt" IS NULL
         AND session."expiresAt" > CURRENT_TIMESTAMP
         AND actor."disabledAt" IS NULL
+        AND session."authenticationEpoch" = actor."authenticationEpoch"
+        AND session."authorizationEpoch" = membership."authorizationEpoch"
     `;
     return current
       ? {
@@ -664,6 +694,195 @@ export class PrismaStore implements DataStore {
         },
       });
       return { revoked: true as const };
+    });
+  }
+  async rotateUserPasswordAndAudit(
+    userId: string,
+    passwordHash: string,
+    audit: SystemIdentityMutationAuditContext,
+  ) {
+    if (!isApprovedPasswordHash(passwordHash))
+      throw new Error("An approved bcrypt password hash is required");
+    const metadata = this.identityMutationMetadata(audit);
+    return this.prisma.$transaction(async (tx) => {
+      const memberships = await tx.$queryRaw<
+        Array<{ organizationId: string; databaseNow: Date }>
+      >`
+        SELECT membership."organizationId",
+               CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "User" actor
+        INNER JOIN "Membership" membership
+          ON membership."userId" = actor."id"
+        WHERE actor."id" = ${userId}
+        ORDER BY membership."organizationId" ASC
+        FOR UPDATE OF actor, membership`;
+      const clock = memberships[0]?.databaseNow;
+      if (!clock)
+        return { updated: false as const, reason: "NOT_FOUND" as const };
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          passwordHash,
+          authenticationEpoch: { increment: 1 },
+        },
+      });
+      await tx.userSession.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: clock },
+      });
+      await tx.auditEvent.createMany({
+        data: memberships.map(({ organizationId }) => ({
+          organizationId,
+          actorType: "system",
+          action: "identity.password_rotated",
+          entityType: "user",
+          entityId: userId,
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata,
+        })),
+      });
+      return {
+        updated: true as const,
+        affectedOrganizationIds: memberships.map(
+          ({ organizationId }) => organizationId,
+        ),
+      };
+    });
+  }
+  async disableUserAndAudit(
+    userId: string,
+    audit: SystemIdentityMutationAuditContext,
+  ) {
+    const metadata = this.identityMutationMetadata(audit);
+    return this.prisma.$transaction(async (tx) => {
+      const memberships = await tx.$queryRaw<
+        Array<{ organizationId: string; databaseNow: Date }>
+      >`
+        SELECT membership."organizationId",
+               CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "User" actor
+        INNER JOIN "Membership" membership
+          ON membership."userId" = actor."id"
+        WHERE actor."id" = ${userId}
+        ORDER BY membership."organizationId" ASC
+        FOR UPDATE OF actor, membership`;
+      const clock = memberships[0]?.databaseNow;
+      if (!clock)
+        return { updated: false as const, reason: "NOT_FOUND" as const };
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          disabledAt: clock,
+          authenticationEpoch: { increment: 1 },
+        },
+      });
+      await tx.userSession.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: clock },
+      });
+      await tx.auditEvent.createMany({
+        data: memberships.map(({ organizationId }) => ({
+          organizationId,
+          actorType: "system",
+          action: "identity.user_disabled",
+          entityType: "user",
+          entityId: userId,
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata,
+        })),
+      });
+      return {
+        updated: true as const,
+        affectedOrganizationIds: memberships.map(
+          ({ organizationId }) => organizationId,
+        ),
+      };
+    });
+  }
+  async changeMembershipRoleAndAudit(
+    organizationId: string,
+    userId: string,
+    role: SessionUser["role"],
+    audit: SystemIdentityMutationAuditContext,
+  ) {
+    const metadata = this.identityMutationMetadata(audit);
+    return this.prisma.$transaction(async (tx) => {
+      const [membership] = await tx.$queryRaw<
+        Array<{ id: string; role: SessionUser["role"]; databaseNow: Date }>
+      >`
+        SELECT membership."id",
+               membership."role"::text AS "role",
+               CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "Membership" membership
+        INNER JOIN "User" actor ON actor."id" = membership."userId"
+        WHERE membership."organizationId" = ${organizationId}
+          AND membership."userId" = ${userId}
+        FOR UPDATE OF membership, actor`;
+      if (!membership)
+        return { updated: false as const, reason: "NOT_FOUND" as const };
+      await tx.membership.update({
+        where: { id: membership.id },
+        data: { role, authorizationEpoch: { increment: 1 } },
+      });
+      await tx.userSession.updateMany({
+        where: { organizationId, userId, revokedAt: null },
+        data: { revokedAt: membership.databaseNow },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId,
+          actorType: "system",
+          action: "identity.membership_role_changed",
+          entityType: "membership",
+          entityId: membership.id,
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: { ...metadata, previousRole: membership.role, role },
+        },
+      });
+      return { updated: true as const };
+    });
+  }
+  async removeMembershipAndAudit(
+    organizationId: string,
+    userId: string,
+    audit: SystemIdentityMutationAuditContext,
+  ) {
+    const metadata = this.identityMutationMetadata(audit);
+    return this.prisma.$transaction(async (tx) => {
+      const [membership] = await tx.$queryRaw<
+        Array<{ id: string; role: SessionUser["role"]; databaseNow: Date }>
+      >`
+        SELECT membership."id",
+               membership."role"::text AS "role",
+               CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "Membership" membership
+        INNER JOIN "User" actor ON actor."id" = membership."userId"
+        WHERE membership."organizationId" = ${organizationId}
+          AND membership."userId" = ${userId}
+        FOR UPDATE OF membership, actor`;
+      if (!membership)
+        return { updated: false as const, reason: "NOT_FOUND" as const };
+      await tx.membership.update({
+        where: { id: membership.id },
+        data: { authorizationEpoch: { increment: 1 } },
+      });
+      await tx.userSession.updateMany({
+        where: { organizationId, userId, revokedAt: null },
+        data: { revokedAt: membership.databaseNow },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId,
+          actorType: "system",
+          action: "identity.membership_removed",
+          entityType: "membership",
+          entityId: membership.id,
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: { ...metadata, previousRole: membership.role },
+        },
+      });
+      await tx.membership.delete({ where: { id: membership.id } });
+      return { updated: true as const };
     });
   }
   async listScreens(org: string) {

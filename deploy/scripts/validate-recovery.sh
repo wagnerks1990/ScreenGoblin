@@ -123,6 +123,8 @@ INSERT INTO "User" ("id", "email", "name", "passwordHash", "createdAt", "updated
 VALUES ('recovery-user', 'recovery@example.test', 'Recovery operator', 'non-secret-fixture-hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
 VALUES ('recovery-membership', 'recovery-org', 'recovery-user', 'OWNER');
+INSERT INTO "UserSession" ("id", "organizationId", "userId", "tokenHash", "authenticationEpoch", "authorizationEpoch", "expiresAt", "createdAt")
+VALUES ('recovery-session', 'recovery-org', 'recovery-user', repeat('c', 64), 0, 0, '2099-01-01T00:00:00Z', CURRENT_TIMESTAMP);
 INSERT INTO "Screen" ("id", "organizationId", "name", "location", "status", "orientation", "resolution", "tags", "createdAt", "updatedAt")
 VALUES ('recovery-screen', 'recovery-org', 'Recovery display', 'CI fixture', 'OFFLINE', 'LANDSCAPE', '1920x1080', ARRAY['recovery'], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "MediaAsset" ("id", "organizationId", "storageKey", "name", "kind", "mimeType", "url", "checksumSha256", "sizeBytes", "durationSeconds", "createdAt", "updatedAt")
@@ -183,6 +185,7 @@ SELECT count(*)
 FROM \"Organization\" o
 JOIN \"Membership\" m ON m.\"organizationId\" = o.id
 JOIN \"User\" u ON u.id = m.\"userId\"
+JOIN \"UserSession\" us ON us.\"organizationId\" = m.\"organizationId\" AND us.\"userId\" = m.\"userId\" AND us.\"authenticationEpoch\" = u.\"authenticationEpoch\" AND us.\"authorizationEpoch\" = m.\"authorizationEpoch\"
 JOIN \"Screen\" s ON s.\"organizationId\" = o.id
 JOIN \"ScheduleTarget\" st ON st.\"screenId\" = s.id AND st.\"organizationId\" = o.id
 JOIN \"Schedule\" sc ON sc.id = st.\"scheduleId\" AND sc.\"organizationId\" = o.id
@@ -194,7 +197,7 @@ JOIN \"FrozenReleaseItem\" fri ON fri.\"releaseId\" = pr.id AND fri.\"sourcePlay
 JOIN \"ReleaseAssignment\" ra ON ra.\"releaseId\" = pr.id AND ra.\"scheduleId\" = sc.id AND ra.\"organizationId\" = o.id
 JOIN \"ReleaseAssignmentTarget\" rat ON rat.\"assignmentId\" = ra.id AND rat.\"liveScreenId\" = s.id AND rat.\"liveScreenOrganizationId\" = o.id AND rat.\"organizationId\" = o.id
 JOIN \"AuditEvent\" ae ON ae.\"organizationId\" = o.id AND ae.\"actorUserId\" = u.id AND ae.\"entityId\" = pr.id
-WHERE o.id = 'recovery-org' AND ae.action = 'release.published';"
+WHERE o.id = 'recovery-org' AND us.\"tokenHash\" = repeat('c', 64) AND ae.action = 'release.published';"
 )"
 [[ "$restored_relation_count" == 1 ]]
 restored_object_metadata="$(

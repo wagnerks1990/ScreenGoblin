@@ -15,6 +15,8 @@ async function releaseFixture(role: Role) {
     passwordHash: "unused",
     organizationId: "org-a",
     role,
+    authenticationEpoch: 0,
+    authorizationEpoch: 0,
   });
   const screen = await store.createScreen("org-a", {
     name: "Lobby",

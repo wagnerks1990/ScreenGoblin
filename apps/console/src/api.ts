@@ -16,6 +16,10 @@ export interface LiveSession {
   };
 }
 
+export interface LogoutResult {
+  revocationConfirmed: boolean;
+}
+
 export interface DeviceReenrollmentGrant {
   grantId: string;
   screenId: string;
@@ -152,8 +156,32 @@ export const api = {
     );
     return session;
   },
-  logout: () => {
-    clearSession(false);
+  logout: async (): Promise<LogoutResult> => {
+    const accessToken = window.sessionStorage.getItem("sg_access_token");
+    if (!accessToken) {
+      clearSession(false);
+      return { revocationConfirmed: true };
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 2500);
+    let revocationConfirmed: boolean;
+    try {
+      const response = await fetch(`${baseUrl}/auth/logout`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        signal: controller.signal,
+      });
+      revocationConfirmed = response.status === 204;
+    } catch {
+      revocationConfirmed = false;
+    } finally {
+      window.clearTimeout(timeout);
+      clearSession(false);
+    }
+    return { revocationConfirmed };
   },
   createPairingCode: () =>
     mutate<{ code: string; expiresAt: string }>("/pairing-codes", {

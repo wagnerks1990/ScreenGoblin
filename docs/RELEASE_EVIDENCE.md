@@ -86,9 +86,9 @@ evidence bundle.
 
 The recovery workflow builds the API migration stage and applies the complete
 checked-in Prisma migration chain to an empty disposable PostgreSQL database.
-It then backs up and restores a representative organization, membership,
-screen, playlist/media, schedule/target, immutable release/assignment, and
-audit relation graph. The registered live and frozen media metadata is bound to
+It then backs up and restores a representative organization, user, membership,
+epoch-bound user session, screen, playlist/media, schedule/target, immutable
+release/assignment, and audit relation graph. The registered live and frozen media metadata is bound to
 the exact size and SHA-256 of an object that is independently mirrored, deleted,
 restored, and byte-compared in disposable MinIO. After restore, the drill checks
 the applied migration count, validated constraints, composite references, audit

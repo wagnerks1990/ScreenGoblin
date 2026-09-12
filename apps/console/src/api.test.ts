@@ -67,6 +67,42 @@ describe("authenticated live data boundary", () => {
     expect(changed).toHaveBeenCalledOnce();
   });
 
+  it("revokes the current server session before clearing local credentials", async () => {
+    window.sessionStorage.setItem("sg_access_token", "live-token");
+    window.sessionStorage.setItem("sg_session_user", "{}");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.logout()).resolves.toEqual({ revocationConfirmed: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/auth/logout",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer live-token",
+        }),
+      }),
+    );
+    expect(api.hasLiveSession()).toBe(false);
+    expect(api.currentUser()).toBeUndefined();
+  });
+
+  it("clears local credentials when server revocation cannot be confirmed", async () => {
+    window.sessionStorage.setItem("sg_access_token", "sensitive-token");
+    window.sessionStorage.setItem("sg_session_user", "{}");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    await expect(api.logout()).resolves.toEqual({ revocationConfirmed: false });
+    expect(api.hasLiveSession()).toBe(false);
+    expect(api.currentUser()).toBeUndefined();
+    expect(
+      window.sessionStorage.getItem("sg_live_session_invalidated"),
+    ).toBeNull();
+  });
+
   it("does not label a bodyless mutation as JSON", async () => {
     window.sessionStorage.setItem("sg_access_token", "live-token");
     const fetchMock = vi.fn().mockResolvedValue(

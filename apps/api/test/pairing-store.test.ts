@@ -18,6 +18,8 @@ const authorizePairing = <T extends MemoryStore>(store: T) => {
     passwordHash: "unused",
     organizationId: "org-a",
     role: "OWNER",
+    authenticationEpoch: 0,
+    authorizationEpoch: 0,
   });
   return store;
 };
@@ -93,6 +95,8 @@ describe("pairing store invariants", () => {
         email: "operator@example.test",
         name: "Operator",
         passwordHash: "unused",
+        authenticationEpoch: 0,
+        authorizationEpoch: 0,
         ...actor,
       });
       const expired = await store.createPairing(
@@ -246,6 +250,8 @@ describe("store serialization invariants", () => {
         passwordHash: "hash",
         organizationId: "org-z",
         role: "OWNER",
+        authenticationEpoch: 0,
+        authorizationEpoch: 0,
       },
       {
         id: "user-a",
@@ -254,6 +260,8 @@ describe("store serialization invariants", () => {
         passwordHash: "hash",
         organizationId: "org-a",
         role: "VIEWER",
+        authenticationEpoch: 0,
+        authorizationEpoch: 0,
       },
     );
 

@@ -9,6 +9,8 @@ export interface SessionUser {
   passwordHash: string;
   organizationId: string;
   role: Role;
+  authenticationEpoch: number;
+  authorizationEpoch: number;
   disabledAt?: string;
 }
 export const LOGIN_FAILURE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -31,6 +33,8 @@ export interface UserSessionRecord {
   organizationId: string;
   userId: string;
   tokenHash: string;
+  authenticationEpoch: number;
+  authorizationEpoch: number;
   expiresAt: string;
   revokedAt?: string | undefined;
   createdAt: string;
@@ -41,6 +45,8 @@ export interface UserSessionCreateInput {
   expiresAt: string;
   expectedPasswordHash: string;
   expectedRole: Role;
+  expectedAuthenticationEpoch: number;
+  expectedAuthorizationEpoch: number;
 }
 
 export type UserSessionCreateResult =
@@ -49,6 +55,18 @@ export type UserSessionCreateResult =
 
 export type UserSessionRevokeResult =
   { revoked: true } | { revoked: false; reason: "NOT_FOUND" };
+
+export interface SystemIdentityMutationAuditContext {
+  reason: string;
+  requestId?: string | undefined;
+}
+
+export type UserAuthenticationMutationResult =
+  | { updated: true; affectedOrganizationIds: string[] }
+  | { updated: false; reason: "NOT_FOUND" };
+
+export type MembershipAuthorizationMutationResult =
+  { updated: true } | { updated: false; reason: "NOT_FOUND" };
 export interface ScreenRecord {
   id: string;
   organizationId: string;
@@ -501,6 +519,26 @@ export interface DataStore {
     tokenHash: string,
     audit: UserMutationAuditContext,
   ): Promise<UserSessionRevokeResult>;
+  rotateUserPasswordAndAudit(
+    userId: string,
+    passwordHash: string,
+    audit: SystemIdentityMutationAuditContext,
+  ): Promise<UserAuthenticationMutationResult>;
+  disableUserAndAudit(
+    userId: string,
+    audit: SystemIdentityMutationAuditContext,
+  ): Promise<UserAuthenticationMutationResult>;
+  changeMembershipRoleAndAudit(
+    organizationId: string,
+    userId: string,
+    role: Role,
+    audit: SystemIdentityMutationAuditContext,
+  ): Promise<MembershipAuthorizationMutationResult>;
+  removeMembershipAndAudit(
+    organizationId: string,
+    userId: string,
+    audit: SystemIdentityMutationAuditContext,
+  ): Promise<MembershipAuthorizationMutationResult>;
   listScreens(orgId: string): Promise<ScreenRecord[]>;
   getScreen(orgId: string, id: string): Promise<ScreenRecord | null>;
   createScreen(

@@ -280,6 +280,7 @@ a:focus-visible {
   display: flex;
   align-items: center;
   gap: 10px;
+  position: relative;
 }
 .icon-button,
 .menu-button {
@@ -332,6 +333,26 @@ a:focus-visible {
   font-size: 0.7rem;
   font-weight: 700;
   cursor: pointer;
+}
+.demo-pill:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+.logout-status {
+  position: absolute;
+  z-index: 5;
+  top: 44px;
+  right: 0;
+  width: min(380px, calc(100vw - 32px));
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #854d0e;
+  border-radius: 8px;
+  background: #2a1d0b;
+  color: #fde68a;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
 .modal-intro,
