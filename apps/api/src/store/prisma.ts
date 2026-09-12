@@ -1566,6 +1566,12 @@ export class PrismaStore implements DataStore {
             credentialRevokedAt: locked.databaseNow,
             deviceTokenHash: null,
             status: "OFFLINE",
+            lastSeenAt: null,
+            manifestVersion: null,
+            nowPlayingAssetId: null,
+            uptimeSeconds: null,
+            freeStorageBytes: null,
+            networkType: null,
           },
         });
         const pairing = await tx.pairingCode.create({
@@ -1804,8 +1810,13 @@ export class PrismaStore implements DataStore {
               credentialRevokedAt: null,
               deviceTokenHash: null,
               credentialGeneration: { increment: 1 },
-              status: "ONLINE",
-              lastSeenAt: locked.databaseNow,
+              status: "OFFLINE",
+              lastSeenAt: null,
+              manifestVersion: null,
+              nowPlayingAssetId: null,
+              uptimeSeconds: null,
+              freeStorageBytes: null,
+              networkType: null,
             },
           });
           await tx.pairingAttempt.update({
@@ -2709,6 +2720,12 @@ export class PrismaStore implements DataStore {
             credentialRevokedAt: screenLock.databaseNow,
             deviceTokenHash: null,
             status: "OFFLINE",
+            lastSeenAt: null,
+            manifestVersion: null,
+            nowPlayingAssetId: null,
+            uptimeSeconds: null,
+            freeStorageBytes: null,
+            networkType: null,
           },
         });
         await tx.auditEvent.create({
@@ -2748,6 +2765,12 @@ export class PrismaStore implements DataStore {
           deviceTokenHash: null,
           credentialGeneration: { increment: 1 },
           status: "OFFLINE",
+          lastSeenAt: null,
+          manifestVersion: null,
+          nowPlayingAssetId: null,
+          uptimeSeconds: null,
+          freeStorageBytes: null,
+          networkType: null,
         },
       });
       await tx.deviceAuthChallenge.updateMany({
@@ -3116,12 +3139,27 @@ export class PrismaStore implements DataStore {
     }
   }
   async listSchedules(org: string) {
-    return (
-      await this.prisma.schedule.findMany({
-        where: { organizationId: org },
-        include: { targets: true },
-      })
-    ).map((x) => scheduleDto(x));
+    const schedules = await this.prisma.schedule.findMany({
+      where: { organizationId: org },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      include: {
+        targets: true,
+        releaseAssignments: {
+          where: {
+            organizationId: org,
+            nextAssignments: { none: {} },
+          },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: 1,
+          select: { state: true },
+        },
+      },
+    });
+    return schedules
+      .filter(
+        (schedule) => schedule.releaseAssignments[0]?.state !== "WITHDRAWN",
+      )
+      .map((schedule) => scheduleDto(schedule));
   }
   async createSchedule(
     org: string,

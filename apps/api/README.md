@@ -94,7 +94,9 @@ revocation across PostgreSQL and object storage.
 - Proof-v1 supports manual, targeted, zero-overlap re-enrollment of an
   existing screen. The request immediately revokes the old identity; fresh-key
   proof stages a candidate; and a separate OWNER/ADMIN exact-fingerprint
-  activation is required. It does not provide server-verified
+  activation is required. Request and activation keep the screen offline and
+  clear old identity-specific heartbeat telemetry; only the activated
+  credential's first authenticated heartbeat marks it online. It does not provide server-verified
   hardware/application attestation, automatic overlapping key rotation, offline
   recall, verified native erasure, or physical-device identity; those remain
   pilot/release gates.

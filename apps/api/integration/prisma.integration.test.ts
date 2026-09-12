@@ -138,6 +138,36 @@ const stageReenrollmentCandidate = async (
       role: "OWNER",
     },
   });
+  const heartbeatChallengeHash = proofHash();
+  const heartbeatRequestDigest = proofHash();
+  const heartbeatChallenge = await store.issueDeviceAuthChallenge({
+    screenId: paired.screen.id,
+    keyId: paired.credential.keyId,
+    challengeHashSha256: heartbeatChallengeHash,
+    operation: "heartbeat",
+    requestDigestSha256: heartbeatRequestDigest,
+    expiresAt: new Date(Date.now() + 30_000).toISOString(),
+  });
+  if (!heartbeatChallenge) throw new Error("old heartbeat challenge failed");
+  const oldHeartbeat = await store.heartbeatWithDeviceProof(
+    {
+      credentialId: paired.credential.id,
+      challengeId: heartbeatChallenge.id,
+      challengeHashSha256: heartbeatChallengeHash,
+      operation: "heartbeat",
+      requestDigestSha256: heartbeatRequestDigest,
+    },
+    {
+      playerVersion: "old-player",
+      manifestVersion: "old-manifest",
+      nowPlayingAssetId: "old-asset",
+      uptimeSeconds: 900,
+      freeStorageBytes: 123_456,
+      networkType: "old-network",
+    },
+    () => true,
+  );
+  if (!oldHeartbeat.authenticated) throw new Error("old heartbeat failed");
   const grant = await store.requestScreenReenrollmentAndAudit(
     paired.organization.id,
     paired.screen.id,
@@ -1810,6 +1840,19 @@ describe("PrismaStore PostgreSQL integration", () => {
       19,
       20,
     );
+    await expect(
+      prisma.screen.findUniqueOrThrow({
+        where: { id: staged.paired.screen.id },
+      }),
+    ).resolves.toMatchObject({
+      status: "OFFLINE",
+      lastSeenAt: null,
+      manifestVersion: null,
+      nowPlayingAssetId: null,
+      uptimeSeconds: null,
+      freeStorageBytes: null,
+      networkType: null,
+    });
     await prisma.$executeRaw`
       UPDATE "PairingAttempt"
       SET "createdAt" = CURRENT_TIMESTAMP - INTERVAL '30 seconds',
@@ -1827,9 +1870,16 @@ describe("PrismaStore PostgreSQL integration", () => {
 
     expect(activated).toMatchObject({
       activated: true,
-      screen: { id: staged.paired.screen.id },
+      screen: { id: staged.paired.screen.id, status: "offline" },
       credential: { keyId: staged.credential.keyId },
     });
+    if (!activated.activated) throw new Error("replacement activation failed");
+    expect(activated.screen).not.toHaveProperty("lastSeenAt");
+    expect(activated.screen).not.toHaveProperty("manifestVersion");
+    expect(activated.screen).not.toHaveProperty("nowPlayingAssetId");
+    expect(activated.screen).not.toHaveProperty("uptimeSeconds");
+    expect(activated.screen).not.toHaveProperty("freeStorageBytes");
+    expect(activated.screen).not.toHaveProperty("networkType");
     expect(await prisma.screen.count()).toBe(1);
     expect(
       await prisma.deviceCredential.count({
@@ -1839,6 +1889,217 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
       }),
     ).toBe(1);
+    const challengeHashSha256 = proofHash();
+    const requestDigestSha256 = proofHash();
+    const heartbeatChallenge = await store.issueDeviceAuthChallenge({
+      screenId: staged.paired.screen.id,
+      keyId: activated.credential.keyId,
+      challengeHashSha256,
+      operation: "heartbeat",
+      requestDigestSha256,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    if (!heartbeatChallenge)
+      throw new Error("replacement heartbeat challenge failed");
+    const heartbeat = await store.heartbeatWithDeviceProof(
+      {
+        credentialId: activated.credential.id,
+        challengeId: heartbeatChallenge.id,
+        challengeHashSha256,
+        operation: "heartbeat",
+        requestDigestSha256,
+      },
+      {
+        playerVersion: "replacement-player",
+        manifestVersion: "replacement-manifest",
+        nowPlayingAssetId: "replacement-asset",
+        uptimeSeconds: 1,
+        freeStorageBytes: 654_321,
+        networkType: "replacement-network",
+      },
+      () => true,
+    );
+    expect(heartbeat).toMatchObject({
+      authenticated: true,
+      screen: {
+        status: "online",
+        manifestVersion: "replacement-manifest",
+        nowPlayingAssetId: "replacement-asset",
+        uptimeSeconds: 1,
+        freeStorageBytes: 654_321,
+        networkType: "replacement-network",
+        lastSeenAt: expect.any(String),
+      },
+    });
+  });
+
+  it("heals only revoked or never-heartbeaten legacy replacement telemetry", async () => {
+    const activate = async (
+      label: string,
+      oldKeyByte: number,
+      newKeyByte: number,
+    ) => {
+      const staged = await stageReenrollmentCandidate(
+        label,
+        oldKeyByte,
+        newKeyByte,
+      );
+      const activated = await store.activateReenrollmentCandidateAndAudit(
+        staged.paired.organization.id,
+        staged.paired.screen.id,
+        staged.grant.id,
+        staged.candidate.candidateId,
+        { actorUserId: staged.actor.id },
+      );
+      if (!activated.activated)
+        throw new Error("replacement activation failed");
+      return { staged, activated };
+    };
+    const stale = await activate("legacy-replacement-stale", 40, 41);
+    const staleAttempt = await prisma.pairingAttempt.findUniqueOrThrow({
+      where: { id: stale.staged.candidate.candidateId },
+    });
+    await prisma.screen.update({
+      where: { id: stale.staged.paired.screen.id },
+      data: {
+        status: "ONLINE",
+        lastSeenAt: staleAttempt.activatedAt,
+        manifestVersion: "legacy-manifest",
+        nowPlayingAssetId: "legacy-asset",
+        uptimeSeconds: 90n,
+        freeStorageBytes: 91n,
+        networkType: "legacy-network",
+      },
+    });
+
+    const current = await activate("replacement-with-heartbeat", 42, 43);
+    const challengeHashSha256 = proofHash();
+    const requestDigestSha256 = proofHash();
+    const challenge = await store.issueDeviceAuthChallenge({
+      screenId: current.staged.paired.screen.id,
+      keyId: current.activated.credential.keyId,
+      challengeHashSha256,
+      operation: "heartbeat",
+      requestDigestSha256,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    });
+    if (!challenge) throw new Error("replacement heartbeat challenge failed");
+    const heartbeat = await store.heartbeatWithDeviceProof(
+      {
+        credentialId: current.activated.credential.id,
+        challengeId: challenge.id,
+        challengeHashSha256,
+        operation: "heartbeat",
+        requestDigestSha256,
+      },
+      {
+        playerVersion: "current-player",
+        manifestVersion: "current-manifest",
+        nowPlayingAssetId: "current-asset",
+        uptimeSeconds: 100,
+        freeStorageBytes: 101,
+        networkType: "current-network",
+      },
+      () => true,
+    );
+    if (!heartbeat.authenticated)
+      throw new Error("replacement heartbeat failed");
+    await prisma.pairingAttempt.update({
+      where: { id: current.staged.candidate.candidateId },
+      data: {
+        activatedAt: new Date(
+          new Date(heartbeat.screen.lastSeenAt!).getTime() + 1_000,
+        ),
+      },
+    });
+
+    const revoked = await pairProofDevice("legacy-revoked-stale", 44);
+    const revokedActor = await createMember(
+      revoked.organization.id,
+      "OWNER",
+      "legacy-revoked-owner",
+    );
+    await store.revokeDeviceCredentialAndAudit(
+      revoked.organization.id,
+      revoked.screen.id,
+      { actorUserId: revokedActor.id },
+    );
+    await prisma.screen.update({
+      where: { id: revoked.screen.id },
+      data: {
+        status: "ONLINE",
+        lastSeenAt: new Date(),
+        manifestVersion: "revoked-manifest",
+        nowPlayingAssetId: "revoked-asset",
+        uptimeSeconds: 200n,
+        freeStorageBytes: 201n,
+        networkType: "revoked-network",
+      },
+    });
+
+    const migration = await readFile(
+      new URL(
+        "../prisma/migrations/20260912153000_heal_detached_device_telemetry/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    await prisma.$executeRawUnsafe(migration);
+
+    for (const screenId of [stale.staged.paired.screen.id, revoked.screen.id]) {
+      await expect(
+        prisma.screen.findUniqueOrThrow({ where: { id: screenId } }),
+      ).resolves.toMatchObject({
+        status: "OFFLINE",
+        lastSeenAt: null,
+        manifestVersion: null,
+        nowPlayingAssetId: null,
+        uptimeSeconds: null,
+        freeStorageBytes: null,
+        networkType: null,
+      });
+    }
+    await expect(
+      prisma.screen.findUniqueOrThrow({
+        where: { id: current.staged.paired.screen.id },
+      }),
+    ).resolves.toMatchObject({
+      status: "ONLINE",
+      manifestVersion: "current-manifest",
+      nowPlayingAssetId: "current-asset",
+      uptimeSeconds: 100n,
+      freeStorageBytes: 101n,
+      networkType: "current-network",
+    });
+    const firstPass = await prisma.screen.findMany({
+      where: {
+        id: {
+          in: [
+            stale.staged.paired.screen.id,
+            current.staged.paired.screen.id,
+            revoked.screen.id,
+          ],
+        },
+      },
+      orderBy: { id: "asc" },
+      select: { id: true, updatedAt: true },
+    });
+    await prisma.$executeRawUnsafe(migration);
+    await expect(
+      prisma.screen.findMany({
+        where: {
+          id: {
+            in: [
+              stale.staged.paired.screen.id,
+              current.staged.paired.screen.id,
+              revoked.screen.id,
+            ],
+          },
+        },
+        orderBy: { id: "asc" },
+        select: { id: true, updatedAt: true },
+      }),
+    ).resolves.toEqual(firstPass);
   });
 
   it("serializes cancellation against replacement activation", async () => {
@@ -3074,11 +3335,37 @@ describe("PrismaStore PostgreSQL integration", () => {
       prisma.screen.delete({ where: { id: screen.id } }),
     ).resolves.toMatchObject({ id: screen.id });
 
-    const withdrawal = await store.withdrawScheduleAndAudit(
-      organization.id,
-      publication.schedule.id,
-      { actorUserId: actor.id, requestId: "withdraw-integration" },
+    await expect(store.listSchedules(organization.id)).resolves.toEqual([
+      expect.objectContaining({ id: publication.schedule.id }),
+    ]);
+    const otherOrganization = await createOrganization(
+      "withdrawal-list-isolation",
     );
+    const otherPlaylist = await store.createPlaylist(otherOrganization.id, {
+      name: "Other tenant draft",
+      description: "",
+      items: [],
+    });
+    const otherSchedule = await store.createSchedule(otherOrganization.id, {
+      playlistId: otherPlaylist.id,
+      name: "Other tenant schedule",
+      priority: "normal",
+      startsAt: new Date().toISOString(),
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+      screenIds: [],
+    });
+    const [withdrawal, concurrentOtherSchedules] = await Promise.all([
+      store.withdrawScheduleAndAudit(organization.id, publication.schedule.id, {
+        actorUserId: actor.id,
+        requestId: "withdraw-integration",
+      }),
+      store.listSchedules(otherOrganization.id),
+    ]);
+    expect(concurrentOtherSchedules).toEqual([
+      expect.objectContaining({ id: otherSchedule.id }),
+    ]);
     expect(withdrawal).toMatchObject({
       withdrawn: true,
       assignment: {
@@ -3088,6 +3375,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         screenIds: [screen.id],
       },
     });
+    await expect(store.listSchedules(organization.id)).resolves.toEqual([]);
     await expect(
       store.authorizeMediaDelivery(deliveryAuthorization),
     ).resolves.toBe(false);

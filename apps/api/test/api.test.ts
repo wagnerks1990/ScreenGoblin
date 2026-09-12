@@ -1117,6 +1117,13 @@ describe("immutable ordinary release publication", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(withdrawal.statusCode).toBe(204);
+    const schedulesAfterWithdrawal = await app.inject({
+      method: "GET",
+      url: "/api/v1/schedules",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(schedulesAfterWithdrawal.statusCode).toBe(200);
+    expect(schedulesAfterWithdrawal.json()).toEqual({ data: [] });
 
     const replay = await app.inject({
       method: "POST",

@@ -47,7 +47,10 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   creates a fresh key; proof stages only a pending candidate. A separate current
   OWNER/ADMIN must compare and activate the exact fingerprint. Activation uses a
   generation compare-and-swap, preserves the screen and assignments, creates one
-  globally new credential, and cancels competing authority atomically. A code
+  globally new credential, and cancels competing authority atomically. Request,
+  revocation, and activation keep the screen offline and clear identity-specific
+  heartbeat telemetry; the replacement's first authenticated heartbeat alone
+  restores online state. A code
   alone must never install a replacement, and pairing failure must never cause
   silent key rotation.
 - Manifests bind to a screen, carry a renewable envelope lease, and are signed with Ed25519. Every proof-v1 response also signs the one-use request challenge ID, which the Player must match exactly before acceptance. Before selection, signing, or private media authorization, the API recomputes the complete frozen published-release and latest-assignment digests; drift fails closed without per-read audit writes, but this does not make a compromised database tamper-proof. Online activation rejects a signed generation time older than persisted active state and rejects a different semantic version at an equal timestamp; explicit local rollback is exempt from generation ordering but must remain within signed playback and asset boundaries. A signed normal withdrawal clears stale playback and atomically tombstones the local rollback slot; an optional signed `playbackEndsAt` is the hard schedule boundary. Players pin the verification key during trusted enrollment, persist the exact verified signing bytes with each cache slot, and reverify the signature, screen binding, normalized view, and local eligibility before boot recovery or rollback. Legacy unsigned or altered slots fail closed, and a missing active slot never promotes an older release.

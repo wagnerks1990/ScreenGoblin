@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AuditRecord } from "../src/domain/types.js";
 import { MemoryStore } from "../src/store/memory.js";
 
 const actor = {
@@ -35,12 +36,147 @@ class RejectingAuditStore extends MemoryStore {
   }
 }
 
+class ToggleRejectingAuditStore extends MemoryStore {
+  rejectAudit = false;
+  protected override buildAuditRecord(
+    event: Omit<AuditRecord, "id" | "createdAt">,
+  ): AuditRecord {
+    if (this.rejectAudit) throw new Error("audit unavailable");
+    return super.buildAuditRecord(event);
+  }
+}
+
 function authorized<T extends MemoryStore>(store: T): T {
   store.users.push({ ...actor });
   return store;
 }
 
 describe("atomic audited administrative mutations", () => {
+  it("keeps Memory device replacement and revocation mutations audit-atomic", async () => {
+    const timestamp = new Date().toISOString();
+    const seed = async () => {
+      const store = authorized(new ToggleRejectingAuditStore());
+      const screen = await store.createScreen("org-a", screenInput);
+      store.deviceCredentials.push({
+        id: `credential-${screen.id}`,
+        organizationId: "org-a",
+        screenId: screen.id,
+        detached: false,
+        keyId: `old-key-${screen.id}`,
+        publicKeySpki: "old-spki",
+        algorithm: "ES256",
+        securityLevel: "software",
+        createdAt: timestamp,
+      });
+      Object.assign(screen, {
+        status: "online" as const,
+        lastSeenAt: timestamp,
+        manifestVersion: "old-manifest",
+        nowPlayingAssetId: "old-asset",
+        uptimeSeconds: 9,
+        freeStorageBytes: 10,
+        networkType: "old-network",
+      });
+      return { store, screen };
+    };
+    const snapshot = (store: MemoryStore) =>
+      structuredClone({
+        screens: store.screens,
+        credentials: store.deviceCredentials,
+        pairings: store.pairings,
+        attempts: store.pairingAttempts,
+        challenges: store.deviceAuthChallenges,
+        audits: store.audits,
+      });
+
+    const requested = await seed();
+    requested.store.rejectAudit = true;
+    const beforeRequest = snapshot(requested.store);
+    await expect(
+      requested.store.requestScreenReenrollmentAndAudit(
+        "org-a",
+        requested.screen.id,
+        "replacement-code",
+        new Date(Date.now() + 60_000).toISOString(),
+        "Replace failed hardware",
+        { actorUserId: actor.id },
+      ),
+    ).rejects.toThrow("audit unavailable");
+    expect(snapshot(requested.store)).toEqual(beforeRequest);
+
+    const revoked = await seed();
+    revoked.store.rejectAudit = true;
+    const beforeRevoke = snapshot(revoked.store);
+    await expect(
+      revoked.store.revokeDeviceCredentialAndAudit("org-a", revoked.screen.id, {
+        actorUserId: actor.id,
+      }),
+    ).rejects.toThrow("audit unavailable");
+    expect(snapshot(revoked.store)).toEqual(beforeRevoke);
+
+    const replacement = await seed();
+    const grant = await replacement.store.requestScreenReenrollmentAndAudit(
+      "org-a",
+      replacement.screen.id,
+      "replacement-code",
+      new Date(Date.now() + 60_000).toISOString(),
+      "Replace failed hardware",
+      { actorUserId: actor.id },
+    );
+    if (!grant.created) throw new Error(grant.reason);
+    replacement.store.pairingAttempts.push({
+      id: "replacement-candidate",
+      organizationId: "org-a",
+      pairingCodeId: grant.pairing.id,
+      keyId: "replacement-key",
+      publicKeySpki: "replacement-spki",
+      algorithm: "ES256",
+      securityLevel: "software",
+      challengeHashSha256: "a".repeat(64),
+      transcriptDigestSha256: "b".repeat(64),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      provedAt: timestamp,
+      installationId: "replacement-installation",
+      model: "Replacement",
+      osVersion: "15",
+      playerVersion: "0.2.0",
+      createdAt: timestamp,
+    });
+    replacement.store.rejectAudit = true;
+    const beforeActivation = snapshot(replacement.store);
+    await expect(
+      replacement.store.activateReenrollmentCandidateAndAudit(
+        "org-a",
+        replacement.screen.id,
+        grant.pairing.id,
+        "replacement-candidate",
+        { actorUserId: actor.id },
+      ),
+    ).rejects.toThrow("audit unavailable");
+    expect(snapshot(replacement.store)).toEqual(beforeActivation);
+
+    const reasserted = await seed();
+    const pending = await reasserted.store.requestScreenReenrollmentAndAudit(
+      "org-a",
+      reasserted.screen.id,
+      "replacement-code",
+      new Date(Date.now() + 60_000).toISOString(),
+      "Replace failed hardware",
+      { actorUserId: actor.id },
+    );
+    if (!pending.created) throw new Error(pending.reason);
+    reasserted.store.rejectAudit = true;
+    const beforeReassertion = snapshot(reasserted.store);
+    await expect(
+      reasserted.store.revokeDeviceCredentialAndAudit(
+        "org-a",
+        reasserted.screen.id,
+        { actorUserId: actor.id },
+      ),
+    ).rejects.toThrow("audit unavailable");
+    expect(snapshot(reasserted.store)).toEqual(beforeReassertion);
+  });
+
   it("keeps location classification tenant-bound and audit-atomic", async () => {
     const store = authorized(new MemoryStore());
     const alpha = await store.createLocationAndAudit("org-a", "Main campus", {

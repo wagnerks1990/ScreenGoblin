@@ -108,7 +108,7 @@ but tenant deletion removes both ledger and content. A replayed `201` describes
 the historical command result, not current assignment state; clients must read
 current schedule or manifest state after recovery.
 
-`DELETE /schedules/:id` appends an immutable withdrawal assignment and its audit event instead of deleting release history. It is idempotent after the first withdrawal. Ordinary device manifests are selected exclusively from frozen release and assignment snapshots; later source edits or deletion attempts cannot rewrite an already published release.
+`DELETE /schedules/:id` appends an immutable withdrawal assignment and its audit event instead of deleting release history. It is idempotent after the first withdrawal. `GET /schedules` excludes a schedule when its deterministic latest assignment is withdrawn, while retaining its immutable database history. Ordinary device manifests are selected exclusively from frozen release and assignment snapshots; later source edits or deletion attempts cannot rewrite an already published release.
 
 ## Device proof protocol
 
@@ -144,6 +144,14 @@ Syntactically valid challenge requests for unknown, detached, expired, or revoke
 
 `POST /screens/:id/device-credential/revoke` returns `204` for a successful or already-completed revocation, `404` for an unknown screen/credential in the caller's organization, and `403` when the transaction-time capability check fails. Revocation prevents subsequent online challenge use and cancels stale replacement authority. It cannot erase media from an offline player or recall already cached playback; verified local erasure, automatic overlapping rotation, and offline-recall behavior remain pre-production gates.
 
+The upgrade migration repairs older persisted contradictions: screens with an
+explicit credential-revocation marker are made offline and lose the detached
+identity's operational snapshot. Legacy replacement activations are repaired
+only when their stored last-seen time exactly equals the bound candidate's
+activation time, the exact tuple emitted by the former synthetic path. Unequal
+authenticated-heartbeat timestamps remain authoritative regardless of clock
+ordering, and rerunning the guarded backfill does not churn healed rows.
+
 ### Targeted re-enrollment
 
 Targeted re-enrollment is an operator-mediated, zero-overlap replacement for one
@@ -154,14 +162,17 @@ management endpoints are:
   `{ grantId, screenId, code, expiresAt, generation }`. The authorized request
   immediately revokes/detaches the old credential, consumes its challenges,
   invalidates an older pending grant, advances the screen generation, and writes
-  the reason-bearing request audit in one transaction. The screen is offline
-  from this request until a candidate is separately activated.
+  the reason-bearing request audit in one transaction. It clears the detached
+  identity's last-seen, playback, uptime, storage, and network snapshot. The
+  screen stays offline through activation and becomes online only after the
+  activated credential sends its first authenticated heartbeat.
 - `GET /screens/:id/device-reenrollment/:grantId` → the target-bound grant and
   proved candidate fingerprints. It never returns signatures, challenges,
   private material, or the six-digit code.
 - `POST /screens/:id/device-reenrollment/:grantId/candidates/:candidateId/activate`
   activates exactly that proved fingerprint after an `OWNER` or `ADMIN`
-  confirms it.
+  confirms it. Activation does not synthesize a heartbeat or retain the old
+  identity's operational telemetry.
 - `DELETE /screens/:id/device-reenrollment/:grantId` cancels the grant so no
   candidate can later activate through it.
 

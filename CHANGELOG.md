@@ -223,6 +223,15 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Changed
 
+- Keep revoked and replacement device identities operationally offline, clear
+  detached heartbeat/playback telemetry, and require the activated credential's
+  first authenticated heartbeat before reporting online. Backfill reliably
+  identifiable stale revoked and never-heartbeaten replacement rows, and
+  revalidate Memory proof state after asynchronous signature verification.
+  Schedule reads now
+  exclude records whose deterministic latest assignment is withdrawn while
+  retaining immutable publication history.
+
 - Require tenant-bound UUIDv4 idempotency keys for ordinary schedule
   publication. A lost successful response now replays the original schedule
   without reactivating content after withdrawal; actor or payload reuse
