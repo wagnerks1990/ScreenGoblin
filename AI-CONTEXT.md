@@ -24,6 +24,11 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   organization, and role. Password rotation, disablement, role changes, and
   membership removal must use the internal atomic audited store methods; never
   mutate those fields directly or expose an unreviewed administration route.
+  Immutable releases and assignments attribute creators through durable
+  `(organizationId, userId)` membership-attribution tombstones, so removal can
+  revoke live authority without deleting or de-tenant-scoping publication
+  history. Tombstones survive membership deletion and cascade only with their
+  organization.
   Logout revokes only the presented session and commits that change with its
   audit event; never restore stateless acceptance.
 - Failed-login telemetry must cover known and unknown accounts and rate-limit

@@ -120,6 +120,15 @@ identity-administration routes currently expose the internal lifecycle methods.
 External IdP, SSO, MFA, and step-up authentication remain separate
 pre-production requirements.
 
+Published releases and release assignments reference guarded, tenant-scoped
+membership-attribution tombstones instead of live memberships. Removing a
+creator can therefore revoke sessions and enrollment authority without
+weakening immutable publication history or its composite tenant boundary. The
+tombstone is created in the membership transaction, survives membership and
+user deletion, rejects ordinary mutation, and cascades with organization
+deletion. The table-owning database role remains outside this local integrity
+boundary.
+
 Pending initial and replacement grants snapshot the issuer's membership plus
 authentication and authorization epochs. Password rotation, disablement,
 any role change, or membership removal revokes those grants and unbound

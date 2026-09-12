@@ -311,6 +311,79 @@ describe("identity lifecycle session boundaries", () => {
     ).resolves.toMatchObject({ organizationId: "org-b" });
   });
 
+  it("retains immutable creator provenance when memory membership removal succeeds", async () => {
+    const store = new MemoryStore();
+    const creator = {
+      ...sessionUser("creator", "creator@example.test", "org-a"),
+      role: "PUBLISHER" as const,
+    };
+    store.users.push(
+      creator,
+      sessionUser("owner", "owner@example.test", "org-a"),
+    );
+    const screen = await store.createScreen("org-a", {
+      name: "Attribution screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia("org-a", {
+      name: "Attribution image",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/attribution.png",
+      checksumSha256: "a".repeat(64),
+      sizeBytes: 100,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Attribution playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+    const publication = await store.publishScheduleAndAudit(
+      "org-a",
+      {
+        playlistId: playlist.id,
+        name: "Attribution schedule",
+        priority: "normal",
+        startsAt: new Date(Date.now() - 60_000).toISOString(),
+        timezone: "UTC",
+        daysOfWeek: [],
+        enabled: true,
+        screenIds: [screen.id],
+      },
+      { actorUserId: creator.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+      { keyHash: "b".repeat(64), requestDigestSha256: "c".repeat(64) },
+    );
+    if (!publication.published) throw new Error("publication fixture failed");
+
+    await expect(
+      store.removeMembershipAndAudit("org-a", creator.id, {
+        reason: "Creator departed",
+      }),
+    ).resolves.toEqual({ updated: true });
+    expect(store.releases).toHaveLength(1);
+    expect(store.releaseAssignments).toHaveLength(1);
+    expect(store.releases[0]).toMatchObject({ createdById: creator.id });
+    expect(store.releaseAssignments[0]).toMatchObject({
+      createdById: creator.id,
+    });
+    expect(
+      store.audits.filter(
+        ({ action }) => action === "identity.membership_removed",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("revokes pending initial and replacement grants on every issuer authority loss", async () => {
     const mutations = [
       (store: MemoryStore) =>

@@ -102,12 +102,16 @@ docker build --pull --target build --file "$ROLLBACK_DOCKERFILE" \
 docker run --rm --pull never --network "$network" \
   --env DATABASE_URL="$DATABASE_URL" \
   screengoblin/recovery-migrate:test \
-  sh -c 'mv apps/api/prisma/migrations/20260912162000_targeted_initial_enrollment /tmp/targeted-initial-enrollment && npm run prisma:migrate -w @screengoblin/api'
+  sh -c 'mv apps/api/prisma/migrations/20260912162000_targeted_initial_enrollment /tmp/targeted-initial-enrollment && mv apps/api/prisma/migrations/20260912163000_durable_membership_attribution /tmp/durable-membership-attribution && npm run prisma:migrate -w @screengoblin/api'
 docker exec -i "$pg_container" psql -U screengoblin -d screengoblin \
   -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
 BEGIN;
 INSERT INTO "Organization" ("id", "name", "slug", "createdAt", "updatedAt")
 VALUES ('upgrade-enrollment-org', 'Upgrade enrollment fixture', 'upgrade-enrollment-fixture', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "User" ("id", "email", "name", "passwordHash", "createdAt", "updatedAt")
+VALUES ('upgrade-attribution-user', 'upgrade-attribution@example.test', 'Upgrade attribution fixture', 'non-secret-fixture-hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
+VALUES ('upgrade-attribution-membership', 'upgrade-enrollment-org', 'upgrade-attribution-user', 'OWNER');
 INSERT INTO "PairingCode" ("id", "organizationId", "codeHash", "status", "expiresAt", "claimedAt", "createdAt")
 VALUES
   ('upgrade-pending-grant', 'upgrade-enrollment-org', repeat('7', 64), 'PENDING', CURRENT_TIMESTAMP + INTERVAL '5 minutes', NULL, CURRENT_TIMESTAMP),
@@ -125,6 +129,11 @@ upgrade_authority_result="$(
     "SELECT pending.status::text || '|' || (attempt.\"cancelledAt\" IS NOT NULL)::text || '|' || claimed.status::text FROM \"PairingCode\" pending JOIN \"PairingAttempt\" attempt ON attempt.\"pairingCodeId\" = pending.id CROSS JOIN \"PairingCode\" claimed WHERE pending.id = 'upgrade-pending-grant' AND claimed.id = 'upgrade-claimed-grant'"
 )"
 [[ "$upgrade_authority_result" == "REVOKED|true|CLAIMED" ]]
+upgrade_attribution_count="$(
+  docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
+    "SELECT count(*) FROM \"MembershipAttribution\" WHERE \"organizationId\" = 'upgrade-enrollment-org' AND \"userId\" = 'upgrade-attribution-user'"
+)"
+[[ "$upgrade_attribution_count" == 1 ]]
 migration_duration_ms="$(elapsed_ms "$migration_started_ns")"
 applied_migration_count="$(
   docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
@@ -225,6 +234,15 @@ SELECT
   ))::int;"
 )"
 [[ "$restored_audit_guard_count" == 2 ]]
+restored_attribution_guard_count="$(
+  docker exec "$pg_container" psql -U screengoblin \
+    -d screengoblin_restore_validation -Atc "
+SELECT count(*)
+FROM pg_trigger
+WHERE tgname IN ('Membership_record_attribution', 'MembershipAttribution_reject_mutation')
+  AND NOT tgisinternal;"
+)"
+[[ "$restored_attribution_guard_count" == 2 ]]
 
 if docker exec "$pg_container" psql -v ON_ERROR_STOP=1 -U screengoblin \
   -d screengoblin_restore_validation -c \
@@ -239,6 +257,7 @@ restored_relation_count="$(
 SELECT count(*)
 FROM \"Organization\" o
 JOIN \"Membership\" m ON m.\"organizationId\" = o.id
+JOIN \"MembershipAttribution\" mat ON mat.\"organizationId\" = m.\"organizationId\" AND mat.\"userId\" = m.\"userId\"
 JOIN \"User\" u ON u.id = m.\"userId\"
 JOIN \"UserSession\" us ON us.\"organizationId\" = m.\"organizationId\" AND us.\"userId\" = m.\"userId\" AND us.\"authenticationEpoch\" = u.\"authenticationEpoch\" AND us.\"authorizationEpoch\" = m.\"authorizationEpoch\"
 JOIN \"Location\" l ON l.\"organizationId\" = o.id
@@ -250,9 +269,9 @@ JOIN \"Schedule\" sc ON sc.id = st.\"scheduleId\" AND sc.\"organizationId\" = o.
 JOIN \"Playlist\" p ON p.id = sc.\"playlistId\" AND p.\"organizationId\" = o.id
 JOIN \"PlaylistItem\" pi ON pi.\"playlistId\" = p.id AND pi.\"organizationId\" = o.id
 JOIN \"MediaAsset\" ma ON ma.id = pi.\"assetId\" AND ma.\"organizationId\" = o.id
-JOIN \"PublishedRelease\" pr ON pr.\"sourcePlaylistId\" = p.id AND pr.\"organizationId\" = o.id
+JOIN \"PublishedRelease\" pr ON pr.\"sourcePlaylistId\" = p.id AND pr.\"organizationId\" = o.id AND pr.\"createdById\" = mat.\"userId\"
 JOIN \"FrozenReleaseItem\" fri ON fri.\"releaseId\" = pr.id AND fri.\"sourcePlaylistItemId\" = pi.id AND fri.\"sourceAssetId\" = ma.id AND fri.\"organizationId\" = o.id
-JOIN \"ReleaseAssignment\" ra ON ra.\"releaseId\" = pr.id AND ra.\"scheduleId\" = sc.id AND ra.\"organizationId\" = o.id
+JOIN \"ReleaseAssignment\" ra ON ra.\"releaseId\" = pr.id AND ra.\"scheduleId\" = sc.id AND ra.\"organizationId\" = o.id AND ra.\"createdById\" = mat.\"userId\"
 JOIN \"ReleaseAssignmentTarget\" rat ON rat.\"assignmentId\" = ra.id AND rat.\"liveScreenId\" = s.id AND rat.\"liveScreenOrganizationId\" = o.id AND rat.\"organizationId\" = o.id
 JOIN \"AuditEvent\" ae ON ae.\"organizationId\" = o.id AND ae.\"actorUserId\" = u.id AND ae.\"entityId\" = pr.id
 JOIN \"IdempotencyRecord\" ir ON ir.\"organizationId\" = o.id AND ir.\"actorUserId\" = u.id
@@ -333,6 +352,7 @@ Disposable CI Prisma migration chain: passed ($applied_migration_count migration
 Disposable CI PostgreSQL application-graph dump/restore: passed
 Restored PostgreSQL constraints and representative references: passed
 Restored local AuditEvent bounds and ordinary-mutation trigger: passed
+Restored durable membership attribution and mutation guards: passed
 Referenced MinIO object metadata and restored bytes: passed
 Retained Docker image rollback: passed
 Source commit: $SOURCE_COMMIT
@@ -354,6 +374,7 @@ cat > "$EVIDENCE_DIR/measurements.json" <<EOF
   "restoredMigrationCount": $restored_migration_count,
   "invalidConstraintCount": $invalid_constraint_count,
   "restoredAuditGuardCount": $restored_audit_guard_count,
+  "restoredAttributionGuardCount": $restored_attribution_guard_count,
   "restoredRepresentativeGraphCount": $restored_relation_count,
   "postgresDumpBytes": $postgres_dump_bytes,
   "postgresDumpSha256": "$postgres_dump_sha256",
