@@ -72,6 +72,10 @@ test("demo, dialog, drawer, and live fleet states meet automated WCAG 2.1 A/AA c
   await loginAsSeededOwner(page);
   await expect(page.getByText("Live API data")).toBeVisible();
   await expectNoWcag21AAViolations(page, "live fleet");
+
+  await page.getByRole("link", { name: "Overview" }).click();
+  await expect(page.getByText("Live API data")).toBeVisible();
+  await expectNoWcag21AAViolations(page, "live dashboard");
 });
 
 test("skip navigation and modal and drawer focus containment work in Chromium", async ({

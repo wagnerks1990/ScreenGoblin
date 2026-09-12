@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { StrictMode } from "react";
 import { afterEach, vi } from "vitest";
 import { App } from "./App";
 
@@ -113,15 +114,139 @@ async function openReplacementWithStatus(
 describe("ScreenGoblin console", () => {
   it("renders an actionable dashboard with an explicit demo state", async () => {
     render(
-      <MemoryRouter initialEntries={["/dashboard"]}>
-        <App />
-      </MemoryRouter>,
+      <StrictMode>
+        <MemoryRouter initialEntries={["/dashboard"]}>
+          <App />
+        </MemoryRouter>
+      </StrictMode>,
     );
     expect(
       screen.getByRole("heading", { name: /screen operations overview/i }),
     ).toBeTruthy();
     expect(screen.getByText(/demo data/i)).toBeTruthy();
     expect(screen.getByRole("link", { name: /screen fleet/i })).toBeTruthy();
+  });
+
+  it("derives live dashboard health from one screen read and refreshes once", async () => {
+    setAdminSession();
+    const firstScreens = [
+      {
+        ...replacementTestScreen,
+        id: "online",
+        name: "Online",
+        status: "online",
+      },
+      {
+        ...replacementTestScreen,
+        id: "warning",
+        name: "Delayed",
+        status: "warning",
+        lastSeenAt: "2030-01-01T11:57:00.000Z",
+      },
+      {
+        ...replacementTestScreen,
+        id: "offline",
+        name: "Silent",
+        status: "offline",
+        lastSeenAt: "2030-01-01T11:50:00.000Z",
+      },
+      {
+        ...replacementTestScreen,
+        id: "fallback",
+        name: "Fallback",
+        status: "fallback",
+      },
+    ];
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data:
+              fetchMock.mock.calls.length === 1
+                ? firstScreens
+                : firstScreens.slice(0, 1),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Live API data")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const metrics = within(document.querySelector(".metrics-grid")!);
+    const onlineMetric = metrics
+      .getByText("Screens online")
+      .closest<HTMLElement>(".metric")!;
+    const attentionMetric = metrics
+      .getByText("Needs attention")
+      .closest<HTMLElement>(".metric")!;
+    expect(within(onlineMetric).getByText("1")).toBeTruthy();
+    expect(within(attentionMetric).getByText("3")).toBeTruthy();
+    expect(attentionMetric).toHaveTextContent(
+      "1 warning · 1 offline · 1 fallback",
+    );
+    expect(screen.getByText(/Heartbeat delayed · Last heartbeat/)).toBeTruthy();
+    expect(screen.getByText("Player reports fallback playback")).toBeTruthy();
+    expect(document.body).not.toHaveTextContent("Storage is 91% full");
+    expect(
+      screen.getByText(
+        new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(
+          new Date(),
+        ),
+      ),
+    ).toBeTruthy();
+
+    await user.click(
+      screen.getByRole("button", { name: "Refresh screen data" }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(attentionMetric).toHaveTextContent("No reported screen issues"),
+    );
+  });
+
+  it("distinguishes an unavailable dashboard from a successful empty fleet", async () => {
+    setAdminSession();
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Network unavailable"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Fleet counts are unknown until a successful retry",
+    );
+    const metrics = within(document.querySelector(".metrics-grid")!);
+    const onlineMetric = metrics
+      .getByText("Screens online")
+      .closest<HTMLElement>(".metric")!;
+    expect(within(onlineMetric).getByText("—")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(
+      (await screen.findAllByText(/No screens are registered/)).length,
+    ).toBeGreaterThan(0);
+    expect(within(onlineMetric).getByText("0")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("filters the media vault and clears an empty state", async () => {
