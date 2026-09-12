@@ -92,6 +92,15 @@ revocation across PostgreSQL and object storage.
   available only outside production for isolated automated fixtures.
 - Database queries include organization scope. Public screen responses exclude bearer verifier hashes and private device-authentication state. Pairing codes use a deployment-specific HMAC pepper at rest. Proof challenges are short-lived, stored only as hashes, durably bounded, and consumed once after valid signature verification. OWNER/ADMIN revocation transactionally disables a credential, invalidates outstanding challenges, marks the screen, and appends one audit record.
 - Local audit rows have bounded scalar and structured metadata fields.
+  PostgreSQL authoritatively limits the UTF-8 bytes of `metadata::text` to 16
+  KiB and retains a 32 KiB physical-size check as a secondary defense. The
+  application uses a conservative PostgreSQL-text estimate (including JSON
+  punctuation/spacing and a fixed allowance for numeric normalization), so it
+  can reject some values PostgreSQL would accept but cannot admit larger
+  logical metadata. It also rejects repeated in-memory object identities;
+  ordinary parsed JSON is a tree, and this defensively bounds validation work.
+  Audit text rejects NUL and malformed UTF-16 before Memory can accept values
+  that PostgreSQL text/jsonb cannot represent.
   PostgreSQL rejects ordinary row updates and direct deletes while the tenant
   exists; deleting a user may null its audit attribution, and deleting an
   organization cascades its local audit rows. The API and migration currently

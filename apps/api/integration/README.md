@@ -27,9 +27,12 @@ Schedule publication coverage includes tenant-bound command keys, concurrent
 same-key serialization, lost-response replay after withdrawal, fresh-key
 intentional republication, authorization races, durable expired tombstones,
 and rollback when either audit or idempotency persistence fails.
-Audit coverage also exercises bounded scalar/JSON fields, stable equal-time
-ordering, direct update/delete rejection under the current table-owning test
-login, `User` attribution nulling, and `Organization` audit cascade behavior.
+Audit coverage also exercises bounded scalar/JSON fields, the authoritative 16
+KiB `metadata::text` limit through transactional mutations, rejection of
+compressible oversized legacy metadata during constraint validation, stable
+equal-time ordering, direct update/delete rejection under the current
+table-owning test login, `User` attribution nulling, and `Organization` audit
+cascade behavior.
 The owner credential can still disable the trigger or truncate the table; the
 test therefore does not establish hostile-database tamper resistance.
 

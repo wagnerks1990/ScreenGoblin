@@ -3895,7 +3895,7 @@ export class PrismaStore implements DataStore {
     return (
       await this.prisma.auditEvent.findMany({
         where: { organizationId: org },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: limit,
       })
     ).map((x) => ({

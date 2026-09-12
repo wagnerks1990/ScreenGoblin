@@ -126,7 +126,13 @@ update. That result does not prove hostile-owner resistance, off-host audit
 delivery, retention, legal-hold enforcement, or recovery of deleted tenants.
 
 The audit-integrity migration validates every existing audit row and refuses
-out-of-bounds legacy data rather than truncating it. Its transaction holds a
+out-of-bounds legacy data rather than truncating it. The authoritative metadata
+bound is 16 KiB of UTF-8 `metadata::text`, so compressible JSON is still
+rejected when its logical representation is oversized; the 32 KiB
+`pg_column_size` check is only a secondary physical bound. The application
+uses a deliberately conservative PostgreSQL-text estimate and may reject some
+numeric-heavy metadata that the database would accept. The migration
+transaction holds a
 write-conflicting table lock through validation and index replacement. Measure
 the audit table on a staging restore, stop API writers, take and verify a fresh
 backup, and schedule an appropriate maintenance window before applying it to a

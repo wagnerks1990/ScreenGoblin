@@ -111,6 +111,10 @@ BEFORE UPDATE OR DELETE ON "AuditEvent"
 FOR EACH ROW EXECUTE FUNCTION "reject_audit_event_mutation"();
 
 ALTER TABLE "AuditEvent"
+  ADD CONSTRAINT "AuditEvent_metadata_logical_size"
+    CHECK (octet_length("metadata"::TEXT) <= 16384) NOT VALID;
+
+ALTER TABLE "AuditEvent"
   ADD CONSTRAINT "AuditEvent_actorType_length"
     CHECK (char_length("actorType") BETWEEN 1 AND 32) NOT VALID,
   ADD CONSTRAINT "AuditEvent_action_length"
@@ -136,6 +140,7 @@ ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_entityType_length";
 ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_entityId_length";
 ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_ipAddress_length";
 ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_requestId_length";
+ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_metadata_logical_size";
 ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_metadata_object";
 ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_metadata_storage_size";
 ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_metadata_shape";

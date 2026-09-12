@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PrismaClient } from "@prisma/client";
 import {
   assertAuditEventIntegrity,
   AUDIT_ACTION_MAX_LENGTH,
@@ -7,6 +8,7 @@ import {
   AUDIT_METADATA_MAX_STRING_BYTES,
 } from "../src/audit/integrity.js";
 import { MemoryStore } from "../src/store/memory.js";
+import { PrismaStore } from "../src/store/prisma.js";
 
 const event = (metadata: Record<string, unknown> = {}) => ({
   organizationId: "org-a",
@@ -38,6 +40,26 @@ describe("audit event local integrity limits", () => {
         action: "a".repeat(AUDIT_ACTION_MAX_LENGTH + 1),
       }),
     ).toThrow(RangeError);
+    expect(() =>
+      assertAuditEventIntegrity({ ...event(), action: "invalid\0action" }),
+    ).toThrow("U+0000");
+    expect(() =>
+      assertAuditEventIntegrity({ ...event(), entityType: "invalid\ud800" }),
+    ).toThrow("unpaired UTF-16");
+  });
+
+  it("matches PostgreSQL text compatibility for metadata strings and keys", () => {
+    expect(() =>
+      assertAuditEventIntegrity(event({ value: "bad\0value" })),
+    ).toThrow("U+0000");
+    expect(() =>
+      assertAuditEventIntegrity(event({ ["bad\udc00key"]: true })),
+    ).toThrow("unpaired UTF-16");
+    expect(() =>
+      assertAuditEventIntegrity(
+        event({ ["valid-\ud83d\ude00"]: "value-\ud83d\ude00" }),
+      ),
+    ).not.toThrow();
   });
 
   it("rejects non-JSON, excessive-depth, cardinality, and size metadata", () => {
@@ -54,6 +76,11 @@ describe("audit event local integrity limits", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     expect(() => assertAuditEventIntegrity(event(cyclic))).toThrow("cycles");
+
+    const shared = { value: "shared" };
+    expect(() =>
+      assertAuditEventIntegrity(event({ first: shared, second: shared })),
+    ).toThrow("repeated object references");
 
     let nested: Record<string, unknown> = { value: true };
     for (let depth = 0; depth < 9; depth++) nested = { nested };
@@ -94,7 +121,24 @@ describe("audit event local integrity limits", () => {
           ),
         ),
       ),
-    ).toThrow("serialized");
+    ).toThrow("PostgreSQL-text-estimate");
+  });
+
+  it("enforces the conservative 16 KiB metadata estimate in MemoryStore", async () => {
+    const store = new MemoryStore();
+    const metadata = (count: number) =>
+      Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          `key-${index}`,
+          "x".repeat(1_900),
+        ]),
+      );
+
+    await expect(store.audit(event(metadata(8)))).resolves.toBeUndefined();
+    await expect(store.audit(event(metadata(9)))).rejects.toThrow(
+      "PostgreSQL-text-estimate",
+    );
+    expect(store.audits).toHaveLength(1);
   });
 
   it("clones and freezes MemoryStore audit records and snapshots", async () => {
@@ -127,6 +171,20 @@ describe("audit event local integrity limits", () => {
     expect((await store.listAudits("org-a", 10)).map(({ id }) => id)).toEqual(
       expectedIds,
     );
+  });
+
+  it("requests both deterministic audit sort keys from Prisma", async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const prisma = { auditEvent: { findMany } } as unknown as PrismaClient;
+
+    await expect(
+      new PrismaStore(prisma).listAudits("org-a", 10),
+    ).resolves.toEqual([]);
+    expect(findMany).toHaveBeenCalledWith({
+      where: { organizationId: "org-a" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 10,
+    });
   });
 
   it("does not claim a pairing when caller-influenced audit data is invalid", async () => {

@@ -256,6 +256,16 @@ describe("PrismaStore PostgreSQL integration", () => {
       (await store.listAudits(organization.id, 10)).map(({ id }) => id),
     ).toEqual(["audit-order-b", "audit-order-a"]);
 
+    await expect(
+      prisma.$executeRawUnsafe(
+        `INSERT INTO "AuditEvent" ("id", "organizationId", "actorType", "action", "entityType", "metadata")
+         VALUES ($1, $2, 'system', 'integration.valid-scalars', 'test', $3::jsonb)`,
+        "audit-valid-scalar-metadata",
+        organization.id,
+        JSON.stringify({ number: 1, boolean: true, null: null, string: "ok" }),
+      ),
+    ).resolves.toBe(1);
+
     const invalidMetadata = [
       "[]",
       JSON.stringify({ value: "x".repeat(2_049) }),
@@ -318,6 +328,113 @@ describe("PrismaStore PostgreSQL integration", () => {
         code: "P2010",
         meta: expect.objectContaining({ code: "23514" }),
       });
+    }
+  });
+
+  it("enforces the logical metadata bound inside Prisma mutations", async () => {
+    const organization = await createOrganization("audit-logical-size");
+    const metadata = (count: number) =>
+      Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          `key-${index}`,
+          "x".repeat(1_900),
+        ]),
+      );
+    const device = (label: string) => ({
+      installationId: `audit-size-${label}-${randomUUID()}`,
+      model: "CI player",
+      osVersion: "test",
+      playerVersion: "0.1.0",
+    });
+    const below = await store.createPairing(
+      organization.id,
+      `audit-size-below-${randomUUID()}`,
+      new Date(Date.now() + 60_000).toISOString(),
+    );
+    await expect(
+      store.claimPairingAndAudit(
+        below.codeHash,
+        device("below"),
+        "audit-size-below-token",
+        { metadata: metadata(8) },
+      ),
+    ).resolves.toMatchObject({ organizationId: organization.id });
+
+    const above = await store.createPairing(
+      organization.id,
+      `audit-size-above-${randomUUID()}`,
+      new Date(Date.now() + 60_000).toISOString(),
+    );
+    const aboveDevice = device("above");
+    await expect(
+      store.claimPairingAndAudit(
+        above.codeHash,
+        aboveDevice,
+        "audit-size-above-token",
+        { metadata: metadata(9) },
+      ),
+    ).rejects.toThrow();
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: above.id } }),
+    ).resolves.toMatchObject({ status: "PENDING", claimedAt: null });
+    expect(
+      await prisma.screen.count({
+        where: { installationId: aboveDevice.installationId },
+      }),
+    ).toBe(0);
+  });
+
+  it("refuses compressible oversized legacy audit metadata during migration validation", async () => {
+    const organization = await createOrganization("audit-size-preflight");
+    const migration = await readFile(
+      new URL(
+        "../prisma/migrations/20260912160000_audit_event_local_integrity/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const addConstraint = migration.match(
+      /ALTER TABLE "AuditEvent"\s+ADD CONSTRAINT "AuditEvent_metadata_logical_size"[\s\S]*?NOT VALID;/,
+    )?.[0];
+    const validateConstraint = migration.match(
+      /ALTER TABLE "AuditEvent" VALIDATE CONSTRAINT "AuditEvent_metadata_logical_size";/,
+    )?.[0];
+    expect(addConstraint).toBeTruthy();
+    expect(validateConstraint).toBeTruthy();
+
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" DROP CONSTRAINT "AuditEvent_metadata_logical_size"',
+    );
+    try {
+      const metadata = Object.fromEntries(
+        Array.from({ length: 10 }, (_, index) => [
+          `key-${index}`,
+          "x".repeat(2_000),
+        ]),
+      );
+      await prisma.auditEvent.create({
+        data: {
+          organizationId: organization.id,
+          actorType: "system",
+          action: "integration.legacy-oversized",
+          entityType: "test",
+          metadata,
+        },
+      });
+      await prisma.$executeRawUnsafe(addConstraint!);
+      await expect(
+        prisma.$executeRawUnsafe(validateConstraint!),
+      ).rejects.toMatchObject({
+        code: "P2010",
+        meta: expect.objectContaining({ code: "23514" }),
+      });
+    } finally {
+      await prisma.organization.delete({ where: { id: organization.id } });
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT IF EXISTS "AuditEvent_metadata_logical_size"',
+      );
+      await prisma.$executeRawUnsafe(addConstraint!);
+      await prisma.$executeRawUnsafe(validateConstraint!);
     }
   });
 

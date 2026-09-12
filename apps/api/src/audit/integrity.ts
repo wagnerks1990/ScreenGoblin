@@ -14,6 +14,24 @@ export const AUDIT_METADATA_MAX_STRING_BYTES = 2 * 1024;
 
 type AuditEventInput = Omit<AuditRecord, "id" | "createdAt">;
 
+const assertPostgresTextCompatible = (value: string, field: string) => {
+  for (let index = 0; index < value.length; index++) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0)
+      throw new TypeError(`${field} cannot contain the U+0000 character`);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const trailing = value.charCodeAt(index + 1);
+      if (!(trailing >= 0xdc00 && trailing <= 0xdfff))
+        throw new TypeError(
+          `${field} cannot contain unpaired UTF-16 surrogates`,
+        );
+      index++;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new TypeError(`${field} cannot contain unpaired UTF-16 surrogates`);
+    }
+  }
+};
+
 const assertBoundedString = (
   value: string | undefined,
   field: string,
@@ -23,68 +41,88 @@ const assertBoundedString = (
   if (value === undefined && optional) return;
   if (typeof value !== "string" || value.length === 0 || value.length > maximum)
     throw new RangeError(`${field} must contain 1 to ${maximum} characters`);
+  assertPostgresTextCompatible(value, field);
 };
 
 const validateJsonValue = (
   value: unknown,
   depth: number,
-  ancestors: Set<object>,
-): void => {
+  seen: Set<object>,
+): number => {
   if (depth > AUDIT_METADATA_MAX_DEPTH)
     throw new RangeError(
       `Audit metadata cannot exceed ${AUDIT_METADATA_MAX_DEPTH} nested levels`,
     );
-  if (value === null || typeof value === "boolean") return;
+  if (value === null) return 4;
+  if (typeof value === "boolean") return value ? 4 : 5;
   if (typeof value === "string") {
+    assertPostgresTextCompatible(value, "Audit metadata strings");
     if (Buffer.byteLength(value, "utf8") > AUDIT_METADATA_MAX_STRING_BYTES)
       throw new RangeError(
         `Audit metadata strings cannot exceed ${AUDIT_METADATA_MAX_STRING_BYTES} UTF-8 bytes`,
       );
-    return;
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value))
       throw new TypeError("Audit metadata numbers must be finite");
-    return;
+    // PostgreSQL jsonb may expand JavaScript's exponent notation when rendering
+    // metadata::text. This bounds every finite IEEE-754 value conservatively.
+    return 330;
   }
   if (typeof value !== "object")
     throw new TypeError("Audit metadata must contain only JSON values");
-  if (ancestors.has(value))
-    throw new TypeError("Audit metadata cannot contain cycles");
+  if (seen.has(value))
+    throw new TypeError(
+      "Audit metadata cannot contain cycles or repeated object references",
+    );
 
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      if (value.length > AUDIT_METADATA_MAX_ARRAY_ITEMS)
-        throw new RangeError(
-          `Audit metadata arrays cannot exceed ${AUDIT_METADATA_MAX_ARRAY_ITEMS} items`,
-        );
-      for (const item of value) validateJsonValue(item, depth + 1, ancestors);
-      return;
-    }
-
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null)
-      throw new TypeError("Audit metadata objects must be plain JSON objects");
-    const symbols = Object.getOwnPropertySymbols(value);
-    if (symbols.length > 0)
-      throw new TypeError("Audit metadata cannot contain symbol keys");
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const entries = Object.entries(descriptors);
-    if (entries.length > AUDIT_METADATA_MAX_OBJECT_KEYS)
+  seen.add(value);
+  if (Array.isArray(value)) {
+    if (value.length > AUDIT_METADATA_MAX_ARRAY_ITEMS)
       throw new RangeError(
-        `Audit metadata objects cannot exceed ${AUDIT_METADATA_MAX_OBJECT_KEYS} keys`,
+        `Audit metadata arrays cannot exceed ${AUDIT_METADATA_MAX_ARRAY_ITEMS} items`,
       );
-    for (const [, descriptor] of entries) {
-      if (!descriptor.enumerable || descriptor.get || descriptor.set)
-        throw new TypeError(
-          "Audit metadata must contain only enumerable data properties",
+    let bytes = 2;
+    for (const [index, item] of value.entries()) {
+      if (index > 0) bytes += 2; // PostgreSQL jsonb text uses `, `.
+      bytes += validateJsonValue(item, depth + 1, seen);
+      if (bytes > AUDIT_METADATA_MAX_BYTES)
+        throw new RangeError(
+          `Audit metadata cannot exceed ${AUDIT_METADATA_MAX_BYTES} PostgreSQL-text-estimate bytes`,
         );
-      validateJsonValue(descriptor.value, depth + 1, ancestors);
     }
-  } finally {
-    ancestors.delete(value);
+    return bytes;
   }
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null)
+    throw new TypeError("Audit metadata objects must be plain JSON objects");
+  const symbols = Object.getOwnPropertySymbols(value);
+  if (symbols.length > 0)
+    throw new TypeError("Audit metadata cannot contain symbol keys");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const entries = Object.entries(descriptors);
+  if (entries.length > AUDIT_METADATA_MAX_OBJECT_KEYS)
+    throw new RangeError(
+      `Audit metadata objects cannot exceed ${AUDIT_METADATA_MAX_OBJECT_KEYS} keys`,
+    );
+  let bytes = 2;
+  for (const [index, [key, descriptor]] of entries.entries()) {
+    if (!descriptor.enumerable || descriptor.get || descriptor.set)
+      throw new TypeError(
+        "Audit metadata must contain only enumerable data properties",
+      );
+    if (index > 0) bytes += 2; // PostgreSQL jsonb text uses `, `.
+    assertPostgresTextCompatible(key, "Audit metadata keys");
+    bytes += Buffer.byteLength(JSON.stringify(key), "utf8") + 2; // `: `
+    bytes += validateJsonValue(descriptor.value, depth + 1, seen);
+    if (bytes > AUDIT_METADATA_MAX_BYTES)
+      throw new RangeError(
+        `Audit metadata cannot exceed ${AUDIT_METADATA_MAX_BYTES} PostgreSQL-text-estimate bytes`,
+      );
+  }
+  return bytes;
 };
 
 export const assertAuditEventIntegrity = (event: AuditEventInput): void => {
@@ -124,11 +162,10 @@ export const assertAuditEventIntegrity = (event: AuditEventInput): void => {
     Array.isArray(event.metadata)
   )
     throw new TypeError("Audit metadata must be a JSON object");
-  validateJsonValue(event.metadata, 0, new Set());
-  const serialized = JSON.stringify(event.metadata);
-  if (Buffer.byteLength(serialized, "utf8") > AUDIT_METADATA_MAX_BYTES)
+  const estimatedBytes = validateJsonValue(event.metadata, 0, new Set());
+  if (estimatedBytes > AUDIT_METADATA_MAX_BYTES)
     throw new RangeError(
-      `Audit metadata cannot exceed ${AUDIT_METADATA_MAX_BYTES} serialized UTF-8 bytes`,
+      `Audit metadata cannot exceed ${AUDIT_METADATA_MAX_BYTES} PostgreSQL-text-estimate bytes`,
     );
 };
 
