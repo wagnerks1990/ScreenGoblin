@@ -1,5 +1,6 @@
 package com.screengoblin.player;
 
+import android.content.pm.ApplicationInfo;
 import android.net.Uri;
 
 import com.getcapacitor.JSArray;
@@ -43,7 +44,7 @@ public final class MediaCachePlugin extends Plugin {
                 call.getString("mimeType"),
                 call.getString("checksumSha256"),
                 call.getLong("sizeBytes"),
-                BuildConfig.DEBUG
+                isDebuggable()
             );
             File file = store().prefetch(asset);
             JSObject result = new JSObject();
@@ -125,6 +126,10 @@ public final class MediaCachePlugin extends Plugin {
             if (store == null) store = new MediaCacheStore(getContext().getFilesDir());
             return store;
         }
+    }
+
+    private boolean isDebuggable() {
+        return (getContext().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 
     private void onBackground(PluginCall call, Operation operation) {

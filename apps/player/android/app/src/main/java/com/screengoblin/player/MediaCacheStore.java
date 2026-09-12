@@ -341,7 +341,7 @@ final class MediaCacheStore {
     private void fsyncDirectoryBestEffort() {
         java.io.FileDescriptor descriptor = null;
         try {
-            descriptor = Os.open(directory.getAbsolutePath(), OsConstants.O_RDONLY | OsConstants.O_DIRECTORY, 0);
+            descriptor = Os.open(directory.getAbsolutePath(), OsConstants.O_RDONLY, 0);
             Os.fsync(descriptor);
         } catch (ErrnoException ignored) {
             // Some Android filesystems do not support fsync on directory handles.
