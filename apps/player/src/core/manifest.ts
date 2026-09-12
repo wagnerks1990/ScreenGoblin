@@ -308,7 +308,10 @@ export class ManifestManager {
     const playbackBoundary = manifestPlaybackEndsAt(candidate);
     const playbackEnded =
       playbackBoundary !== undefined && playbackBoundary <= Date.now();
-    if (active?.version !== candidate.version && !playbackEnded)
+    // Re-run repository verification for every playable envelope refresh,
+    // including the same semantic release. Cache hits are cheap, while this
+    // repairs evicted or corrupted future playlist items before playback.
+    if (!playbackEnded)
       await this.prefetchAssets(candidate.items, stagingGeneration);
 
     // Downloads deliberately stay off the state queue: a blackholed release
