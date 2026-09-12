@@ -66,8 +66,14 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
   app.delete("/media/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
     const { id } = params.parse(request.params);
-    if (!(await app.store.deleteMedia(request.user.organizationId, id)))
-      return sendNotFound(reply);
+    const result = await app.store.deleteMedia(request.user.organizationId, id);
+    if (result === "NOT_FOUND") return sendNotFound(reply);
+    if (result === "IN_USE")
+      throw new ApiError(
+        409,
+        "RESOURCE_IN_USE",
+        "Published or playlist content still references this media",
+      );
     await app.store.audit({
       organizationId: request.user.organizationId,
       actorUserId: request.user.sub,
