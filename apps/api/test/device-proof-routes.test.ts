@@ -340,7 +340,10 @@ describe("proof-v1 device routes", () => {
       ),
     });
     expect(manifest.statusCode).toBe(200);
-    expect(manifest.json()).toMatchObject({ screenId });
+    expect(manifest.json()).toMatchObject({
+      screenId,
+      requestChallengeId: manifestChallenge.id,
+    });
 
     const auditsBeforeRevocation = store.audits.length;
     const revoke = () =>

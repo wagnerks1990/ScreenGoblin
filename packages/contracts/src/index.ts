@@ -50,6 +50,8 @@ export interface PlaybackManifest {
   generatedAt: string;
   validUntil: string;
   screenId: string;
+  /** One-use proof challenge consumed for this response in proof-v1 mode. */
+  requestChallengeId?: string;
   priority: SchedulePriority;
   withdrawn: boolean;
   playbackEndsAt?: string;

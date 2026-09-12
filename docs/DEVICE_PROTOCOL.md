@@ -80,7 +80,10 @@ digest. It transactionally rechecks active/not-expired/not-revoked credential
 state and allows exactly one valid consumption. Invalid signatures do not burn
 the challenge, but a valid proof cannot be replayed. Heartbeat consumption and
 the state mutation are atomic. Manifest proof is consumed before resolving the
-content response.
+content response. In proof-v1 mode, the API also includes that consumed
+challenge ID in the signed manifest payload. The Player accepts the response
+only when the signed ID exactly matches the challenge used for that request, so
+a previously captured valid envelope cannot answer a later refresh.
 
 At most four live challenges are retained for each credential and operation.
 Validly shaped requests for unknown or revoked credentials receive a dummy
@@ -100,6 +103,7 @@ The UI derives online/warning/offline state from server receipt time, never from
 A manifest contains:
 
 - screen ID, stable semantic version, generation time, and expiry;
+- the signed request challenge ID in proof-v1 mode;
 - schedule priority and ordered items;
 - a signed `withdrawn` flag; a withdrawal is an empty, normal-priority release that intentionally clears playback;
 - an optional signed `playbackEndsAt` boundary for the selected schedule, distinct from the routinely refreshed envelope lease;
@@ -147,7 +151,12 @@ Manifest staging serializes pre-prune, prefetch, state activation, and
 post-prune while retaining active and rollback assets until the state commit.
 Every playable envelope refresh, including the same semantic version, rechecks
 all referenced cache entries and repairs missing or corrupt assets before
-activation.
+activation. Online activation rejects an envelope whose signed generation time
+is older than the currently active signed envelope, including active state
+recovered after restart. At an equal generation timestamp, only the same
+semantic version may refresh; a different release fails closed because its
+ordering is ambiguous. This ordering check does not constrain explicit local
+rollback or emergency-expiry restoration of the retained normal baseline.
 Recovery schedules cleanup behind staging but does not wait for a stalled
 download, and explicit rollback uses the independent state path. A native
 capacity or I/O error rejects the candidate release rather than replacing the

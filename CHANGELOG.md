@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Bind every proof-v1 manifest signature to the one-use challenge consumed for
+  its request, require the Player to verify that exact response binding, and
+  reject online activation of an envelope older than persisted active state or
+  a different semantic version with an equal generation timestamp.
+  Explicit rollback and offline playback through signed hard deadlines remain
+  unchanged.
 - Make isolated-fixture emergency activation and clear atomic with their
   immutable audit events. Revalidate the actor's current capability and lock
   every organization-scoped target inside the same transaction so demotion,

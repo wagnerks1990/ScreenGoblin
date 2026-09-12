@@ -51,6 +51,9 @@ const signed = (manifest: PlayerManifest): SignedPlayerManifest =>
       generatedAt: manifest.generatedAt,
       validUntil: manifest.validUntil,
       screenId: manifest.screenId,
+      ...(manifest.requestChallengeId
+        ? { requestChallengeId: manifest.requestChallengeId }
+        : {}),
       priority: manifest.priority,
       withdrawn: manifest.withdrawn,
       ...(manifest.playbackEndsAt
@@ -977,5 +980,83 @@ describe("manifest validation", () => {
     expect(() =>
       assertManifest({ ...valid, playbackEndsAt: "not-a-date" }),
     ).toThrow("playback boundary is invalid");
+  });
+  it("rejects an older envelope against persisted active state before prefetch", async () => {
+    const store = new MemoryStore();
+    store.active = {
+      ...valid,
+      version: "newer-release",
+      generatedAt: "2026-09-11T00:01:00Z",
+    };
+    const assets = new MemoryAssets();
+    const managerAfterRestart = new ManifestManager(store, assets);
+
+    await expect(
+      managerAfterRestart.stageAndActivate(
+        signed({
+          ...valid,
+          version: "delayed-older-release",
+          generatedAt: "2026-09-11T00:00:30Z",
+        }),
+        trust,
+      ),
+    ).rejects.toThrow(
+      "Manifest generation time is older than the active release",
+    );
+    expect(store.active?.version).toBe("newer-release");
+    expect(assets.prefetched).toEqual([]);
+  });
+
+  it("rejects a different release with the same generation timestamp", async () => {
+    const store = new MemoryStore();
+    store.active = {
+      ...valid,
+      version: "accepted-release",
+      generatedAt: "2026-09-11T00:01:00Z",
+      requestChallengeId: "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+    };
+    const assets = new MemoryAssets();
+
+    await expect(
+      new ManifestManager(store, assets).stageAndActivate(
+        signed({
+          ...valid,
+          version: "concurrent-stale-release",
+          generatedAt: "2026-09-11T00:01:00Z",
+          requestChallengeId: "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
+        }),
+        trust,
+      ),
+    ).rejects.toThrow(
+      "Manifest generation time is ambiguous with the active release",
+    );
+    expect(store.active?.version).toBe("accepted-release");
+    expect(assets.prefetched).toEqual([]);
+  });
+
+  it("allows explicit rollback to an older normal baseline after emergency activation", async () => {
+    const store = new MemoryStore();
+    store.active = {
+      ...valid,
+      version: "normal-baseline",
+      generatedAt: "2026-09-11T00:00:00Z",
+    };
+    const manager = new ManifestManager(store, new MemoryAssets());
+    await manager.stageAndActivate(
+      signed({
+        ...valid,
+        version: "emergency-current",
+        generatedAt: "2026-09-11T00:02:00Z",
+        priority: "emergency",
+      }),
+      trust,
+    );
+
+    await expect(
+      manager.rollback(trust, "emergency-current"),
+    ).resolves.toMatchObject({
+      version: "normal-baseline",
+      priority: "normal",
+    });
   });
 });

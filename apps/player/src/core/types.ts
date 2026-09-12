@@ -20,6 +20,8 @@ export interface PlayerManifest {
   /** Signed schedule boundary after which playback must stop, even offline. */
   playbackEndsAt?: string;
   screenId: string;
+  /** Signed one-use proof challenge binding; required for proof-v1 responses. */
+  requestChallengeId?: string;
   priority: ManifestPriority;
   /**
    * A signed, normal-priority release that intentionally clears playback.

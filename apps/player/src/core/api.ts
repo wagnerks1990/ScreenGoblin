@@ -63,6 +63,11 @@ interface PlayerApiResult<T> {
   payload: T;
 }
 
+interface ProtectedPlayerApiResult<T> {
+  payload: T;
+  requestChallengeId?: string;
+}
+
 export interface PlayerApiOptions {
   requestTimeoutMs?: number;
   manifestMaxAttempts?: number;
@@ -680,13 +685,13 @@ export class PlayerApi {
     return headers;
   }
 
-  private async protectedRequest<T>(
+  private async protectedRequestWithContext<T>(
     operation: DeviceAuthChallengeRequest["operation"],
     path: string,
     body: string | undefined,
     init: RequestInit,
     options: PlayerRequestOptions,
-  ): Promise<T> {
+  ): Promise<ProtectedPlayerApiResult<T>> {
     if (!this.credentials)
       throw new PlayerApiFailure(
         "Device credentials are unavailable",
@@ -694,20 +699,50 @@ export class PlayerApi {
         false,
       );
     if (this.credentials.authMode === "development-bearer")
-      return this.request<T>(
-        path,
-        { ...init, ...(body === undefined ? {} : { body }) },
-        options,
-      );
+      return {
+        payload: await this.request<T>(
+          path,
+          { ...init, ...(body === undefined ? {} : { body }) },
+          options,
+        ),
+      };
     const bodySha256 = await sha256Hex(
       body === undefined ? new ArrayBuffer(0) : utf8(body),
     );
     const headers = await this.proofHeaders(operation, bodySha256, options);
-    return this.request<T>(
-      path,
-      { ...init, headers, ...(body === undefined ? {} : { body }) },
-      options,
-    );
+    const requestChallengeId = headers.get("X-Device-Challenge-Id");
+    if (!requestChallengeId)
+      throw new PlayerApiFailure(
+        "Device proof challenge context is unavailable",
+        "protocol",
+        false,
+      );
+    return {
+      payload: await this.request<T>(
+        path,
+        { ...init, headers, ...(body === undefined ? {} : { body }) },
+        options,
+      ),
+      requestChallengeId,
+    };
+  }
+
+  private async protectedRequest<T>(
+    operation: DeviceAuthChallengeRequest["operation"],
+    path: string,
+    body: string | undefined,
+    init: RequestInit,
+    options: PlayerRequestOptions,
+  ): Promise<T> {
+    return (
+      await this.protectedRequestWithContext<T>(
+        operation,
+        path,
+        body,
+        init,
+        options,
+      )
+    ).payload;
   }
 
   async pair(
@@ -909,12 +944,13 @@ export class PlayerApi {
   ): Promise<SignedPlayerManifest> {
     // GET is safe to retry. Every attempt retains its own hard deadline.
     const fetchManifest = () =>
-      this.protectedRequest<{
+      this.protectedRequestWithContext<{
         version: string;
         generatedAt: string;
         validUntil: string;
         playbackEndsAt?: string;
         screenId: string;
+        requestChallengeId?: string;
         priority: PlayerManifest["priority"];
         withdrawn: boolean;
         items: Array<{
@@ -925,7 +961,7 @@ export class PlayerApi {
         signature: string;
       }>("manifest", "/manifest", undefined, { cache: "no-store" }, options);
     // A proof is one-use, so every safe GET retry obtains and signs a new one.
-    const response = await this.withRetries(
+    const { payload: response, requestChallengeId } = await this.withRetries(
       fetchManifest,
       options,
       this.options.manifestMaxAttempts,
@@ -944,6 +980,15 @@ export class PlayerApi {
     )
       throw new PlayerApiFailure(
         "Manifest signature or screen binding is invalid",
+        "protocol",
+        false,
+      );
+    if (
+      this.credentials.authMode === "proof-v1" &&
+      response.requestChallengeId !== requestChallengeId
+    )
+      throw new PlayerApiFailure(
+        "Manifest response is not bound to its request challenge",
         "protocol",
         false,
       );

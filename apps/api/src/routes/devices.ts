@@ -621,6 +621,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     },
     async (request) => {
       let screen = request.device!;
+      let requestChallengeId: string | undefined;
       if (app.config.deviceAuthMode === "proof-v1") {
         if (request.url.includes("?")) throw invalidDeviceProof();
         const proof = await readDeviceProof(request);
@@ -647,6 +648,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         );
         if (!consumed.authenticated) throw invalidDeviceProof();
         screen = consumed.screen;
+        requestChallengeId = proof.headers["x-device-challenge-id"];
       }
       const generatedDate = new Date();
       const generatedAt = generatedDate.toISOString();
@@ -800,6 +802,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         generatedAt,
         validUntil,
         screenId: screen.id,
+        ...(requestChallengeId ? { requestChallengeId } : {}),
         priority,
         withdrawn,
         ...(playbackEndsAt ? { playbackEndsAt } : {}),
