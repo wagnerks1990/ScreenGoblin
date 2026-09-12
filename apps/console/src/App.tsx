@@ -44,6 +44,7 @@ export function App() {
   const [createOpen, setCreateOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [liveSession, setLiveSession] = useState(api.hasLiveSession());
+  const [demoAllowed, setDemoAllowed] = useState(api.demoAllowed());
   const [sessionUser, setSessionUser] = useState(api.currentUser());
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -51,14 +52,17 @@ export function App() {
   const [loggingIn, setLoggingIn] = useState(false);
   const location = useLocation();
   const canAdmin =
-    !liveSession || ["OWNER", "ADMIN"].includes(sessionUser?.role ?? "");
+    (!liveSession && demoAllowed) ||
+    ["OWNER", "ADMIN"].includes(sessionUser?.role ?? "");
   const canPublish =
-    !liveSession ||
+    (!liveSession && demoAllowed) ||
     ["OWNER", "ADMIN", "PUBLISHER"].includes(sessionUser?.role ?? "");
+  const dataMode = liveSession ? "live" : demoAllowed ? "demo" : "failed";
   useEffect(() => setMobileOpen(false), [location.pathname]);
   useEffect(() => {
     const refreshSession = () => {
       setLiveSession(api.hasLiveSession());
+      setDemoAllowed(api.demoAllowed());
       setSessionUser(api.currentUser());
     };
     window.addEventListener("screengoblin:session-changed", refreshSession);
@@ -74,6 +78,7 @@ export function App() {
     try {
       const session = await api.login(email, password);
       setLiveSession(true);
+      setDemoAllowed(true);
       setSessionUser(session.user);
       setEmail("");
       setPassword("");
@@ -146,11 +151,19 @@ export function App() {
         <div className="sidebar-foot">
           <div className="workspace-mark">CH</div>
           <div>
-            <b>{liveSession ? "Connected workspace" : "ScreenGoblin Demo"}</b>
+            <b>
+              {liveSession
+                ? "Connected workspace"
+                : demoAllowed
+                  ? "ScreenGoblin Demo"
+                  : "Live session expired"}
+            </b>
             <span>
               {liveSession
                 ? sessionUser?.organizationId
-                : "Demonstration workspace"}
+                : demoAllowed
+                  ? "Demonstration workspace"
+                  : "Reconnect to load operational data"}
             </span>
           </div>
           <button aria-label="Workspace options">•••</button>
@@ -187,7 +200,11 @@ export function App() {
               }}
             >
               <WifiOff size={14} />
-              {liveSession ? "Disconnect live" : "Demo data · Connect live"}
+              {liveSession
+                ? "Disconnect live"
+                : demoAllowed
+                  ? "Demo data · Connect live"
+                  : "Reconnect live"}
             </button>
             <button className="icon-button" aria-label="Notifications">
               <Bell size={19} />
@@ -203,32 +220,24 @@ export function App() {
             </button>
           </div>
         </header>
-        <main id="main-content">
+        <main id="main-content" tabIndex={-1}>
           <Routes>
             <Route
               path="/dashboard"
               element={
                 <Dashboard
-                  key={liveSession ? "live" : "demo"}
+                  key={dataMode}
                   onCreate={() => setCreateOpen(true)}
                   canCreate={canPublish}
                 />
               }
             />
-            <Route
-              path="/media"
-              element={<MediaVault key={liveSession ? "live" : "demo"} />}
-            />
+            <Route path="/media" element={<MediaVault key={dataMode} />} />
             <Route path="/playlists" element={<Playlists />} />
             <Route path="/schedules" element={<Schedules />} />
             <Route
               path="/screens"
-              element={
-                <Fleet
-                  key={liveSession ? "live" : "demo"}
-                  canManage={canAdmin}
-                />
-              }
+              element={<Fleet key={dataMode} canManage={canAdmin} />}
             />
             <Route
               path="/emergency"

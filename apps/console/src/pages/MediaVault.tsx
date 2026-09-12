@@ -62,7 +62,7 @@ export function MediaVault() {
   const [query, setQuery] = useState("");
   const [type, setType] = useState("All types");
   const [view, setView] = useState<"grid" | "list">("grid");
-  const liveSession = api.hasLiveSession();
+  const liveSession = api.hasLiveSession() || !api.demoAllowed();
   const [inventory, setInventory] = useState<VaultAsset[]>(
     liveSession
       ? []

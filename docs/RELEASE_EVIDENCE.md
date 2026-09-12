@@ -30,6 +30,17 @@ to either makes the alert blocking again. The full result remains in SARIF.
 
 The image job also emits CycloneDX SBOMs, Trivy SARIF, Docker image inspection records, image IDs, source commit/tree/archive digests, Dockerfile digests, and SHA-256 checksums. SARIF is uploaded to GitHub code scanning and the remaining evidence is retained as a short-lived workflow artifact. The builder refuses a dirty worktree or a requested evidence ID that differs from the checked-out commit.
 
+CI also runs four single-worker Chromium scenarios against the compiled Console,
+compiled API, and a dedicated migrated PostgreSQL database. The gate exercises
+real owner authentication, live screen creation and display, pairing-code
+creation, explicit disconnect, 401 session invalidation without demo fallback,
+WCAG 2.1 A/AA axe scans over five representative states, skip navigation, and
+Modal/Drawer focus containment and restoration. Browser traces, screenshots,
+videos, HTML reports, and reusable authenticated storage state are disabled to
+avoid retaining test JWTs or pairing codes. Playwright and axe packages are
+exact-lockfile pinned; the hosted runner packages installed by Playwright remain
+a CI supply-chain limitation and are not release provenance.
+
 Gradle verifies the pinned 8.11.1 distribution ZIP against the checksum
 published for that exact distribution. The Android build also uses strict
 SHA-256 verification metadata for Maven, plugin, module-metadata, and transitive

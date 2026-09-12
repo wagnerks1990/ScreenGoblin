@@ -61,16 +61,23 @@ export interface DeviceReenrollmentActivation {
 
 const baseUrl =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "/api/v1";
+const invalidatedSessionKey = "sg_live_session_invalidated";
 
-function clearSession() {
+function clearSession(invalidated: boolean) {
   window.sessionStorage.removeItem("sg_access_token");
   window.sessionStorage.removeItem("sg_session_user");
+  if (invalidated) window.sessionStorage.setItem(invalidatedSessionKey, "true");
+  else window.sessionStorage.removeItem(invalidatedSessionKey);
   window.dispatchEvent(new Event("screengoblin:session-changed"));
 }
 
 async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
   const accessToken = window.sessionStorage.getItem("sg_access_token");
-  if (!accessToken) return { data: fallback, source: "demo" };
+  if (!accessToken) {
+    if (window.sessionStorage.getItem(invalidatedSessionKey))
+      throw new Error("Live session expired; sign in again");
+    return { data: fallback, source: "demo" };
+  }
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 2500);
   try {
@@ -83,7 +90,7 @@ async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
     });
     if (!response.ok) {
       if (response.status === 401) {
-        clearSession();
+        clearSession(true);
       }
       throw new Error(`Live API returned HTTP ${response.status}`);
     }
@@ -105,7 +112,7 @@ async function mutate<T>(path: string, init: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    if (response.status === 401) clearSession();
+    if (response.status === 401 && accessToken) clearSession(true);
     const payload = (await response.json().catch(() => undefined)) as
       { error?: { message?: string } } | undefined;
     throw new Error(
@@ -119,6 +126,7 @@ async function mutate<T>(path: string, init: RequestInit): Promise<T> {
 export const api = {
   hasLiveSession: () =>
     Boolean(window.sessionStorage.getItem("sg_access_token")),
+  demoAllowed: () => !window.sessionStorage.getItem(invalidatedSessionKey),
   currentUser: (): LiveSession["user"] | undefined => {
     const raw = window.sessionStorage.getItem("sg_session_user");
     if (!raw) return undefined;
@@ -135,6 +143,7 @@ export const api = {
       body: JSON.stringify({ email, password }),
     });
     window.sessionStorage.setItem("sg_access_token", session.accessToken);
+    window.sessionStorage.removeItem(invalidatedSessionKey);
     window.sessionStorage.setItem(
       "sg_session_user",
       JSON.stringify(session.user),
@@ -142,7 +151,7 @@ export const api = {
     return session;
   },
   logout: () => {
-    clearSession();
+    clearSession(false);
   },
   createPairingCode: () =>
     mutate<{ code: string; expiresAt: string }>("/pairing-codes", {

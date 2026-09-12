@@ -1,10 +1,12 @@
 import {
   useEffect,
+  useId,
   useRef,
   type FormEventHandler,
   type ReactNode,
   type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import { X, Search, ChevronDown } from "lucide-react";
 
 export function PageHeader({
@@ -158,10 +160,13 @@ export function Drawer({
   children: ReactNode;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
-  useDialogLifecycle(open, onClose, dialogRef);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useDialogLifecycle(open, onClose, dialogRef, overlayRef);
   if (!open) return null;
-  return (
+  return createPortal(
     <div
+      ref={overlayRef}
       className="overlay"
       role="presentation"
       onMouseDown={(e) => {
@@ -173,15 +178,16 @@ export function Drawer({
         className="drawer"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="drawer-title"
+        aria-labelledby={titleId}
         tabIndex={-1}
       >
         <header className="drawer-header">
           <div>
             {eyebrow && <div className="eyebrow">{eyebrow}</div>}
-            <h2 id="drawer-title">{title}</h2>
+            <h2 id={titleId}>{title}</h2>
           </div>
           <button
+            type="button"
             className="icon-button"
             onClick={onClose}
             aria-label="Close details"
@@ -191,7 +197,8 @@ export function Drawer({
         </header>
         <div className="drawer-body">{children}</div>
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -211,11 +218,14 @@ export function Modal({
   onSubmit?: FormEventHandler<HTMLFormElement>;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
-  useDialogLifecycle(open, onClose, dialogRef);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useDialogLifecycle(open, onClose, dialogRef, overlayRef);
   if (!open) return null;
   const DialogRoot = onSubmit ? "form" : "section";
-  return (
+  return createPortal(
     <div
+      ref={overlayRef}
       className="overlay modal-overlay"
       role="presentation"
       onMouseDown={(e) => {
@@ -229,13 +239,14 @@ export function Modal({
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
         tabIndex={-1}
         onSubmit={onSubmit}
       >
         <header className="drawer-header">
-          <h2 id="modal-title">{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           <button
+            type="button"
             className="icon-button"
             onClick={onClose}
             aria-label="Close dialog"
@@ -246,14 +257,59 @@ export function Modal({
         <div className="modal-body">{children}</div>
         {footer && <footer className="modal-footer">{footer}</footer>}
       </DialogRoot>
-    </div>
+    </div>,
+    document.body,
   );
+}
+
+const focusableSelector = [
+  "a[href]",
+  "area[href]",
+  "button:not([disabled])",
+  "input:not([disabled]):not([type='hidden'])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[contenteditable='true']",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+const inertBackgrounds = new Map<
+  HTMLElement,
+  { count: number; inert: boolean | undefined; ariaHidden: string | null }
+>();
+
+function acquireInertBackground(element: HTMLElement) {
+  const existing = inertBackgrounds.get(element);
+  if (existing) {
+    existing.count += 1;
+    return;
+  }
+  inertBackgrounds.set(element, {
+    count: 1,
+    inert: element.inert,
+    ariaHidden: element.getAttribute("aria-hidden"),
+  });
+  element.inert = true;
+  element.setAttribute("aria-hidden", "true");
+}
+
+function releaseInertBackground(element: HTMLElement) {
+  const state = inertBackgrounds.get(element);
+  if (!state) return;
+  state.count -= 1;
+  if (state.count > 0) return;
+  inertBackgrounds.delete(element);
+  if (state.inert === undefined) delete (element as { inert?: boolean }).inert;
+  else element.inert = state.inert;
+  if (state.ariaHidden === null) element.removeAttribute("aria-hidden");
+  else element.setAttribute("aria-hidden", state.ariaHidden);
 }
 
 function useDialogLifecycle(
   open: boolean,
   onClose: () => void,
   dialogRef: RefObject<HTMLElement | null>,
+  overlayRef: RefObject<HTMLDivElement | null>,
 ) {
   const openerRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -269,20 +325,67 @@ function useDialogLifecycle(
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    const overlay = overlayRef.current;
+    if (!overlay) return;
     dialogRef.current?.focus();
+    const outsideElements = Array.from(document.body.children).filter(
+      (element): element is HTMLElement =>
+        element instanceof HTMLElement && element !== overlay,
+    );
+    for (const element of outsideElements) acquireInertBackground(element);
 
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onCloseRef.current();
+    const focusableElements = () =>
+      Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(focusableSelector) ??
+          [],
+      ).filter(
+        (element) =>
+          !element.hidden && element.getAttribute("aria-hidden") !== "true",
+      );
+    const keepFocusInside = (event: FocusEvent) => {
+      const dialog = dialogRef.current;
+      if (!dialog || dialog.contains(event.target as Node)) return;
+      (focusableElements()[0] ?? dialog).focus();
     };
-    document.addEventListener("keydown", closeOnEscape);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = focusableElements();
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last ||
+          !dialog.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("focusin", keepFocusInside);
+    document.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("focusin", keepFocusInside);
+      document.removeEventListener("keydown", handleKeyDown);
+      for (const element of outsideElements) releaseInertBackground(element);
       openerRef.current?.focus();
       openerRef.current = null;
     };
-  }, [dialogRef, open]);
+  }, [dialogRef, open, overlayRef]);
 }
 
 export function Field({

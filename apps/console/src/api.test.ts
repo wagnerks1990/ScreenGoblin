@@ -30,7 +30,9 @@ describe("authenticated live data boundary", () => {
 
     await expect(api.screens()).rejects.toThrow("HTTP 401");
     expect(api.hasLiveSession()).toBe(false);
+    expect(api.demoAllowed()).toBe(false);
     expect(api.currentUser()).toBeUndefined();
+    await expect(api.screens()).rejects.toThrow("Live session expired");
   });
 
   it("clears the complete browser session after an unauthorized mutation", async () => {
@@ -60,6 +62,7 @@ describe("authenticated live data boundary", () => {
 
     await expect(api.createPairingCode()).rejects.toThrow("Unauthorized");
     expect(api.hasLiveSession()).toBe(false);
+    expect(api.demoAllowed()).toBe(false);
     expect(api.currentUser()).toBeUndefined();
     expect(changed).toHaveBeenCalledOnce();
   });
@@ -93,6 +96,19 @@ describe("authenticated live data boundary", () => {
     const result = await api.screens();
     expect(result.source).toBe("demo");
     expect(result.data.length).toBeGreaterThan(0);
+  });
+
+  it("keeps demo mode available after an unauthenticated login rejection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status: 401 })),
+    );
+
+    await expect(
+      api.login("owner@example.test", "wrong-password"),
+    ).rejects.toThrow("API returned 401");
+    expect(api.demoAllowed()).toBe(true);
+    expect((await api.screens()).source).toBe("demo");
   });
 
   it("loads media from the authenticated API without a live fallback", async () => {

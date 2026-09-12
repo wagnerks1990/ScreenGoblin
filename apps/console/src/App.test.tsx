@@ -621,7 +621,7 @@ describe("ScreenGoblin console", () => {
 
   it("focuses dialogs, closes them with Escape, and restores the opener", async () => {
     const user = userEvent.setup();
-    render(
+    const { container } = render(
       <MemoryRouter initialEntries={["/dashboard"]}>
         <App />
       </MemoryRouter>,
@@ -633,11 +633,27 @@ describe("ScreenGoblin console", () => {
       name: /connect to screengoblin/i,
     });
     expect(dialog).toHaveFocus();
+    expect(container).toHaveAttribute("aria-hidden", "true");
+    expect(container).toHaveProperty("inert", true);
+
+    const close = screen.getByRole("button", { name: "Close dialog" });
+    const keepDemo = screen.getByRole("button", { name: "Keep demo mode" });
+    expect(close).toHaveAttribute("type", "button");
+    close.focus();
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(keepDemo).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+
+    opener.focus();
+    expect(close).toHaveFocus();
     await user.keyboard("{Escape}");
 
     expect(
       screen.queryByRole("dialog", { name: /connect to screengoblin/i }),
     ).toBeNull();
+    expect(container).not.toHaveAttribute("aria-hidden");
+    expect(container.inert).not.toBe(true);
     expect(opener).toHaveFocus();
   });
 
