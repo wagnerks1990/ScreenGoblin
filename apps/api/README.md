@@ -17,6 +17,12 @@ npm run dev -w @screengoblin/api
 
 The API listens on port `3000` by default. Generate independent JWT and pairing secrets, a random manifest-signing seed, and a unique seeded password before exposing the service. Production startup rejects documented placeholders, checked-in test secrets, and the all-zero signing seed used by automated tests. `/health/live` returns an empty `204` when the process is alive. The internal-only `/health/ready` returns an empty `204` only when PostgreSQL and the production Redis request-protection backend are reachable; failures return an empty `503` without identifying the failed dependency.
 
+`PUBLIC_API_URL` is the external control-plane origin returned during device
+pairing. Production accepts only a credential-free HTTPS origin with no path,
+query, or fragment, and normalizes its host/default port before constructing
+`/api/v1/device`. Invalid values stop startup before a pairing code can be
+consumed into an unusable Player configuration.
+
 ## API surface
 
 All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the token's organization.

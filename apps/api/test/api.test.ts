@@ -63,6 +63,7 @@ beforeEach(async () => {
     manifestSigningPrivateKey: signingKey,
     pairingCodePepper: secret,
     deviceAuthMode: "development-bearer",
+    publicApiUrl: "https://signage.example.test",
     mediaAllowedOrigins: ["https://media.example.test"],
   });
   token = issueTestToken(store.users[0]!);
@@ -1069,6 +1070,9 @@ describe("device lifecycle", () => {
     });
     expect(paired.statusCode).toBe(201);
     const credentials = paired.json();
+    expect(credentials.apiBaseUrl).toBe(
+      "https://signage.example.test/api/v1/device",
+    );
     const headers = {
       "x-screen-id": credentials.screenId,
       "x-device-token": credentials.deviceToken,

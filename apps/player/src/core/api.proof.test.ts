@@ -517,6 +517,22 @@ describe("PlayerApi proof-v1", () => {
       "unsafe API URL",
       { apiBaseUrl: "http://signage.example.test/api/v1/device" },
     ],
+    [
+      "credentialed API URL",
+      {
+        apiBaseUrl: "https://user:password@signage.example.test/api/v1/device",
+      },
+    ],
+    [
+      "query-bearing API URL",
+      {
+        apiBaseUrl: "https://signage.example.test/api/v1/device?tenant=school",
+      },
+    ],
+    [
+      "fragment-bearing API URL",
+      { apiBaseUrl: "https://signage.example.test/api/v1/device#device" },
+    ],
     ["punctuated screen ID", { screenId: "screen.1" }],
     ["empty credential ID", { credentialId: "" }],
     ["overlong credential ID", { credentialId: "c".repeat(65) }],
