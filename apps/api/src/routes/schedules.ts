@@ -46,57 +46,58 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
   app.post("/schedules", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
     const input = body.parse(request.body);
-    if (
-      !(await app.store.getPlaylist(
-        request.user.organizationId,
-        input.playlistId,
-      ))
-    )
-      throw new ApiError(
-        422,
-        "INVALID_PLAYLIST",
-        "Playlist is not in this organization",
-      );
-    for (const id of input.screenIds)
-      if (!(await app.store.getScreen(request.user.organizationId, id)))
-        throw new ApiError(
-          422,
-          "INVALID_SCREEN",
-          "A target screen is not in this organization",
-        );
-    const x = await app.store.createSchedule(
+    const result = await app.store.publishScheduleAndAudit(
       request.user.organizationId,
       input,
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
+      { mediaAllowedOrigins: app.config.mediaAllowedOrigins },
     );
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "schedule.created",
-      entityType: "schedule",
-      entityId: x.id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: { priority: x.priority },
-    });
-    return reply.code(201).send(x);
+    if (!result.published) {
+      const errors = {
+        PLAYLIST_NOT_FOUND: [
+          "INVALID_PLAYLIST",
+          "Playlist is not in this organization",
+        ],
+        SCREEN_NOT_FOUND: [
+          "INVALID_SCREEN",
+          "A target screen is not in this organization",
+        ],
+        ASSET_NOT_FOUND: [
+          "INVALID_ASSET",
+          "Playlist contains an unknown asset",
+        ],
+        ASSET_NOT_ALLOWED: [
+          "MEDIA_ORIGIN_NOT_ALLOWED",
+          "Playlist contains media outside the approved origin policy",
+        ],
+        NO_PLAYABLE_ITEMS: [
+          "EMPTY_RELEASE",
+          "A schedule must publish at least one item",
+        ],
+      } as const;
+      const [code, message] = errors[result.reason];
+      throw new ApiError(422, code, message);
+    }
+    return reply.code(201).send(result.schedule);
   });
   app.delete("/schedules/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
     const { id } = params.parse(request.params);
-    if (!(await app.store.deleteSchedule(request.user.organizationId, id)))
+    const result = await app.store.withdrawScheduleAndAudit(
+      request.user.organizationId,
+      id,
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
+    );
+    if (!result.withdrawn && result.reason === "NOT_FOUND")
       return sendNotFound(reply);
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "schedule.deleted",
-      entityType: "schedule",
-      entityId: id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: {},
-    });
     return reply.code(204).send();
   });
 };
