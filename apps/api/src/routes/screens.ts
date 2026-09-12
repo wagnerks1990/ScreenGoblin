@@ -14,6 +14,7 @@ import {
   enforceRateLimitBudget,
   opaqueRateLimitKey,
 } from "../utils/rate-limit.js";
+import { managementScreen } from "./management-dto.js";
 
 const screen = z
   .object({
@@ -50,12 +51,14 @@ const reenrollmentRequest = z
 export const screenRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
   app.get("/screens", async (request) => ({
-    data: await app.store.listScreens(request.user.organizationId),
+    data: (await app.store.listScreens(request.user.organizationId)).map(
+      managementScreen,
+    ),
   }));
   app.get("/screens/:id", async (request, reply) => {
     const { id } = params.parse(request.params);
     const x = await app.store.getScreen(request.user.organizationId, id);
-    return x ?? sendNotFound(reply);
+    return x ? managementScreen(x) : sendNotFound(reply);
   });
   app.post("/screens", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN"]);
@@ -80,7 +83,7 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
         "FORBIDDEN",
         "You do not have permission to perform this action",
       );
-    return reply.code(201).send(result.value);
+    return reply.code(201).send(managementScreen(result.value));
   });
   app.patch("/screens/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN"]);
@@ -123,7 +126,7 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
         "Location is not in this organization",
       );
     if (!result.updated) return sendNotFound(reply);
-    return result.value;
+    return managementScreen(result.value);
   });
   app.post("/screens/:id/device-credential/revoke", async (request, reply) => {
     requireCapability(request, CAPABILITIES.screenCredentialRevoke);

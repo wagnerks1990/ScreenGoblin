@@ -77,6 +77,73 @@ export interface ScreenSummary {
   tags: string[];
 }
 
+/** Authenticated management representation of a screen record. */
+export interface ManagementScreen {
+  id: string;
+  name: string;
+  location: string;
+  /** Stable classification only; not an authorization scope in this release. */
+  locationId?: string;
+  /** Current first-class classification name when one has been assigned. */
+  locationName?: string;
+  status: ScreenStatus;
+  orientation: Orientation;
+  resolution: string;
+  tags: string[];
+  model?: string;
+  osVersion?: string;
+  playerVersion?: string;
+  manifestVersion?: string;
+  /** Opaque asset identifier last reported by the player, not a playback claim. */
+  nowPlayingAssetId?: string;
+  uptimeSeconds?: number;
+  freeStorageBytes?: number;
+  networkType?: string;
+  lastSeenAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagementPlaylistItem {
+  id: string;
+  assetId: string;
+  position: number;
+  durationSeconds: number;
+}
+
+export interface ManagementPlaylist {
+  id: string;
+  name: string;
+  description: string;
+  items: ManagementPlaylistItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagementSchedule {
+  id: string;
+  playlistId: string;
+  name: string;
+  priority: SchedulePriority;
+  startsAt: string;
+  endsAt?: string;
+  timezone: string;
+  daysOfWeek: number[];
+  dailyStartMinutes?: number;
+  dailyEndMinutes?: number;
+  enabled: boolean;
+  screenIds: string[];
+  /** Publication identifiers are opaque and do not imply current assignment state. */
+  releaseId?: string;
+  assignmentId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagementListResponse<T> {
+  data: T[];
+}
+
 /** Administrative classification. Locations do not grant or restrict access yet. */
 export interface LocationSummary {
   id: string;
