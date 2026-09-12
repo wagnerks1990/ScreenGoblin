@@ -3,8 +3,20 @@ import type { DataStore, Role, ScreenRecord } from "./domain/types.js";
 import type { RateLimitBudget } from "./utils/rate-limit.js";
 declare module "@fastify/jwt" {
   interface FastifyJWT {
-    payload: { sub: string; organizationId: string; role: Role; email: string };
-    user: { sub: string; organizationId: string; role: Role; email: string };
+    payload: {
+      sub: string;
+      organizationId: string;
+      role: Role;
+      email: string;
+      sessionId: string;
+    };
+    user: {
+      sub: string;
+      organizationId: string;
+      role: Role;
+      email: string;
+      sessionId: string;
+    };
   }
 }
 declare module "fastify" {

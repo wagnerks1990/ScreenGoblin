@@ -35,6 +35,7 @@ import type {
   ScreenRecord,
   SessionUser,
   UserMutationAuditContext,
+  UserSessionCreateInput,
 } from "../domain/types.js";
 import {
   assignmentSnapshotDigest,
@@ -458,6 +459,168 @@ export class PrismaStore implements DataStore {
           role: membership.role,
         }
       : null;
+  }
+  async createUserSessionAndAudit(
+    organizationId: string,
+    input: UserSessionCreateInput,
+    audit: UserMutationAuditContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const [current] = await tx.$queryRaw<
+        Array<{
+          id: string;
+          passwordHash: string;
+          role: string;
+          databaseNow: Date;
+        }>
+      >`
+        SELECT actor."id",
+               actor."passwordHash",
+               membership."role"::text AS "role",
+               CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "Membership" membership
+        INNER JOIN "User" actor ON actor."id" = membership."userId"
+        WHERE membership."organizationId" = ${organizationId}
+          AND membership."userId" = ${audit.actorUserId}
+          AND actor."disabledAt" IS NULL
+        FOR UPDATE OF membership, actor`;
+      const expiresAt = new Date(input.expiresAt);
+      if (
+        !current ||
+        current.passwordHash !== input.expectedPasswordHash ||
+        current.role !== input.expectedRole ||
+        !Number.isFinite(expiresAt.getTime()) ||
+        expiresAt <= current.databaseNow
+      )
+        return { created: false as const, reason: "FORBIDDEN" as const };
+      await tx.userSession.deleteMany({
+        where: {
+          userId: current.id,
+          organizationId,
+          expiresAt: { lte: current.databaseNow },
+        },
+      });
+      const session = await tx.userSession.create({
+        data: {
+          organizationId,
+          userId: current.id,
+          tokenHash: input.tokenHash,
+          expiresAt,
+        },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId,
+          actorUserId: current.id,
+          actorType: "user",
+          action: "auth.login_succeeded",
+          entityType: "session",
+          entityId: session.id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: { expiresAt: input.expiresAt },
+        },
+      });
+      return {
+        created: true as const,
+        session: {
+          id: session.id,
+          organizationId: session.organizationId,
+          userId: session.userId,
+          tokenHash: session.tokenHash,
+          expiresAt: session.expiresAt.toISOString(),
+          ...(session.revokedAt
+            ? { revokedAt: session.revokedAt.toISOString() }
+            : {}),
+          createdAt: session.createdAt.toISOString(),
+        },
+      };
+    });
+  }
+  async findActiveUserSession(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+  ) {
+    const [current] = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        email: string;
+        name: string;
+        passwordHash: string;
+        role: SessionUser["role"];
+      }>
+    >`
+      SELECT actor."id",
+             actor."email",
+             actor."name",
+             actor."passwordHash",
+             membership."role"::text AS "role"
+      FROM "UserSession" session
+      INNER JOIN "Membership" membership
+        ON membership."organizationId" = session."organizationId"
+       AND membership."userId" = session."userId"
+      INNER JOIN "User" actor ON actor."id" = membership."userId"
+      WHERE session."tokenHash" = ${tokenHash}
+        AND session."userId" = ${userId}
+        AND session."organizationId" = ${organizationId}
+        AND session."revokedAt" IS NULL
+        AND session."expiresAt" > CURRENT_TIMESTAMP
+        AND actor."disabledAt" IS NULL
+    `;
+    return current
+      ? {
+          ...current,
+          organizationId,
+        }
+      : null;
+  }
+  async revokeUserSessionAndAudit(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+    audit: UserMutationAuditContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      if (audit.actorUserId !== userId)
+        return { revoked: false as const, reason: "NOT_FOUND" as const };
+      const [session] = await tx.$queryRaw<
+        Array<{ id: string; databaseNow: Date }>
+      >`
+        SELECT session."id", CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "UserSession" session
+        INNER JOIN "Membership" membership
+          ON membership."organizationId" = session."organizationId"
+         AND membership."userId" = session."userId"
+        INNER JOIN "User" actor ON actor."id" = membership."userId"
+        WHERE session."tokenHash" = ${tokenHash}
+          AND session."userId" = ${userId}
+          AND session."organizationId" = ${organizationId}
+          AND session."revokedAt" IS NULL
+          AND session."expiresAt" > CURRENT_TIMESTAMP
+          AND actor."disabledAt" IS NULL
+        FOR UPDATE OF session, membership, actor`;
+      if (!session)
+        return { revoked: false as const, reason: "NOT_FOUND" as const };
+      await tx.userSession.update({
+        where: { id: session.id },
+        data: { revokedAt: session.databaseNow },
+      });
+      await tx.auditEvent.create({
+        data: {
+          organizationId,
+          actorUserId: userId,
+          actorType: "user",
+          action: "auth.logout",
+          entityType: "session",
+          entityId: session.id,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: {},
+        },
+      });
+      return { revoked: true as const };
+    });
   }
   async listScreens(org: string) {
     return (

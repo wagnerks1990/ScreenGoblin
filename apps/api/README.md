@@ -21,7 +21,7 @@ The API listens on port `3000` by default. Generate independent JWT and pairing 
 
 All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the token's organization.
 
-- `POST /api/v1/auth/login`, `GET /api/v1/auth/me`
+- `POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`
 - `GET|POST|PATCH|DELETE /api/v1/screens`
 - `GET|POST|DELETE /api/v1/media`
 - `GET|POST|DELETE /api/v1/playlists`
@@ -67,6 +67,12 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
   recall, verified native erasure, or physical-device identity; those remain
   pilot/release gates.
 - Staff email login is case-insensitive. PostgreSQL enforces a functional unique index on `LOWER(email)`; its migration aborts without changing data when legacy case-only duplicates exist, and runtime lookup also fails closed if it encounters ambiguous identity data.
+- User access tokens expire after one hour and contain a random per-login session
+  identity. Only its SHA-256 hash is stored. Every authenticated request rechecks
+  that exact session's expiry/revocation plus the existing live user, membership,
+  organization, and role state. `POST /auth/logout` revokes only the presented
+  session and records the revocation atomically; other sessions remain active.
+  Expired rows for the same user and organization are pruned during later login.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
 - Media upload/scanning/transcoding and private object delivery are intentionally
   adapter boundaries. The prototype registers only pre-provisioned allowlisted

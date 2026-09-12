@@ -1,7 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
 import { ApiError } from "../utils/http.js";
-import { secureHashEquals } from "../utils/crypto.js";
+import { secureHashEquals, sha256 } from "../utils/crypto.js";
 
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
   app.decorate("authenticate", async (request) => {
@@ -14,10 +14,15 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
         "A valid access token is required",
       );
     }
-    const session = await app.store.findSessionUser(
-      request.user.sub,
-      request.user.organizationId,
-    );
+    const sessionId = request.user.sessionId;
+    const session =
+      typeof sessionId === "string"
+        ? await app.store.findActiveUserSession(
+            request.user.sub,
+            request.user.organizationId,
+            sha256(sessionId),
+          )
+        : null;
     if (!session || session.role !== request.user.role)
       throw new ApiError(
         401,

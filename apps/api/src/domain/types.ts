@@ -11,6 +11,29 @@ export interface SessionUser {
   role: Role;
   disabledAt?: string;
 }
+export interface UserSessionRecord {
+  id: string;
+  organizationId: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: string;
+  revokedAt?: string | undefined;
+  createdAt: string;
+}
+
+export interface UserSessionCreateInput {
+  tokenHash: string;
+  expiresAt: string;
+  expectedPasswordHash: string;
+  expectedRole: Role;
+}
+
+export type UserSessionCreateResult =
+  | { created: true; session: UserSessionRecord }
+  | { created: false; reason: "FORBIDDEN" };
+
+export type UserSessionRevokeResult =
+  { revoked: true } | { revoked: false; reason: "NOT_FOUND" };
 export interface ScreenRecord {
   id: string;
   organizationId: string;
@@ -443,6 +466,22 @@ export interface DataStore {
     userId: string,
     organizationId: string,
   ): Promise<SessionUser | null>;
+  createUserSessionAndAudit(
+    organizationId: string,
+    input: UserSessionCreateInput,
+    audit: UserMutationAuditContext,
+  ): Promise<UserSessionCreateResult>;
+  findActiveUserSession(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+  ): Promise<SessionUser | null>;
+  revokeUserSessionAndAudit(
+    userId: string,
+    organizationId: string,
+    tokenHash: string,
+    audit: UserMutationAuditContext,
+  ): Promise<UserSessionRevokeResult>;
   listScreens(orgId: string): Promise<ScreenRecord[]>;
   getScreen(orgId: string, id: string): Promise<ScreenRecord | null>;
   createScreen(

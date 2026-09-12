@@ -17,6 +17,11 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - Production must reject documented placeholders and checked-in JWT/pairing
   test secrets, as well as the public all-zero Ed25519 test seed. Test fixtures
   may remain usable only when `NODE_ENV` is explicitly non-production.
+- User JWTs are one-hour bearer envelopes around a random, per-login session
+  identity whose SHA-256 hash is persisted. Every authenticated request must
+  recheck that exact session's expiry/revocation and the live user, membership,
+  organization, and role. Logout revokes only the presented session and commits
+  that change with its audit event; never restore stateless acceptance.
 - Enrollment is a two-stage, transcript-bound challenge exchange. Android installation ID equals the server-derived SHA-256 SPKI key ID; an identical successful final claim is idempotently recoverable. A reported Keystore security level is not attestation, and a stolen pairing code remains first-winner authority.
 - Device revocation is an OWNER/ADMIN capability revalidated transactionally with the credential/screen change, outstanding-challenge invalidation, and one audit record. Revocation blocks online proof use but cannot recall or erase content from an offline player.
 - Targeted re-enrollment is a manual, zero-overlap recovery protocol for an

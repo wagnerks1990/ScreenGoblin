@@ -19,7 +19,8 @@ pairing with its required audit, transactional rollback when the audit cannot
 be written, composite tenant constraints for playlist items, schedules,
 targets, and pairing links, migration-safe cascading/detaching deletes,
 database unique constraints, safe-range `BIGINT` conversion, case-insensitive
-email lookup, and deterministic compatibility membership selection.
+email lookup, deterministic compatibility membership selection, and
+individually revocable user-session races, rollback, expiry, and tenant scope.
 
 Known contract gaps are intentionally not hidden by the harness:
 
