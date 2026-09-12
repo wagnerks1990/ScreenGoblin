@@ -41,6 +41,16 @@ avoid retaining test JWTs or pairing codes. Playwright and axe packages are
 exact-lockfile pinned; the hosted runner packages installed by Playwright remain
 a CI supply-chain limitation and are not release provenance.
 
+The container CI job also starts the complete production-mode Compose topology
+under a unique project name with runtime-generated secrets and Caddy local test
+TLS. It waits a bounded interval for health, exercises API, readiness isolation,
+Console, Player, browser response headers, and a disposable MinIO object through
+Caddy, and confirms that only Caddy publishes host ports while the backend
+network remains internal. Failure diagnostics are secret-redacted, retained for
+seven days, and the cleanup trap removes the disposable volumes on every exit.
+This runner smoke is integration evidence, not proof of production DNS, public
+TLS, firewall rules, capacity, backup quality, or device behavior.
+
 Gradle verifies the pinned 8.11.1 distribution ZIP against the checksum
 published for that exact distribution. The Android build also uses strict
 SHA-256 verification metadata for Maven, plugin, module-metadata, and transitive

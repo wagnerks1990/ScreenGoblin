@@ -6,6 +6,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Preserve CSP, framing, permissions, referrer, and content-type protections on
+  static entry points and immutable assets when location-specific cache headers
+  override Nginx header inheritance.
 - Enforce signed normal-playback and emergency deadlines with bounded wall-clock
   rechecks, resume checks, and an independent maximum-lifetime countdown so
   forward or backward device clock corrections fail closed.
@@ -169,6 +172,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Operations
 
+- Exercise the complete production-mode Compose stack in CI with ephemeral
+  secrets and local TLS. Bound startup, probe API/Console/Player/media routing
+  and browser headers through Caddy, verify private service ports and the
+  internal backend network, retain redacted failure evidence, and always remove
+  disposable containers and volumes.
 - Replace automatic demo seeding with an explicit one-time bootstrap profile that refuses placeholders and never resets an existing owner password or grants unexpected privileges.
 - Add contributor/agent invariants and AI safety context.
 - Add explicit NO-GO governance templates for data flows, the non-PII pilot profile, retention/deletion, required approvals, incident response, SLOs, release evidence, and supported-device validation.
