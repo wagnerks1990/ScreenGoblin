@@ -6,6 +6,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Ignore caller-supplied request IDs and generate server-owned UUIDs for error,
+  log, and immutable audit correlation so clients cannot create collisions.
 - Preserve CSP, framing, permissions, referrer, and content-type protections on
   static entry points and immutable assets when location-specific cache headers
   override Nginx header inheritance.

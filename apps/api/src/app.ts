@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -61,7 +62,8 @@ export async function buildApp(
       : false,
     bodyLimit: 2 * 1024 * 1024,
     trustProxy: options.trustProxy ?? false,
-    requestIdHeader: "x-request-id",
+    requestIdHeader: false,
+    genReqId: () => randomUUID(),
   });
   app.decorate("store", options.store ?? new PrismaStore());
   app.decorate(

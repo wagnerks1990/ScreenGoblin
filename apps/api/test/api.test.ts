@@ -181,14 +181,34 @@ describe("health and error contract", () => {
     expect(ready.body).toBe("");
     await redisApp.close();
   });
-  it("returns safe validation errors", async () => {
-    const r = await app.inject({
-      method: "POST",
-      url: "/api/v1/auth/login",
-      payload: { email: "bad", password: "x" },
-    });
-    expect(r.statusCode).toBe(400);
-    expect(r.json().error.code).toBe("VALIDATION_ERROR");
+  it("returns safe validation errors with server-owned request IDs", async () => {
+    const hostileRequestId = "attacker-chosen-duplicate";
+    const responses = await Promise.all(
+      Array.from({ length: 2 }, () =>
+        app.inject({
+          method: "POST",
+          url: "/api/v1/auth/login",
+          headers: { "x-request-id": hostileRequestId },
+          payload: { email: "bad", password: "x" },
+        }),
+      ),
+    );
+    const requestIds = responses.map(
+      (response) => response.json().requestId as string,
+    );
+
+    for (const response of responses) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("VALIDATION_ERROR");
+    }
+    expect(requestIds[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(requestIds[1]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(requestIds[0]).not.toBe(requestIds[1]);
+    expect(requestIds).not.toContain(hostileRequestId);
   });
 });
 
@@ -247,6 +267,46 @@ describe("authentication and organization RBAC", () => {
     });
     expect(r.statusCode).toBe(403);
   });
+  it("persists distinct server-owned IDs for audited mutations", async () => {
+    const hostileRequestId = "attacker-chosen-duplicate";
+    const createScreen = (name: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/screens",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-request-id": hostileRequestId,
+        },
+        payload: {
+          name,
+          location: "Lobby",
+          orientation: "landscape",
+          resolution: "1920x1080",
+          tags: [],
+        },
+      });
+
+    const responses = await Promise.all([
+      createScreen("Request ID one"),
+      createScreen("Request ID two"),
+    ]);
+    expect(responses.map((response) => response.statusCode)).toEqual([
+      201, 201,
+    ]);
+    const requestIds = store.audits
+      .filter((event) => event.action === "screen.created")
+      .map((event) => event.requestId);
+    expect(requestIds).toHaveLength(2);
+    expect(requestIds[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(requestIds[1]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(requestIds[0]).not.toBe(requestIds[1]);
+    expect(requestIds).not.toContain(hostileRequestId);
+  });
+
   it("does not expose a different organization's screen", async () => {
     await store.createScreen("org-b", {
       name: "Secret",
