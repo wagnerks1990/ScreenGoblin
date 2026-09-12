@@ -249,6 +249,44 @@ describe("ScreenGoblin console", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("contains unsupported shell and Content Studio affordances", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    const globalSearch = screen.getByRole("textbox", {
+      name: "Global search unavailable",
+    });
+    const workspaceOptions = screen.getByRole("button", {
+      name: "Workspace options unavailable",
+    });
+    const profileMenu = screen.getByRole("button", {
+      name: "Profile menu unavailable",
+    });
+    const createAnnouncement = screen.getByRole("button", {
+      name: "Create announcement unavailable",
+    });
+
+    expect(globalSearch).toHaveProperty("disabled", true);
+    expect(workspaceOptions).toHaveProperty("disabled", true);
+    expect(profileMenu).toHaveProperty("disabled", true);
+    expect(createAnnouncement).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: /notifications/i })).toBeNull();
+
+    await user.click(createAnnouncement);
+    expect(
+      screen.queryByRole("dialog", { name: "Create announcement" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open studio" })).toBeNull();
+    expect(screen.queryByLabelText("Quick start")).toBeNull();
+    expect(
+      screen.queryByText(/changes saved|announcement created/i),
+    ).toBeNull();
+  });
+
   it("filters the media vault and clears an empty state", async () => {
     const user = userEvent.setup();
     render(

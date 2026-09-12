@@ -17,13 +17,7 @@ import { activity } from "../data";
 import { Button, PageHeader, Panel, Preview, Status } from "../components";
 import { Link } from "react-router-dom";
 
-export function Dashboard({
-  onCreate,
-  canCreate,
-}: {
-  onCreate: () => void;
-  canCreate: boolean;
-}) {
+export function Dashboard() {
   const [screens, setScreens] = useState<ScreenSummary[]>([]);
   const [loadState, setLoadState] = useState<
     "loading" | "live" | "demo" | "error"
@@ -87,12 +81,8 @@ export function Dashboard({
         title="Screen operations overview"
         description="Here’s what’s happening across your screens."
         actions={
-          <Button
-            disabled={!canCreate}
-            onClick={onCreate}
-            icon={<Plus size={18} />}
-          >
-            Create announcement
+          <Button disabled icon={<Plus size={18} />}>
+            Create announcement unavailable
           </Button>
         }
       />
