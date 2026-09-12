@@ -46,6 +46,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Fixed
 
+- Build shared contracts before every API development, build, type-check, and
+  test lifecycle so clean workspaces cannot rely on stale generated output.
 - Make Console login and Player pairing keyboard-submittable, restore focus
   after accessible dialogs close, announce operational player states, and clear
   the complete Console session after unauthorized mutations.
