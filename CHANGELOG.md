@@ -6,6 +6,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Package release evidence with normalized tar metadata and a verified checksum.
+  For protected `v*` tag events only, bind that archive digest to GitHub OIDC
+  build provenance and verify the attestation before publishing the retained
+  artifact; manual workflow runs remain explicitly unsigned.
+
 - Derive heartbeat uptime from a monotonic elapsed-time clock so wall-clock
   rollback cannot create invalid negative telemetry, and reverify every cached
   asset during same-release manifest refreshes so evicted or corrupt future
