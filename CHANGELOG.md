@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Validate schedule absolute windows by parsed instants and canonicalize
+  accepted timestamps to millisecond UTC before persistence, immutable
+  assignment hashing, idempotency replay, and management responses. Startup
+  validation now identifies invalid media-origin entries only by position and
+  never echoes their raw URL, credentials, query, or private hostname.
+
 - Preserve an active owner for every tenant when internal identity lifecycle
   helpers disable a user, demote an owner, or remove an owner membership.
   PostgreSQL serializes competing owner changes per tenant; rejected changes

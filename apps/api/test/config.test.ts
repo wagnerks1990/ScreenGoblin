@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, parseMediaAllowedOrigins } from "../src/config.js";
 
 const base = {
   NODE_ENV: "production",
@@ -174,6 +174,33 @@ describe("production configuration", () => {
       loadConfig({ ...base, MEDIA_ALLOWED_ORIGINS: origin }),
     ).toThrow(/MEDIA_ALLOWED_ORIGINS/);
   });
+
+  it.each([
+    ["not-an-origin-SENTINEL_INVALID", "SENTINEL_INVALID"],
+    [
+      "https://SENTINEL_USER:SENTINEL_PASSWORD@media.example.test",
+      "SENTINEL_PASSWORD",
+    ],
+    ["https://media.example.test?access=SENTINEL_QUERY", "SENTINEL_QUERY"],
+    ["https://SENTINEL_PRIVATE.internal", "SENTINEL_PRIVATE"],
+  ])(
+    "does not echo rejected media-origin entry contents at startup",
+    (origin, sentinel) => {
+      let failure: unknown;
+      try {
+        loadConfig({ ...base, MEDIA_ALLOWED_ORIGINS: origin });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(String(failure)).toContain("MEDIA_ALLOWED_ORIGINS");
+      expect(String(failure)).toContain("entry 1");
+      expect(String(failure)).not.toContain(sentinel);
+      expect(() => parseMediaAllowedOrigins(origin, "production")).toThrow(
+        "entry 1",
+      );
+    },
+  );
 
   it("requires a Redis request-protection backend in production", () => {
     expect(() => loadConfig({ ...base, REDIS_URL: "" })).toThrow();

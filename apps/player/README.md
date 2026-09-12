@@ -74,7 +74,14 @@ npm test
 npm run build
 ```
 
-The API must expose the contract documented in [docs/PLAYER_PROTOCOL.md](docs/PLAYER_PROTOCOL.md). Serve asset URLs with CORS enabled. Asset `sizeBytes` and `checksumSha256` must describe the exact response bytes delivered to the native downloader. Publication, Android native download, and browser/PWA cache misses currently retain the 128 MiB per-asset ceiling; manifests retain the 512 MiB aggregate ceiling. Native `availableBytes` telemetry additionally reflects the device's safe writable capacity after reservations.
+The API must expose the contract documented in
+[`docs/DEVICE_PROTOCOL.md`](../../docs/DEVICE_PROTOCOL.md). Serve asset URLs
+with CORS enabled. Asset `sizeBytes` and `checksumSha256` must describe the exact
+response bytes delivered to the native downloader. Publication, Android native
+download, and browser/PWA cache misses currently retain the 128 MiB per-asset
+ceiling; manifests retain the 512 MiB aggregate ceiling. Native
+`availableBytes` telemetry additionally reflects the device's safe writable
+capacity after reservations.
 
 ## Android
 

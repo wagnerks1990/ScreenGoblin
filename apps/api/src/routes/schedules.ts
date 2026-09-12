@@ -5,17 +5,19 @@ import { ApiError, requireCapability, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
 import { validTimeZone } from "../utils/schedule.js";
 import {
+  canonicalUtcInstant,
   schedulePublicationKeyHash,
   schedulePublicationRequestDigest,
 } from "../releases/canonical.js";
 import { managementSchedule } from "./management-dto.js";
+const absoluteInstant = z.iso.datetime().transform(canonicalUtcInstant);
 const body = z
   .object({
     playlistId: opaqueId,
     name: z.string().trim().min(1).max(140),
     priority: z.enum(["normal", "campaign", "priority"]).default("normal"),
-    startsAt: z.iso.datetime(),
-    endsAt: z.iso.datetime().optional(),
+    startsAt: absoluteInstant,
+    endsAt: absoluteInstant.optional(),
     timezone: z
       .string()
       .min(1)
@@ -29,7 +31,7 @@ const body = z
     screenIds: z.array(opaqueId).min(1).max(1000),
   })
   .strict()
-  .refine((v) => !v.endsAt || v.endsAt > v.startsAt, {
+  .refine((v) => !v.endsAt || Date.parse(v.endsAt) > Date.parse(v.startsAt), {
     message: "endsAt must be after startsAt",
     path: ["endsAt"],
   })

@@ -97,6 +97,9 @@ export interface CanonicalSchedulePublicationRequest {
   screenIds: string[];
 }
 
+export const canonicalUtcInstant = (value: string): string =>
+  new Date(value).toISOString();
+
 export function canonicalSchedulePublicationRequest(
   input: SchedulePublicationInput,
 ): CanonicalSchedulePublicationRequest {
@@ -106,8 +109,8 @@ export function canonicalSchedulePublicationRequest(
     playlistId: input.playlistId,
     name: input.name,
     priority: input.priority,
-    startsAt: new Date(input.startsAt).toISOString(),
-    ...(input.endsAt ? { endsAt: new Date(input.endsAt).toISOString() } : {}),
+    startsAt: canonicalUtcInstant(input.startsAt),
+    ...(input.endsAt ? { endsAt: canonicalUtcInstant(input.endsAt) } : {}),
     timezone: input.timezone,
     daysOfWeek: [...new Set(input.daysOfWeek)].sort((a, b) => a - b),
     ...(input.dailyStartMinutes !== undefined
@@ -187,8 +190,10 @@ export function canonicalAssignmentSnapshot(input: {
     schedule: {
       name: input.schedule.name,
       priority: input.schedule.priority,
-      startsAt: input.schedule.startsAt,
-      ...(input.schedule.endsAt ? { endsAt: input.schedule.endsAt } : {}),
+      startsAt: canonicalUtcInstant(input.schedule.startsAt),
+      ...(input.schedule.endsAt
+        ? { endsAt: canonicalUtcInstant(input.schedule.endsAt) }
+        : {}),
       timezone: input.schedule.timezone,
       daysOfWeek: [...new Set(input.schedule.daysOfWeek)].sort((a, b) => a - b),
       ...(input.schedule.dailyStartMinutes !== undefined

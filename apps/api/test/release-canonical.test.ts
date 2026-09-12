@@ -121,10 +121,19 @@ describe("canonical release snapshots", () => {
         canonicalAssignmentSnapshot({
           ...base,
           screenIds: ["screen-a", "screen-b", "screen-a"],
-          schedule: { ...base.schedule, daysOfWeek: [1, 5, 1] },
+          schedule: {
+            ...base.schedule,
+            startsAt: "2026-09-12T12:00:00Z",
+            endsAt: "2026-09-12T20:00:00.0000Z",
+            daysOfWeek: [1, 5, 1],
+          },
         }),
       ),
     );
+    expect(canonicalAssignmentSnapshot(base).schedule).toMatchObject({
+      startsAt: "2026-09-12T12:00:00.000Z",
+      endsAt: "2026-09-12T20:00:00.000Z",
+    });
     expect(
       assignmentSnapshotDigest(
         canonicalAssignmentSnapshot({

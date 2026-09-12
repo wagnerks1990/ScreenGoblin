@@ -74,12 +74,13 @@ export function parseMediaAllowedOrigins(
   if (environment === "production" && entries.length === 0)
     throw new Error("must contain at least one explicit HTTPS origin");
 
-  const origins = entries.map((entry) => {
+  const origins = entries.map((entry, index) => {
+    const label = `entry ${index + 1}`;
     let parsed: URL;
     try {
       parsed = new URL(entry);
     } catch {
-      throw new Error(`${JSON.stringify(entry)} is not a valid origin`);
+      throw new Error(`${label} is not a valid origin`);
     }
     if (
       parsed.username ||
@@ -89,7 +90,7 @@ export function parseMediaAllowedOrigins(
       parsed.hash
     )
       throw new Error(
-        `${JSON.stringify(entry)} must be an origin without credentials, path, query, or fragment`,
+        `${label} must be an origin without credentials, path, query, or fragment`,
       );
     const localHttp =
       environment !== "production" &&
@@ -97,7 +98,7 @@ export function parseMediaAllowedOrigins(
       loopbackHostname(parsed.hostname);
     if (parsed.protocol !== "https:" && !localHttp)
       throw new Error(
-        `${JSON.stringify(entry)} must use HTTPS (HTTP is limited to loopback development)`,
+        `${label} must use HTTPS (HTTP is limited to loopback development)`,
       );
     const ipHostname = parsed.hostname.replace(/^\[|\]$/g, "");
     if (
@@ -108,7 +109,7 @@ export function parseMediaAllowedOrigins(
         isIP(ipHostname) !== 0)
     )
       throw new Error(
-        `${JSON.stringify(entry)} must use a non-local DNS hostname in production`,
+        `${label} must use a non-local DNS hostname in production`,
       );
     return parsed.origin;
   });
