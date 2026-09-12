@@ -1730,6 +1730,46 @@ td b {
   color: #b5c5d2;
   margin-bottom: 18px;
 }
+.containment-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--muted);
+}
+.containment-notice svg {
+  flex: 0 0 auto;
+}
+.containment-notice span {
+  display: grid;
+  gap: 0.2rem;
+}
+.containment-notice b {
+  color: var(--text);
+}
+.fleet-preview-unavailable {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  color: var(--muted);
+}
+.fleet-preview-unavailable span {
+  display: grid;
+  gap: 0.2rem;
+}
+.fleet-preview-unavailable b {
+  color: var(--text);
+}
+.emergency-contained {
+  grid-template-columns: minmax(0, 1fr);
+}
 .vault-boundary > svg {
   flex: 0 0 auto;
   color: var(--green);
