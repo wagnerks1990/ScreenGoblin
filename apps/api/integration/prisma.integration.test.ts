@@ -51,6 +51,26 @@ const createUser = (email: string) =>
     },
   });
 
+const createMember = async (
+  organizationId: string,
+  role: "OWNER" | "ADMIN" | "PUBLISHER" | "VIEWER",
+  label: string,
+  disabled = false,
+) => {
+  const user = await prisma.user.create({
+    data: {
+      email: `${label}-${randomUUID()}@example.test`,
+      name: `Integration ${role}`,
+      passwordHash: "integration-test-hash",
+      ...(disabled ? { disabledAt: new Date() } : {}),
+    },
+  });
+  await prisma.membership.create({
+    data: { organizationId, userId: user.id, role },
+  });
+  return user;
+};
+
 const pairProofDevice = async (label: string, byte: number) => {
   const organization = await createOrganization(label);
   const pairing = await store.createPairing(
@@ -291,6 +311,360 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(store.deletePlaylist(alpha.id, betaPlaylist.id)).resolves.toBe(
       "NOT_FOUND",
     );
+  });
+
+  it("rolls back ordinary content mutations when their required audit insert fails", async () => {
+    const organization = await createOrganization("ordinary-audit-rollback");
+    const actor = await createMember(organization.id, "ADMIN", "rollback");
+    const screen = await store.createScreen(organization.id, {
+      name: "Original screen",
+      location: "Lobby",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia(organization.id, {
+      name: "Existing media",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/existing.png",
+      checksumSha256: "8".repeat(64),
+      sizeBytes: 100,
+    });
+    const playlist = await store.createPlaylist(organization.id, {
+      name: "Existing playlist",
+      description: "Rollback fixture",
+      items: [],
+    });
+    const audit = {
+      actorUserId: actor.id,
+      ipAddress: "127.0.0.1",
+      requestId: "ordinary-audit-rollback",
+    };
+
+    await prisma.$executeRawUnsafe(
+      "ALTER TABLE \"AuditEvent\" ADD CONSTRAINT \"integration_reject_ordinary_audits\" CHECK (\"action\" NOT IN ('screen.created', 'screen.updated', 'media.created', 'media.deleted', 'playlist.created', 'playlist.deleted'))",
+    );
+    try {
+      await expect(
+        store.createScreenAndAudit(
+          organization.id,
+          {
+            name: "Rolled-back screen",
+            location: "Hall",
+            orientation: "portrait",
+            resolution: "1080x1920",
+            tags: ["rollback"],
+          },
+          audit,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        store.updateScreenAndAudit(
+          organization.id,
+          screen.id,
+          { name: "Rolled-back update" },
+          audit,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        store.createMediaAndAudit(
+          organization.id,
+          {
+            name: "Rolled-back media",
+            kind: "image",
+            mimeType: "image/png",
+            url: "https://media.example.test/rolled-back.png",
+            checksumSha256: "9".repeat(64),
+            sizeBytes: 200,
+          },
+          audit,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        store.deleteMediaAndAudit(organization.id, media.id, audit),
+      ).rejects.toThrow();
+      await expect(
+        store.createPlaylistAndAudit(
+          organization.id,
+          {
+            name: "Rolled-back playlist",
+            description: "Must not persist",
+            items: [],
+          },
+          audit,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        store.deletePlaylistAndAudit(organization.id, playlist.id, audit),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_ordinary_audits"',
+      );
+    }
+
+    await expect(
+      prisma.screen.findUniqueOrThrow({ where: { id: screen.id } }),
+    ).resolves.toMatchObject({ name: "Original screen" });
+    expect(
+      await prisma.screen.count({ where: { name: "Rolled-back screen" } }),
+    ).toBe(0);
+    await expect(
+      prisma.mediaAsset.findUnique({ where: { id: media.id } }),
+    ).resolves.not.toBeNull();
+    expect(
+      await prisma.mediaAsset.count({ where: { name: "Rolled-back media" } }),
+    ).toBe(0);
+    await expect(
+      prisma.playlist.findUnique({ where: { id: playlist.id } }),
+    ).resolves.not.toBeNull();
+    expect(
+      await prisma.playlist.count({ where: { name: "Rolled-back playlist" } }),
+    ).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
+  });
+
+  it("revalidates ordinary mutation actors and playlist assets inside the transaction", async () => {
+    const [organization, otherOrganization] = await Promise.all([
+      createOrganization("ordinary-revalidation"),
+      createOrganization("ordinary-revalidation-other"),
+    ]);
+    const [viewer, publisher, disabledAdmin, otherAdmin] = await Promise.all([
+      createMember(organization.id, "VIEWER", "viewer"),
+      createMember(organization.id, "PUBLISHER", "publisher"),
+      createMember(organization.id, "ADMIN", "disabled-admin", true),
+      createMember(otherOrganization.id, "ADMIN", "other-admin"),
+    ]);
+    const screenInput = {
+      name: "Denied screen",
+      location: "Lobby",
+      orientation: "landscape" as const,
+      resolution: "1920x1080",
+      tags: [],
+    };
+    const mediaInput = {
+      name: "Denied media",
+      kind: "image" as const,
+      mimeType: "image/png",
+      url: "https://media.example.test/denied.png",
+      checksumSha256: "a".repeat(64),
+      sizeBytes: 100,
+    };
+
+    await expect(
+      store.createScreenAndAudit(organization.id, screenInput, {
+        actorUserId: publisher.id,
+      }),
+    ).resolves.toEqual({ created: false, reason: "FORBIDDEN" });
+    await expect(
+      store.createMediaAndAudit(organization.id, mediaInput, {
+        actorUserId: viewer.id,
+      }),
+    ).resolves.toEqual({ created: false, reason: "FORBIDDEN" });
+    await expect(
+      store.createPlaylistAndAudit(
+        organization.id,
+        { name: "Denied playlist", description: "", items: [] },
+        { actorUserId: disabledAdmin.id },
+      ),
+    ).resolves.toEqual({ created: false, reason: "FORBIDDEN" });
+    await expect(
+      store.createMediaAndAudit(organization.id, mediaInput, {
+        actorUserId: otherAdmin.id,
+      }),
+    ).resolves.toEqual({ created: false, reason: "FORBIDDEN" });
+    await expect(
+      store.createPlaylistAndAudit(
+        organization.id,
+        {
+          name: "Invalid asset playlist",
+          description: "",
+          items: [
+            {
+              id: "ignored",
+              assetId: randomUUID(),
+              position: 0,
+              durationSeconds: 10,
+            },
+          ],
+        },
+        { actorUserId: publisher.id },
+      ),
+    ).resolves.toEqual({ created: false, reason: "INVALID_ASSET" });
+
+    expect(await prisma.screen.count()).toBe(0);
+    expect(await prisma.mediaAsset.count()).toBe(0);
+    expect(await prisma.playlist.count()).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
+  });
+
+  it("writes the established ordinary mutation audit actions and metadata", async () => {
+    const organization = await createOrganization("ordinary-audit-shape");
+    const actor = await createMember(organization.id, "ADMIN", "audit-shape");
+    const audit = (requestId: string) => ({
+      actorUserId: actor.id,
+      ipAddress: "127.0.0.1",
+      requestId,
+    });
+
+    const createdScreen = await store.createScreenAndAudit(
+      organization.id,
+      {
+        name: "Audited screen",
+        location: "Lobby",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      },
+      audit("screen-create"),
+    );
+    if (!createdScreen.created) throw new Error("screen was not created");
+    await expect(
+      store.updateScreenAndAudit(
+        organization.id,
+        createdScreen.value.id,
+        { location: "Library" },
+        audit("screen-update"),
+      ),
+    ).resolves.toMatchObject({ updated: true });
+
+    const createdMedia = await store.createMediaAndAudit(
+      organization.id,
+      {
+        name: "Audited media",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/audited.png",
+        checksumSha256: "b".repeat(64),
+        sizeBytes: 100,
+      },
+      audit("media-create"),
+    );
+    if (!createdMedia.created) throw new Error("media was not created");
+    const createdPlaylist = await store.createPlaylistAndAudit(
+      organization.id,
+      {
+        name: "Audited playlist",
+        description: "Audit fixture",
+        items: [
+          {
+            id: "ignored-one",
+            assetId: createdMedia.value.id,
+            position: 0,
+            durationSeconds: 10,
+          },
+          {
+            id: "ignored-two",
+            assetId: createdMedia.value.id,
+            position: 1,
+            durationSeconds: 20,
+          },
+        ],
+      },
+      audit("playlist-create"),
+    );
+    if (!createdPlaylist.created) throw new Error("playlist was not created");
+
+    await expect(
+      store.deleteMediaAndAudit(
+        organization.id,
+        createdMedia.value.id,
+        audit("media-delete-in-use"),
+      ),
+    ).resolves.toEqual({ deleted: false, reason: "IN_USE" });
+    await expect(
+      store.deletePlaylistAndAudit(
+        organization.id,
+        createdPlaylist.value.id,
+        audit("playlist-delete"),
+      ),
+    ).resolves.toEqual({ deleted: true });
+    await expect(
+      store.deleteMediaAndAudit(
+        organization.id,
+        createdMedia.value.id,
+        audit("media-delete"),
+      ),
+    ).resolves.toEqual({ deleted: true });
+
+    await expect(
+      prisma.auditEvent.findMany({
+        where: { organizationId: organization.id },
+        orderBy: { requestId: "asc" },
+        select: {
+          actorUserId: true,
+          actorType: true,
+          action: true,
+          entityType: true,
+          entityId: true,
+          ipAddress: true,
+          requestId: true,
+          metadata: true,
+        },
+      }),
+    ).resolves.toEqual([
+      {
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "media.created",
+        entityType: "media",
+        entityId: createdMedia.value.id,
+        ipAddress: "127.0.0.1",
+        requestId: "media-create",
+        metadata: { name: "Audited media" },
+      },
+      {
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "media.deleted",
+        entityType: "media",
+        entityId: createdMedia.value.id,
+        ipAddress: "127.0.0.1",
+        requestId: "media-delete",
+        metadata: {},
+      },
+      {
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "playlist.created",
+        entityType: "playlist",
+        entityId: createdPlaylist.value.id,
+        ipAddress: "127.0.0.1",
+        requestId: "playlist-create",
+        metadata: { itemCount: 2 },
+      },
+      {
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "playlist.deleted",
+        entityType: "playlist",
+        entityId: createdPlaylist.value.id,
+        ipAddress: "127.0.0.1",
+        requestId: "playlist-delete",
+        metadata: {},
+      },
+      {
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "screen.created",
+        entityType: "screen",
+        entityId: createdScreen.value.id,
+        ipAddress: "127.0.0.1",
+        requestId: "screen-create",
+        metadata: { name: "Audited screen" },
+      },
+      {
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "screen.updated",
+        entityType: "screen",
+        entityId: createdScreen.value.id,
+        ipAddress: "127.0.0.1",
+        requestId: "screen-update",
+        metadata: {},
+      },
+    ]);
   });
 
   it("enforces composite tenant ownership for nested relations and preserves safe delete semantics", async () => {
@@ -1475,6 +1849,16 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(store.deleteMedia(organization.id, media.id)).resolves.toBe(
       "IN_USE",
     );
+    await expect(
+      store.deletePlaylistAndAudit(organization.id, playlist.id, {
+        actorUserId: actor.id,
+      }),
+    ).resolves.toEqual({ deleted: false, reason: "IN_USE" });
+    await expect(
+      store.deleteMediaAndAudit(organization.id, media.id, {
+        actorUserId: actor.id,
+      }),
+    ).resolves.toEqual({ deleted: false, reason: "IN_USE" });
 
     await expect(
       prisma.screen.delete({ where: { id: screen.id } }),
@@ -1506,6 +1890,24 @@ describe("PrismaStore PostgreSQL integration", () => {
         where: { id: publication.release.id },
       }),
     ).toBe(1);
+    await expect(
+      store.deletePlaylistAndAudit(organization.id, playlist.id, {
+        actorUserId: actor.id,
+      }),
+    ).resolves.toEqual({ deleted: false, reason: "IN_USE" });
+    await expect(
+      store.deleteMediaAndAudit(organization.id, media.id, {
+        actorUserId: actor.id,
+      }),
+    ).resolves.toEqual({ deleted: false, reason: "IN_USE" });
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          organizationId: organization.id,
+          action: { in: ["media.deleted", "playlist.deleted"] },
+        },
+      }),
+    ).toBe(0);
     expect(
       await prisma.releaseAssignment.count({
         where: { scheduleId: publication.schedule.id },

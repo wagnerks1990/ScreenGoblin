@@ -52,48 +52,58 @@ export const playlistRoutes: FastifyPluginAsync = async (app) => {
           "INVALID_ASSET",
           "Playlist contains an unknown asset",
         );
-    const x = await app.store.createPlaylist(request.user.organizationId, {
-      ...input,
-      items: input.items.map((i) => ({ id: "", ...i })),
-    });
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "playlist.created",
-      entityType: "playlist",
-      entityId: x.id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: { itemCount: x.items.length },
-    });
-    return reply.code(201).send(x);
+    const result = await app.store.createPlaylistAndAudit(
+      request.user.organizationId,
+      {
+        ...input,
+        items: input.items.map((i) => ({ id: "", ...i })),
+      },
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
+    );
+    if (!result.created && result.reason === "FORBIDDEN")
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to perform this action",
+      );
+    if (!result.created)
+      throw new ApiError(
+        422,
+        "INVALID_ASSET",
+        "Playlist contains an unknown asset",
+      );
+    return reply.code(201).send(result.value);
   });
   app.delete("/playlists/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
     const { id } = params.parse(request.params);
-    const result = await app.store.deletePlaylist(
+    const result = await app.store.deletePlaylistAndAudit(
       request.user.organizationId,
       id,
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
     );
-    if (result === "NOT_FOUND") return sendNotFound(reply);
-    if (result === "IN_USE")
+    if (!result.deleted && result.reason === "FORBIDDEN")
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to perform this action",
+      );
+    if (!result.deleted && result.reason === "NOT_FOUND")
+      return sendNotFound(reply);
+    if (!result.deleted && result.reason === "IN_USE")
       throw new ApiError(
         409,
         "RESOURCE_IN_USE",
         "A published release or schedule still references this playlist",
       );
-    await app.store.audit({
-      organizationId: request.user.organizationId,
-      actorUserId: request.user.sub,
-      actorType: "user",
-      action: "playlist.deleted",
-      entityType: "playlist",
-      entityId: id,
-      ipAddress: request.ip,
-      requestId: request.id,
-      metadata: {},
-    });
     return reply.code(204).send();
   });
 };

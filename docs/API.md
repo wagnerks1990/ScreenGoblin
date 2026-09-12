@@ -30,6 +30,13 @@ Shared request and response shapes are defined in `packages/contracts`. The Open
 
 Every user resource query must include the authenticated organization boundary. A caller-provided organization ID is never sufficient authorization. Devices are restricted to their own screen and current organization. Object keys must be server-generated and tenant-prefixed. Emergency activation requires a separately audited permission; district-wide two-person approval is a production requirement.
 
+Screen creation/update and media/playlist creation/deletion revalidate the
+actor's active membership and allowed role inside the database transaction that
+performs the mutation and appends its audit event. Screens require `OWNER` or
+`ADMIN`; media and playlists also allow `PUBLISHER`. A concurrent disablement,
+demotion, cross-organization identifier, resource-in-use conflict, or audit
+write failure leaves both resource state and audit history unchanged.
+
 Device-credential revocation and targeted re-enrollment require their exact
 screen credential capabilities. The compatibility role adapter grants them only
 to `OWNER` and `ADMIN`. The route and transactional store both revalidate the

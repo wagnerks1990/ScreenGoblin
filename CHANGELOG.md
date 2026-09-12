@@ -6,6 +6,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Make screen creation/update and media/playlist creation/deletion atomic with
+  their required audit events. Revalidate the actor's active organization role
+  inside the same transaction so demotion, disablement, cross-tenant IDs, and
+  audit-write failures cannot leave unaudited management mutations.
 - Add a real Chromium Console gate against an isolated PostgreSQL-backed API;
   verify owner login, live fleet data, pairing, explicit disconnect, and
   fail-closed session invalidation without demonstration-record substitution.
