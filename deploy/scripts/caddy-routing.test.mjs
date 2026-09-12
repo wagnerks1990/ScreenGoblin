@@ -19,3 +19,13 @@ test("public readiness is denied by an ordered terminal handler", () => {
   assert.ok(readiness < api);
   assert.ok(api < fallback);
 });
+
+test("media is never proxied directly to private object storage", () => {
+  assert.doesNotMatch(caddyfile, /handle_path \/media\//);
+  assert.match(
+    caddyfile,
+    /@legacyMedia path \/media \/media\/\*\n  handle @legacyMedia \{\n    respond 404\n  \}/,
+  );
+  assert.doesNotMatch(caddyfile, /reverse_proxy minio:9000/);
+  assert.match(caddyfile, /@api path \/api \/api\/\*/);
+});

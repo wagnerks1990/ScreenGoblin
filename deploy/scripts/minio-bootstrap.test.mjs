@@ -56,10 +56,7 @@ test("renders the tenant bucket policy without utilities absent from the mc imag
     assert.ok(!rendered.includes("__BUCKET__"));
     assert.deepEqual(
       JSON.parse(rendered).Statement.map((entry) => entry.Resource[0]),
-      [
-        "arn:aws:s3:::screengoblin-test-media",
-        "arn:aws:s3:::screengoblin-test-media/*",
-      ],
+      ["arn:aws:s3:::screengoblin-test-media/*"],
     );
 
     const commands = readFileSync(commandLog, "utf8");
@@ -69,6 +66,7 @@ test("renders the tenant bucket policy without utilities absent from the mc imag
       commands,
       /anonymous set download local\/screengoblin-test-media/,
     );
+    assert.doesNotMatch(commands, /anonymous set download/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

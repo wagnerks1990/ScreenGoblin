@@ -2,7 +2,15 @@ import "dotenv/config";
 import { buildApp } from "./app.js";
 import { loadConfig, parseMediaAllowedOrigins } from "./config.js";
 import { Redis } from "ioredis";
+import { S3MediaObjectStore } from "./media/delivery.js";
 const config = loadConfig();
+const mediaObjectStore = new S3MediaObjectStore(
+  config.S3_ENDPOINT,
+  config.S3_REGION,
+  config.S3_BUCKET,
+  config.S3_ACCESS_KEY_ID,
+  config.S3_SIGNING_KEY,
+);
 const redis = config.REDIS_URL
   ? new Redis(config.REDIS_URL, {
       lazyConnect: true,
@@ -27,6 +35,8 @@ const app = await buildApp({
   jwtSecret: config.JWT_SECRET,
   manifestSigningPrivateKey: config.MANIFEST_SIGNING_PRIVATE_KEY,
   pairingCodePepper: config.PAIRING_CODE_PEPPER,
+  mediaDeliverySecret: config.MEDIA_DELIVERY_SECRET,
+  mediaObjectStore,
   deviceAuthMode: config.DEVICE_AUTH_MODE,
   emergencyPublishingEnabled: config.EMERGENCY_FEATURE_ENABLED,
   corsOrigins: config.CORS_ORIGINS.split(",")

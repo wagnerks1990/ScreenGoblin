@@ -52,6 +52,7 @@ export function canonicalReleaseSnapshot(
         kind: asset.kind,
         mimeType: asset.mimeType,
         url: asset.url,
+        ...(asset.storageKey ? { storageKey: asset.storageKey } : {}),
         checksumSha256: asset.checksumSha256.toLowerCase(),
         sizeBytes: asset.sizeBytes,
         createdAt: asset.createdAt,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { mediaStorageKey } from "../src/media/delivery.js";
 import { PrismaStore } from "../src/store/prisma.js";
 import { LOGIN_FAILURE_MAX_RECORDS } from "../src/domain/types.js";
 import { opaqueSecurityEventKey } from "../src/utils/rate-limit.js";
@@ -221,6 +222,14 @@ describe("PrismaStore PostgreSQL integration", () => {
       checksumSha256: "b".repeat(64),
       sizeBytes: 2_048,
     });
+    expect(alphaMedia.storageKey).toBe(
+      mediaStorageKey(alpha.id, alphaMedia.id, alphaMedia.checksumSha256),
+    );
+    expect(betaMedia.storageKey).toBe(
+      mediaStorageKey(beta.id, betaMedia.id, betaMedia.checksumSha256),
+    );
+    expect(alphaMedia.storageKey).not.toBe(betaMedia.storageKey);
+
     const alphaPlaylist = await store.createPlaylist(alpha.id, {
       name: "Alpha playlist",
       description: "Tenant-isolation fixture",
@@ -803,10 +812,14 @@ describe("PrismaStore PostgreSQL integration", () => {
       createOrganization("constraints-alpha"),
       createOrganization("constraints-beta"),
     ]);
+    const alphaMediaId = randomUUID();
+    const betaMediaId = randomUUID();
     const [alphaMedia, betaMedia] = await Promise.all([
       prisma.mediaAsset.create({
         data: {
+          id: alphaMediaId,
           organizationId: alpha.id,
+          storageKey: mediaStorageKey(alpha.id, alphaMediaId, "d".repeat(64)),
           name: "Alpha asset",
           kind: "IMAGE",
           mimeType: "image/png",
@@ -817,7 +830,9 @@ describe("PrismaStore PostgreSQL integration", () => {
       }),
       prisma.mediaAsset.create({
         data: {
+          id: betaMediaId,
           organizationId: beta.id,
+          storageKey: mediaStorageKey(beta.id, betaMediaId, "e".repeat(64)),
           name: "Beta asset",
           kind: "IMAGE",
           mimeType: "image/png",
@@ -2731,6 +2746,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           assetKind: "IMAGE",
           assetMimeType: "image/png",
           assetUrl: betaMedia.url,
+          assetStorageKey: betaMedia.storageKey!,
           assetChecksumSha256: betaMedia.checksumSha256,
           assetSizeBytes: 100n,
           assetCreatedAt: new Date(betaMedia.createdAt),
@@ -2910,6 +2926,44 @@ describe("PrismaStore PostgreSQL integration", () => {
         new Date().toISOString(),
       ),
     ).resolves.toHaveLength(1);
+  });
+
+  it("private-media migration refuses legacy URL metadata without verified objects", async () => {
+    const organization = await createOrganization("private-media-preflight");
+    await prisma.mediaAsset.create({
+      data: {
+        organizationId: organization.id,
+        name: "Unverified legacy object",
+        kind: "IMAGE",
+        mimeType: "image/png",
+        url: "https://legacy.example.test/unverified.png",
+        storageKey:
+          "organizations/private-media-preflight/assets/unverified/" +
+          "a".repeat(64),
+        checksumSha256: "a".repeat(64),
+        sizeBytes: 1n,
+      },
+    });
+    const migration = await readFile(
+      new URL(
+        "../prisma/migrations/20260912141000_private_media_delivery/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const preflight = migration.match(
+      /DO \$private_media_preflight\$[\s\S]*?\$private_media_preflight\$;/,
+    )?.[0];
+    expect(preflight).toBeTruthy();
+    expect(migration).not.toMatch(
+      /UPDATE\s+"(?:MediaAsset|FrozenReleaseItem)"/i,
+    );
+
+    await expect(prisma.$executeRawUnsafe(preflight!)).rejects.toMatchObject({
+      code: "P2010",
+      meta: expect.objectContaining({ code: "P0001" }),
+    });
+    expect(await prisma.mediaAsset.count()).toBe(1);
   });
 
   it("release migration preflight refuses populated legacy schedules", async () => {

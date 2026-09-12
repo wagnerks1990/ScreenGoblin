@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { CAPABILITIES } from "@screengoblin/contracts";
+import { mediaStorageKey } from "../media/delivery.js";
 import type {
   ActiveOrdinaryRelease,
   AuditRecord,
@@ -120,6 +122,7 @@ const mediaDto = (x: Record<string, unknown>): MediaRecord => ({
   kind: enumLower<MediaRecord["kind"]>(String(x.kind)),
   mimeType: String(x.mimeType),
   url: String(x.url),
+  storageKey: String(x.storageKey),
   checksumSha256: String(x.checksumSha256),
   sizeBytes: safeInteger(x.sizeBytes, "sizeBytes"),
   ...(x.durationSeconds != null
@@ -198,6 +201,7 @@ const publishedReleaseDto = (
       kind: enumLower<MediaRecord["kind"]>(String(item.assetKind)),
       mimeType: String(item.assetMimeType),
       url: String(item.assetUrl),
+      storageKey: String(item.assetStorageKey),
       checksumSha256: String(item.assetChecksumSha256),
       sizeBytes: safeInteger(item.assetSizeBytes, "assetSizeBytes"),
       createdAt: iso(item.assetCreatedAt as Date)!,
@@ -2331,10 +2335,13 @@ export class PrismaStore implements DataStore {
       "id" | "organizationId" | "createdAt" | "updatedAt"
     >,
   ) {
+    const assetId = randomUUID();
     return mediaDto(
       await this.prisma.mediaAsset.create({
         data: {
+          id: assetId,
           organizationId: org,
+          storageKey: mediaStorageKey(org, assetId, data.checksumSha256),
           name: data.name,
           kind: data.kind.toUpperCase() as
             "IMAGE" | "VIDEO" | "WEB" | "TEMPLATE",
@@ -2360,9 +2367,12 @@ export class PrismaStore implements DataStore {
       const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
       if (role !== "OWNER" && role !== "ADMIN" && role !== "PUBLISHER")
         return { created: false as const, reason: "FORBIDDEN" as const };
+      const assetId = randomUUID();
       const media = await tx.mediaAsset.create({
         data: {
+          id: assetId,
           organizationId: org,
+          storageKey: mediaStorageKey(org, assetId, data.checksumSha256),
           name: data.name,
           kind: data.kind.toUpperCase() as
             "IMAGE" | "VIDEO" | "WEB" | "TEMPLATE",
@@ -2764,6 +2774,13 @@ export class PrismaStore implements DataStore {
                         "IMAGE" | "VIDEO" | "WEB" | "TEMPLATE",
                       assetMimeType: item.asset.mimeType,
                       assetUrl: item.asset.url,
+                      assetStorageKey:
+                        item.asset.storageKey ??
+                        mediaStorageKey(
+                          org,
+                          item.asset.id,
+                          item.asset.checksumSha256,
+                        ),
                       assetChecksumSha256: item.asset.checksumSha256,
                       assetSizeBytes: BigInt(item.asset.sizeBytes),
                       assetCreatedAt: new Date(item.asset.createdAt),

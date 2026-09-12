@@ -94,3 +94,35 @@ Automated re-enrollment route tests establish protocol behavior only; they do
 not close the attestation, physical custody/fingerprint verification, Keystore or
 media erasure, offline recall, or rotation gates. Track accepted risk with an
 owner and review date.
+
+## Private media delivery
+
+The object bucket is private, and the public proxy never routes directly to
+MinIO. Proof-authenticated manifests carry short-lived bearer GET capabilities
+bound to the active credential key ID, device, tenant, immutable asset,
+server-derived storage key, digest, size, and manifest lease. On each delivery,
+the API rechecks that exact credential key remains active and reads only the
+signed key from its fixed S3 endpoint; it never fetches a stored arbitrary URL.
+Media delivery does not require another per-media proof signature: a captured
+capability is replayable until its bounded lease expires. Capability query
+values are redacted from structured request logs.
+
+The schema upgrade deliberately aborts when legacy media or frozen release rows
+exist: their public URL metadata cannot prove that bytes are present at the new
+private key. Before retrying, an operator must use a separately reviewed
+migration runbook to copy every object into its derived tenant/asset/digest key,
+verify the complete SHA-256 and byte size against metadata, preserve immutable
+release snapshots, and commit metadata only after all verification succeeds.
+No automatic URL-to-key backfill is permitted.
+
+CodeQL's `js/insufficient-password-hash` query mistakes the S3 signing key for
+a user password because AWS Signature Version 4 intentionally derives request
+keys with HMAC-SHA256. The SARIF false-positive acceptance matches only that query's exact message and
+source region, and only while every constructor call site and the SigV4
+implementation retain their reviewed Git object hashes. A changed call site,
+implementation, finding location, or message becomes blocking. This acceptance
+does not exclude dependencies, generated code, paths, or any other finding.
+
+Browser upload, sniffing, scanning, decoding, and transcoding remain disabled
+and are not closed by this delivery control. A private quarantine and
+safe-derivative pipeline remains a pre-production gate.

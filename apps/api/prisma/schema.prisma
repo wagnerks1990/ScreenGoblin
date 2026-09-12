@@ -294,6 +294,7 @@ model MediaAsset {
   kind               MediaKind
   mimeType           String
   url                String
+  storageKey         String
   checksumSha256     String
   sizeBytes          BigInt
   durationSeconds    Int?
@@ -305,6 +306,7 @@ model MediaAsset {
   frozenReleaseItems FrozenReleaseItem[]
 
   @@unique([id, organizationId])
+  @@unique([organizationId, storageKey])
   @@index([organizationId, createdAt])
 }
 
@@ -404,6 +406,7 @@ model FrozenReleaseItem {
   assetKind            MediaKind
   assetMimeType        String
   assetUrl             String
+  assetStorageKey      String
   assetChecksumSha256  String
   assetSizeBytes       BigInt
   assetCreatedAt       DateTime

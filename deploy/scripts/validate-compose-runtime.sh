@@ -24,7 +24,6 @@ command -v "$DOCKER_BIN" >/dev/null
 command -v "$CURL_BIN" >/dev/null
 command -v "$OPENSSL_BIN" >/dev/null
 command -v awk >/dev/null
-command -v cmp >/dev/null
 
 mkdir -p "$EVIDENCE_DIR"
 work_dir="$(mktemp -d)"
@@ -55,6 +54,7 @@ export POSTGRES_PASSWORD="$(random_hex 32)"
 export DATABASE_URL="postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@postgres:5432/$POSTGRES_DB?schema=public"
 export JWT_SECRET="$(random_hex 48)"
 export PAIRING_CODE_PEPPER="$(random_hex 48)"
+export MEDIA_DELIVERY_SECRET="$(random_hex 48)"
 export MANIFEST_SIGNING_PRIVATE_KEY
 MANIFEST_SIGNING_PRIVATE_KEY="$($OPENSSL_BIN rand -base64 32 | tr '+/' '-_' | tr -d '=\r\n')"
 export MINIO_ROOT_USER="screengoblin-smoke-root"
@@ -63,7 +63,6 @@ export S3_BUCKET="screengoblin-smoke-media"
 export S3_REGION="us-east-1"
 export S3_ACCESS_KEY_ID="screengoblin-smoke-api"
 export S3_SECRET_ACCESS_KEY="$(random_hex 32)"
-export S3_PUBLIC_BASE_URL="https://$SCREEN_GOBLIN_HOST/media"
 export SEED_ADMIN_EMAIL="admin@smoke.example.test"
 export SEED_ADMIN_PASSWORD="$(random_hex 32)"
 export SEED_ADMIN_NAME="Compose Smoke Administrator"
@@ -87,6 +86,7 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 DATABASE_URL=$DATABASE_URL
 JWT_SECRET=$JWT_SECRET
 PAIRING_CODE_PEPPER=$PAIRING_CODE_PEPPER
+MEDIA_DELIVERY_SECRET=$MEDIA_DELIVERY_SECRET
 DEVICE_AUTH_MODE=proof-v1
 MANIFEST_SIGNING_PRIVATE_KEY=$MANIFEST_SIGNING_PRIVATE_KEY
 MINIO_ROOT_USER=$MINIO_ROOT_USER
@@ -95,7 +95,6 @@ S3_BUCKET=$S3_BUCKET
 S3_REGION=$S3_REGION
 S3_ACCESS_KEY_ID=$S3_ACCESS_KEY_ID
 S3_SECRET_ACCESS_KEY=$S3_SECRET_ACCESS_KEY
-S3_PUBLIC_BASE_URL=$S3_PUBLIC_BASE_URL
 SEED_ADMIN_EMAIL=$SEED_ADMIN_EMAIL
 SEED_ADMIN_PASSWORD=$SEED_ADMIN_PASSWORD
 SEED_ADMIN_NAME=$SEED_ADMIN_NAME
@@ -132,6 +131,7 @@ secret_values=(
   "$DATABASE_URL"
   "$JWT_SECRET"
   "$PAIRING_CODE_PEPPER"
+  "$MEDIA_DELIVERY_SECRET"
   "$MANIFEST_SIGNING_PRIVATE_KEY"
   "$MINIO_ROOT_PASSWORD"
   "$S3_SECRET_ACCESS_KEY"
@@ -231,21 +231,110 @@ done
   exit 1
 }
 
+readonly media_body="ScreenGoblin private media runtime smoke"
+readonly media_org_id="compose-media-org"
+readonly media_screen_id="compose-media-screen"
+readonly media_credential_id="compose-media-credential"
+media_key_id="$(printf 'K%.0s' {1..43})"
+readonly media_key_id
+readonly media_asset_id="compose-media-asset"
+media_checksum="$(printf '%s' "$media_body" | "$OPENSSL_BIN" dgst -sha256 | awk '{print $2}')"
+readonly media_checksum
+readonly media_size="${#media_body}"
+readonly media_storage_key="organizations/$media_org_id/assets/$media_asset_id/$media_checksum"
+
 "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh minio-init -ceu '
   mc alias set smoke http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
-  printf "ScreenGoblin Compose runtime smoke\n" | mc pipe "smoke/$S3_BUCKET/runtime-smoke.txt" >/dev/null
-'
+  printf "%s" "$1" | mc pipe "smoke/$S3_BUCKET/$2" >/dev/null
+' -- "$media_body" "$media_storage_key"
+
+"${compose[@]}" exec -T postgres psql \
+  --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+  --set ON_ERROR_STOP=1 <<SQL >/dev/null
+INSERT INTO "Organization" ("id", "name", "slug", "createdAt", "updatedAt")
+VALUES ('$media_org_id', 'Compose private media', 'compose-private-media', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "Screen" (
+  "id", "organizationId", "name", "status", "orientation", "resolution",
+  "tags", "installationId", "credentialGeneration", "createdAt", "updatedAt"
+) VALUES (
+  '$media_screen_id', '$media_org_id', 'Compose media screen', 'OFFLINE',
+  'LANDSCAPE', '1920x1080', ARRAY[]::TEXT[], 'compose-media-installation',
+  1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+);
+INSERT INTO "DeviceCredential" (
+  "id", "organizationId", "screenId", "liveScreenId",
+  "liveScreenOrganizationId", "keyId", "publicKeySpki", "algorithm",
+  "securityLevel", "createdAt"
+) VALUES (
+  '$media_credential_id', '$media_org_id', '$media_screen_id', '$media_screen_id',
+  '$media_org_id', '$media_key_id', decode(repeat('00', 80), 'hex'), 'ES256',
+  'software', CURRENT_TIMESTAMP
+);
+SQL
+
+anonymous_status="$("${compose[@]}" exec -T minio curl --silent \
+  --output /dev/null --write-out '%{http_code}' \
+  "http://127.0.0.1:9000/$S3_BUCKET/$media_storage_key")"
+[[ "$anonymous_status" == "403" ]] || {
+  echo "Anonymous MinIO object GET returned HTTP $anonymous_status; expected 403" >&2
+  exit 1
+}
+
+mapfile -t media_capabilities < <(
+  "${compose[@]}" exec -T api node --input-type=module -e '
+    const [screenId, organizationId, keyId, assetId, storageKey, checksum, size] =
+      process.argv.slice(1);
+    const { issueMediaCapability } =
+      await import("./apps/api/dist/media/delivery.js");
+    const base = {
+      screenId,
+      organizationId,
+      credentialKeyId: keyId,
+      assetId,
+      storageKey,
+      mimeType: "text/plain",
+      checksumSha256: checksum,
+      sizeBytes: Number(size),
+    };
+    console.log(issueMediaCapability(
+      { ...base, expiresAt: new Date(Date.now() + 60_000).toISOString() },
+      process.env.MEDIA_DELIVERY_SECRET,
+    ));
+    console.log(issueMediaCapability(
+      { ...base, expiresAt: new Date(Date.now() - 60_000).toISOString() },
+      process.env.MEDIA_DELIVERY_SECRET,
+    ));
+  ' "$media_screen_id" "$media_org_id" "$media_key_id" "$media_asset_id" \
+    "$media_storage_key" "$media_checksum" "$media_size"
+)
+(( ${#media_capabilities[@]} == 2 )) || {
+  echo "API container did not issue the expected media capabilities" >&2
+  exit 1
+}
+readonly valid_media_capability="${media_capabilities[0]}"
+readonly expired_media_capability="${media_capabilities[1]}"
 
 assert_status "$SCREEN_GOBLIN_HOST" "/health/live" 204 "api-live"
 assert_status "$SCREEN_GOBLIN_HOST" "/health/ready" 404 "public-readiness"
 assert_status "$SCREEN_GOBLIN_HOST" "/" 200 "console"
 assert_status "$PLAYER_HOST" "/" 200 "player"
-assert_status "$SCREEN_GOBLIN_HOST" "/media/runtime-smoke.txt" 200 "media"
+assert_status "$SCREEN_GOBLIN_HOST" "/media/runtime-smoke.txt" 404 "legacy-media-denied"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id?capability=$valid_media_capability" \
+  200 "private-media-valid"
+[[ "$(cat "$work_dir/private-media-valid.body")" == "$media_body" ]] || {
+  echo "Private media API returned unexpected bytes" >&2
+  exit 1
+}
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id?capability=${valid_media_capability}x" \
+  404 "private-media-tampered"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id?capability=$expired_media_capability" \
+  404 "private-media-expired"
 
 grep -q '<div id="root">' "$work_dir/console.body"
 grep -q '<div id="root">' "$work_dir/player.body"
-printf 'ScreenGoblin Compose runtime smoke\n' >"$work_dir/expected-media.txt"
-cmp "$work_dir/expected-media.txt" "$work_dir/media.body"
 for label in console player; do
   assert_header "$label" "Content-Security-Policy"
   assert_header "$label" "X-Frame-Options"
@@ -256,7 +345,8 @@ done
 "${compose[@]}" ps --all >"$EVIDENCE_DIR/compose-ps.txt"
 cat >"$EVIDENCE_DIR/result.txt" <<EOF
 Compose production-mode startup and health: passed
-Caddy API, readiness isolation, Console, Player, headers, and media: passed
+Caddy API, readiness isolation, Console, Player, headers, and legacy media denial: passed
+Private MinIO anonymous denial and valid/tampered/expired API capability delivery: passed
 Published-port and internal-backend-network assertions: passed
 EOF
 
