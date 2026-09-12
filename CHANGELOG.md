@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Preserve an active owner for every tenant when internal identity lifecycle
+  helpers disable a user, demote an owner, or remove an owner membership.
+  PostgreSQL serializes competing owner changes per tenant; rejected changes
+  leave membership, session, identity, and audit state unchanged. Public
+  identity-administration and ownership-transfer APIs remain unimplemented.
+
 - Bound local `AuditEvent` scalar and structured metadata fields, reject
   ordinary PostgreSQL row updates and direct deletes while preserving existing
   user-attribution nulling and tenant deletion cascades, and make in-memory and

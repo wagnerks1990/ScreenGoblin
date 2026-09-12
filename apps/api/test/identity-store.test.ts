@@ -1,9 +1,14 @@
 import type { PrismaClient } from "@prisma/client";
 import { getRounds } from "bcryptjs";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "../src/store/memory.js";
 import { PrismaStore } from "../src/store/prisma.js";
-import type { DataStore, SessionUser } from "../src/domain/types.js";
+import type {
+  AuditRecord,
+  DataStore,
+  SessionUser,
+} from "../src/domain/types.js";
 import { verifyLoginCredentials } from "../src/routes/auth.js";
 
 const approvedPasswordHash =
@@ -30,6 +35,23 @@ const prismaLoginRow = (id: string, email: string) => ({
   organizationId: "org-a",
   role: "OWNER" as const,
   authorizationEpoch: 0,
+});
+
+describe("owner continuity lock contract", () => {
+  it("uses the FK-compatible PostgreSQL tenant lock mode", async () => {
+    const source = await readFile(
+      new URL("../src/store/prisma.ts", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("private async lockOwnerContinuity(");
+    const end = source.indexOf("private async hasOtherActiveOwner(", start);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const implementation = source.slice(start, end);
+    expect(implementation).toContain("FOR NO KEY UPDATE OF organization");
+    expect(implementation).not.toMatch(/\bFOR UPDATE\b/);
+  });
 });
 
 describe("case-insensitive user identity lookup", () => {
@@ -254,7 +276,8 @@ describe("identity lifecycle session boundaries", () => {
     const store = new MemoryStore();
     const alpha = sessionUser("user-a", "owner@example.test", "org-a");
     const beta = { ...alpha, organizationId: "org-b" };
-    store.users.push(alpha, beta);
+    const backupOwner = sessionUser("user-b", "backup@example.test", "org-a");
+    store.users.push(alpha, beta, backupOwner);
     const alphaHash = "a".repeat(64);
     const betaHash = "b".repeat(64);
     addSession(store, alpha, alphaHash);
@@ -296,7 +319,10 @@ describe("identity lifecycle session boundaries", () => {
     }
     const store = new RejectingIdentityAuditStore();
     const user = sessionUser("user-a", "owner@example.test", "org-a");
-    store.users.push(user);
+    store.users.push(
+      user,
+      sessionUser("user-b", "backup@example.test", "org-a"),
+    );
     addSession(store, user, "a".repeat(64));
     const beforeUsers = structuredClone(store.users);
     const beforeSessions = structuredClone(store.userSessions);
@@ -307,6 +333,118 @@ describe("identity lifecycle session boundaries", () => {
     expect(store.users).toEqual(beforeUsers);
     expect(store.userSessions).toEqual(beforeSessions);
     expect(store.audits).toEqual([]);
+  });
+
+  it("rolls back a multi-tenant disable when the second audit cannot be built", async () => {
+    class RejectingSecondIdentityAuditStore extends MemoryStore {
+      private auditBuilds = 0;
+      protected override buildAuditRecord(
+        event: Omit<AuditRecord, "id" | "createdAt">,
+      ): AuditRecord {
+        this.auditBuilds += 1;
+        if (this.auditBuilds === 2) throw new Error("second audit unavailable");
+        return super.buildAuditRecord(event);
+      }
+    }
+    const store = new RejectingSecondIdentityAuditStore();
+    const alpha = sessionUser("user-a", "owner@example.test", "org-a");
+    const beta = { ...alpha, organizationId: "org-b" };
+    store.users.push(
+      alpha,
+      beta,
+      sessionUser("backup-a", "backup-a@example.test", "org-a"),
+      sessionUser("backup-b", "backup-b@example.test", "org-b"),
+    );
+    addSession(store, alpha, "a".repeat(64));
+    addSession(store, beta, "b".repeat(64));
+    const beforeUsers = structuredClone(store.users);
+    const beforeSessions = structuredClone(store.userSessions);
+
+    await expect(
+      store.disableUserAndAudit(alpha.id, { reason: "Multi-tenant disable" }),
+    ).rejects.toThrow("second audit unavailable");
+    expect(store.users).toEqual(beforeUsers);
+    expect(store.userSessions).toEqual(beforeSessions);
+    expect(store.audits).toEqual([]);
+  });
+
+  it("refuses to orphan a tenant through any identity lifecycle helper", async () => {
+    const store = new MemoryStore();
+    const owner = sessionUser("user-a", "owner@example.test", "org-a");
+    const disabledBackup = {
+      ...sessionUser("user-b", "backup@example.test", "org-a"),
+      disabledAt: new Date().toISOString(),
+    };
+    store.users.push(owner, disabledBackup);
+    addSession(store, owner, "a".repeat(64));
+    const beforeUsers = structuredClone(store.users);
+    const beforeSessions = structuredClone(store.userSessions);
+
+    for (const mutation of [
+      () =>
+        store.changeMembershipRoleAndAudit("org-a", owner.id, "ADMIN", {
+          reason: "Unsafe demotion",
+        }),
+      () =>
+        store.removeMembershipAndAudit("org-a", owner.id, {
+          reason: "Unsafe removal",
+        }),
+      () => store.disableUserAndAudit(owner.id, { reason: "Unsafe disable" }),
+    ])
+      await expect(mutation()).resolves.toEqual({
+        updated: false,
+        reason: "OWNER_CONTINUITY_REQUIRED",
+      });
+
+    expect(store.users).toEqual(beforeUsers);
+    expect(store.userSessions).toEqual(beforeSessions);
+    expect(store.audits).toEqual([]);
+  });
+
+  it("permits owner lifecycle changes after an active replacement exists", async () => {
+    const store = new MemoryStore();
+    const owner = sessionUser("user-a", "owner@example.test", "org-a");
+    const replacement = sessionUser(
+      "user-b",
+      "replacement@example.test",
+      "org-a",
+    );
+    store.users.push(owner, replacement);
+
+    await expect(
+      store.changeMembershipRoleAndAudit("org-a", owner.id, "ADMIN", {
+        reason: "Replacement is active",
+      }),
+    ).resolves.toEqual({ updated: true });
+    expect(store.users.find(({ id }) => id === owner.id)?.role).toBe("ADMIN");
+    expect(store.audits).toHaveLength(1);
+  });
+
+  it("validates identity reasons before lookup and continuity results in both stores", async () => {
+    const memory = new MemoryStore();
+    memory.users.push(sessionUser("user-a", "owner@example.test", "org-a"));
+    const transaction = vi.fn();
+    const prisma = new PrismaStore({ $transaction: transaction } as never);
+
+    for (const mutation of [
+      () => memory.disableUserAndAudit("missing", { reason: " " }),
+      () =>
+        memory.changeMembershipRoleAndAudit("org-a", "user-a", "VIEWER", {
+          reason: " ",
+        }),
+      () => prisma.disableUserAndAudit("missing", { reason: " " }),
+      () =>
+        prisma.changeMembershipRoleAndAudit("org-a", "user-a", "VIEWER", {
+          reason: " ",
+        }),
+    ])
+      await expect(mutation()).rejects.toThrow(
+        "Identity mutation reason must contain",
+      );
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(memory.users[0]!.role).toBe("OWNER");
+    expect(memory.audits).toEqual([]);
   });
 
   it("rejects raw or weak password material before opening a mutation", async () => {

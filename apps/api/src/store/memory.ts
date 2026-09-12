@@ -264,11 +264,7 @@ export class MemoryStore implements DataStore {
     audit: SystemIdentityMutationAuditContext,
     metadata: Record<string, unknown> = {},
   ) {
-    const reason = audit.reason.trim();
-    if (!reason || reason.length > 500)
-      throw new Error(
-        "Identity mutation reason must contain 1 to 500 characters",
-      );
+    const reason = this.identityMutationReason(audit);
     return this.buildAuditRecord({
       organizationId,
       actorType: "system",
@@ -279,6 +275,23 @@ export class MemoryStore implements DataStore {
       metadata: { reason, ...metadata },
     });
   }
+  private identityMutationReason(audit: SystemIdentityMutationAuditContext) {
+    const reason = audit.reason.trim();
+    if (!reason || reason.length > 500)
+      throw new Error(
+        "Identity mutation reason must contain 1 to 500 characters",
+      );
+    return reason;
+  }
+  private hasOtherActiveOwner(organizationId: string, userId: string) {
+    return this.users.some(
+      (candidate) =>
+        candidate.organizationId === organizationId &&
+        candidate.id !== userId &&
+        candidate.role === "OWNER" &&
+        !candidate.disabledAt,
+    );
+  }
   async rotateUserPasswordAndAudit(
     userId: string,
     passwordHash: string,
@@ -286,6 +299,7 @@ export class MemoryStore implements DataStore {
   ) {
     if (!isApprovedPasswordHash(passwordHash))
       throw new Error("An approved bcrypt password hash is required");
+    this.identityMutationReason(audit);
     const memberships = this.users.filter((user) => user.id === userId);
     const organizationIds = [
       ...new Set(memberships.map((user) => user.organizationId)),
@@ -321,6 +335,7 @@ export class MemoryStore implements DataStore {
     userId: string,
     audit: SystemIdentityMutationAuditContext,
   ) {
+    this.identityMutationReason(audit);
     const memberships = this.users.filter((user) => user.id === userId);
     const organizationIds = [
       ...new Set(memberships.map((user) => user.organizationId)),
@@ -328,6 +343,18 @@ export class MemoryStore implements DataStore {
     const epochs = new Set(memberships.map((user) => user.authenticationEpoch));
     if (organizationIds.length === 0 || epochs.size !== 1)
       return { updated: false, reason: "NOT_FOUND" } as const;
+    if (
+      memberships.some(
+        (membership) =>
+          !membership.disabledAt &&
+          membership.role === "OWNER" &&
+          !this.hasOtherActiveOwner(membership.organizationId, userId),
+      )
+    )
+      return {
+        updated: false,
+        reason: "OWNER_CONTINUITY_REQUIRED",
+      } as const;
     const authenticationEpoch = memberships[0]!.authenticationEpoch + 1;
     const timestamp = now();
     const auditRecords = organizationIds.map((organizationId) =>
@@ -362,10 +389,21 @@ export class MemoryStore implements DataStore {
     role: SessionUser["role"],
     audit: SystemIdentityMutationAuditContext,
   ) {
+    this.identityMutationReason(audit);
     const membership = this.users.find(
       (user) => user.id === userId && user.organizationId === organizationId,
     );
     if (!membership) return { updated: false, reason: "NOT_FOUND" } as const;
+    if (
+      membership.role === "OWNER" &&
+      role !== "OWNER" &&
+      !membership.disabledAt &&
+      !this.hasOtherActiveOwner(organizationId, userId)
+    )
+      return {
+        updated: false,
+        reason: "OWNER_CONTINUITY_REQUIRED",
+      } as const;
     const timestamp = now();
     const auditRecord = this.identityAudit(
       organizationId,
@@ -399,10 +437,20 @@ export class MemoryStore implements DataStore {
     userId: string,
     audit: SystemIdentityMutationAuditContext,
   ) {
+    this.identityMutationReason(audit);
     const membership = this.users.find(
       (user) => user.id === userId && user.organizationId === organizationId,
     );
     if (!membership) return { updated: false, reason: "NOT_FOUND" } as const;
+    if (
+      membership.role === "OWNER" &&
+      !membership.disabledAt &&
+      !this.hasOtherActiveOwner(organizationId, userId)
+    )
+      return {
+        updated: false,
+        reason: "OWNER_CONTINUITY_REQUIRED",
+      } as const;
     const timestamp = now();
     const auditRecord = this.identityAudit(
       organizationId,

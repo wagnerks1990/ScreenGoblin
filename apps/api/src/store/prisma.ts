@@ -488,6 +488,41 @@ export class PrismaStore implements DataStore {
       );
     return { reason };
   }
+  private async lockOwnerContinuity(
+    tx: Prisma.TransactionClient,
+    organizationIds: readonly string[],
+  ) {
+    // Every current owner promotion/removal path uses the same durable tenant
+    // row as its invariant lock. Sorting also gives multi-tenant user disables
+    // one lock order. No public membership-creation route exists yet; a future
+    // creation path must take this lock before changing OWNER membership state.
+    for (const organizationId of [...new Set(organizationIds)].sort()) {
+      const [organization] = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT organization."id"
+        FROM "Organization" organization
+        WHERE organization."id" = ${organizationId}
+        FOR NO KEY UPDATE OF organization`;
+      if (!organization) return false;
+    }
+    return true;
+  }
+  private async hasOtherActiveOwner(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    userId: string,
+  ) {
+    const [result] = await tx.$queryRaw<Array<{ present: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM "Membership" membership
+        INNER JOIN "User" owner ON owner."id" = membership."userId"
+        WHERE membership."organizationId" = ${organizationId}
+          AND membership."userId" <> ${userId}
+          AND membership."role" = 'OWNER'::"OrgRole"
+          AND owner."disabledAt" IS NULL
+      ) AS "present"`;
+    return result?.present === true;
+  }
   async ping() {
     await this.prisma.$queryRaw`SELECT 1`;
   }
@@ -849,10 +884,28 @@ export class PrismaStore implements DataStore {
   ) {
     const metadata = this.identityMutationMetadata(audit);
     return this.prisma.$transaction(async (tx) => {
+      const organizationIds = (
+        await tx.membership.findMany({
+          where: { userId },
+          select: { organizationId: true },
+          orderBy: { organizationId: "asc" },
+        })
+      ).map(({ organizationId }) => organizationId);
+      if (organizationIds.length === 0)
+        return { updated: false as const, reason: "NOT_FOUND" as const };
+      if (!(await this.lockOwnerContinuity(tx, organizationIds)))
+        return { updated: false as const, reason: "NOT_FOUND" as const };
       const memberships = await tx.$queryRaw<
-        Array<{ organizationId: string; databaseNow: Date }>
+        Array<{
+          organizationId: string;
+          role: SessionUser["role"];
+          disabledAt: Date | null;
+          databaseNow: Date;
+        }>
       >`
         SELECT membership."organizationId",
+               membership."role"::text AS "role",
+               actor."disabledAt",
                CURRENT_TIMESTAMP AS "databaseNow"
         FROM "User" actor
         INNER JOIN "Membership" membership
@@ -863,6 +916,20 @@ export class PrismaStore implements DataStore {
       const clock = memberships[0]?.databaseNow;
       if (!clock)
         return { updated: false as const, reason: "NOT_FOUND" as const };
+      for (const membership of memberships)
+        if (
+          !membership.disabledAt &&
+          membership.role === "OWNER" &&
+          !(await this.hasOtherActiveOwner(
+            tx,
+            membership.organizationId,
+            userId,
+          ))
+        )
+          return {
+            updated: false as const,
+            reason: "OWNER_CONTINUITY_REQUIRED" as const,
+          };
       await tx.user.update({
         where: { id: userId },
         data: {
@@ -901,11 +968,19 @@ export class PrismaStore implements DataStore {
   ) {
     const metadata = this.identityMutationMetadata(audit);
     return this.prisma.$transaction(async (tx) => {
+      if (!(await this.lockOwnerContinuity(tx, [organizationId])))
+        return { updated: false as const, reason: "NOT_FOUND" as const };
       const [membership] = await tx.$queryRaw<
-        Array<{ id: string; role: SessionUser["role"]; databaseNow: Date }>
+        Array<{
+          id: string;
+          role: SessionUser["role"];
+          disabledAt: Date | null;
+          databaseNow: Date;
+        }>
       >`
         SELECT membership."id",
                membership."role"::text AS "role",
+               actor."disabledAt",
                CURRENT_TIMESTAMP AS "databaseNow"
         FROM "Membership" membership
         INNER JOIN "User" actor ON actor."id" = membership."userId"
@@ -914,6 +989,16 @@ export class PrismaStore implements DataStore {
         FOR UPDATE OF membership, actor`;
       if (!membership)
         return { updated: false as const, reason: "NOT_FOUND" as const };
+      if (
+        membership.role === "OWNER" &&
+        role !== "OWNER" &&
+        !membership.disabledAt &&
+        !(await this.hasOtherActiveOwner(tx, organizationId, userId))
+      )
+        return {
+          updated: false as const,
+          reason: "OWNER_CONTINUITY_REQUIRED" as const,
+        };
       await tx.membership.update({
         where: { id: membership.id },
         data: { role, authorizationEpoch: { increment: 1 } },
@@ -943,11 +1028,19 @@ export class PrismaStore implements DataStore {
   ) {
     const metadata = this.identityMutationMetadata(audit);
     return this.prisma.$transaction(async (tx) => {
+      if (!(await this.lockOwnerContinuity(tx, [organizationId])))
+        return { updated: false as const, reason: "NOT_FOUND" as const };
       const [membership] = await tx.$queryRaw<
-        Array<{ id: string; role: SessionUser["role"]; databaseNow: Date }>
+        Array<{
+          id: string;
+          role: SessionUser["role"];
+          disabledAt: Date | null;
+          databaseNow: Date;
+        }>
       >`
         SELECT membership."id",
                membership."role"::text AS "role",
+               actor."disabledAt",
                CURRENT_TIMESTAMP AS "databaseNow"
         FROM "Membership" membership
         INNER JOIN "User" actor ON actor."id" = membership."userId"
@@ -956,6 +1049,15 @@ export class PrismaStore implements DataStore {
         FOR UPDATE OF membership, actor`;
       if (!membership)
         return { updated: false as const, reason: "NOT_FOUND" as const };
+      if (
+        membership.role === "OWNER" &&
+        !membership.disabledAt &&
+        !(await this.hasOtherActiveOwner(tx, organizationId, userId))
+      )
+        return {
+          updated: false as const,
+          reason: "OWNER_CONTINUITY_REQUIRED" as const,
+        };
       await tx.membership.update({
         where: { id: membership.id },
         data: { authorizationEpoch: { increment: 1 } },
