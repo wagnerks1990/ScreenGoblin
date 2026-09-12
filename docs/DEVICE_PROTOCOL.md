@@ -61,6 +61,14 @@ A manifest contains:
 
 The player downloads into a staging cache, validates size and SHA-256, then atomically marks the new manifest active. The WebView path bounds cache-miss content to 128 MiB per asset and 512 MiB per release, limits concurrency to two downloads, and prunes outside active/rollback generations; native stream-to-disk verification remains a release gate for larger content. It retains at least one prior complete normal manifest, and emergency overlays never replace that rollback baseline. The API signs manifests with Ed25519. During pairing the player pins that deployment's public verification key and verifies the exact signed envelope plus its expected screen ID before staging. Signing-key rotation with overlap/key IDs remains a pre-production gate. A failed signature, download, clock check, or activation preserves the last-known-good manifest.
 
+Playback telemetry identifies content only after the active image loads, video
+enters playing, web frame loads, or a validated template commits. The item
+duration begins at that readiness point. A separate bounded readiness watchdog
+recovers silent resolver, decoder, or navigation stalls, and generation-scoped
+events cannot advance or fail a newer item. An iframe load event proves
+navigation completion, not pixels rendered; physical display and proof-of-play
+evidence remain pre-production gates.
+
 Routine polls may refresh `generatedAt`, `validUntil`, and the signature without changing `version`; the version changes only when the semantic release changes. `validUntil` is the signed-envelope lease, while `playbackEndsAt` is the hard schedule authorization boundary enforced locally during an outage. When no schedule applies, or an applicable schedule has no playable non-expired assets, the API emits a signed withdrawal so previously active content does not continue past its authorization window.
 
 Daily times use local wall-clock semantics in the configured IANA time zone. A boundary that does not exist during a spring-forward gap advances to the first valid instant after the gap. During a fall-back repeat, starts use the later occurrence and ends use the earlier occurrence. This prevents early activation and prevents ended content from reactivating when the clock repeats.
