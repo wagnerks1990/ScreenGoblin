@@ -3,6 +3,7 @@ import type {
   DeviceIdentityEnrollment,
   DeviceProof,
 } from "@screengoblin/contracts";
+import { nativeAvailableStorageBytes } from "./assets";
 
 export type DeviceIdentity = DeviceIdentityEnrollment;
 
@@ -151,6 +152,8 @@ export async function installationId(): Promise<string> {
 }
 
 export async function freeStorageBytes(): Promise<number> {
+  if (Capacitor.getPlatform() === "android")
+    return await nativeAvailableStorageBytes();
   const estimate = await navigator.storage?.estimate?.();
   return Math.max(0, (estimate?.quota ?? 0) - (estimate?.usage ?? 0));
 }

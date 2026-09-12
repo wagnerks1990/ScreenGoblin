@@ -104,12 +104,63 @@ then require the normalized view to match. Pre-upgrade unsigned records and
 altered records are removed and produce a blank screen until a fresh signed
 manifest arrives. A missing active marker never revives the previous slot.
 
-The WebView cache-miss path permits at most 128 MiB per asset and 512 MiB per
-manifest, downloads at most two assets concurrently, verifies exact size and
-SHA-256 before activation, rechecks persistent entries before reuse and
-playback, and prunes entries outside the active and rollback generations.
-Native incremental hashing, stream-to-disk activation, quota
-telemetry, and physical full-disk recovery evidence remain release gates.
+On Android, binary cache misses are streamed to app-private staging files while
+their byte count and SHA-256 are computed. The native layer accepts the file
+only when both values exactly match the signed asset metadata, syncs it, then
+atomically renames it into the managed cache. Redirects, non-200 responses,
+network or storage errors, oversized/undersized bodies, hash mismatches, and
+failed publication remove the staging file and fail that asset; they never
+expose partial content. Existing completed files are not deleted before a
+replacement succeeds. Reuse and playback resolve only verified native entries.
+Native available-storage telemetry is returned to the WebView so storage
+pressure is visible to player health and operations. The `NativeAssetCache`
+bridge stores files under the application's private `filesDir/media-cache-v1`
+directory and exposes:
+
+- `prefetch({ assetId, url, mimeType, checksumSha256, sizeBytes })` and
+  `resolve({ assetId, mimeType, checksumSha256, sizeBytes })`, each returning a
+  native `file:///` path that the Player converts with Capacitor before
+  playback;
+- `prune({ retainedAssets: [{ assetId, mimeType, checksumSha256 }] })` and
+  `removeAll()`;
+- `storageStats()`, returning non-negative `availableBytes`.
+
+The bridge rejects with a bounded code from `INVALID_ARGUMENT`, `CACHE_MISS`,
+`DOWNLOAD_REJECTED`, `INTEGRITY_FAILURE`, `INSUFFICIENT_STORAGE`, and `CACHE_IO`.
+It accepts only the media MIME allowlist, disables redirects, requires HTTP 200,
+and permits cleartext loopback only in a debug build. Native assets currently
+retain the signed 128 MiB per-asset ceiling and reserve the greater of 64 MiB or
+five percent of filesystem capacity, including in-flight reservations.
+
+Pruning passes the set referenced by the active and rollback manifest
+generations to the native layer. It removes unreferenced completed orphan files
+without deleting a retained asset. Startup separately cleans abandoned staging
+files. On an upgraded Android installation, only an explicit native
+`CACHE_MISS` may resolve a retained legacy CacheStorage entry through the old
+repository's exact size and SHA-256 checks. Ordinary new prefetches always
+target the native cache; the non-production data-URL emergency fixture remains
+on that verified legacy path. Pruning and secure clearing operate on both
+stores. A
+malformed native success and every other native error are hard failures and
+never fall back to a raw URL or unchecked bytes. If prefetch or native storage
+fails, activation fails and the existing verified last-known-good release
+remains where safe.
+
+Manifest staging is serialized through pre-prune, bounded two-worker fail-stop
+prefetch, state activation, and post-prune. Deprovisioning cancels the staging
+generation before secure clearing so queued work cannot recreate deleted media.
+Both active and previous manifests are retained during the
+pre-prune, and recovery queues its cleanup behind staging so it cannot delete an
+uncommitted prefetched file. Recovery and explicit rollback remain independent
+of a stalled download. An `INSUFFICIENT_STORAGE` prefetch failure therefore
+rejects the candidate without replacing the last-known-good release.
+
+Browser/PWA development continues to use the WebView path: at most 128 MiB per
+asset and 512 MiB per manifest, two concurrent downloads, exact size/SHA-256
+checks, and active/rollback pruning. Representative Android full-disk,
+process-death and power-loss tests remain release evidence gates; implementation
+and host tests alone do not establish filesystem durability on production
+hardware.
 
 The service worker has a separate, content-derived shell cache. The production
 build injects the exact hashed JS/CSS outputs into its atomic install allowlist;

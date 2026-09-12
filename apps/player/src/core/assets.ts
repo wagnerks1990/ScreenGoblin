@@ -1,3 +1,4 @@
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { verifySha256 } from "./crypto";
 import type { AssetRepository, PlayerAsset } from "./types";
 
@@ -8,6 +9,46 @@ const DEFAULT_MAX_AGGREGATE_BYTES = 512 * 1024 * 1024;
 // CacheStorage cannot incrementally hash a response. Keep the maximum single
 // in-memory verification buffer realistic for an Android TV WebView.
 const DEFAULT_MAX_BUFFERED_ASSET_BYTES = 128 * 1024 * 1024;
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+const NATIVE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "video/mp4",
+  "application/json",
+]);
+const EMERGENCY_TEMPLATE_MIME = "application/vnd.screengoblin.emergency+json";
+
+interface NativeAssetOptions {
+  assetId: string;
+  url: string;
+  mimeType: string;
+  checksumSha256: string;
+  sizeBytes: number;
+}
+
+interface NativeAssetIdentity {
+  assetId: string;
+  mimeType: string;
+  checksumSha256: string;
+  sizeBytes: number;
+}
+
+interface NativeAssetPath {
+  path: string;
+}
+
+interface NativeAssetCachePlugin {
+  prefetch(options: NativeAssetOptions): Promise<NativeAssetPath>;
+  resolve(options: NativeAssetIdentity): Promise<NativeAssetPath>;
+  prune(options: {
+    retainedAssets: Array<Omit<NativeAssetIdentity, "sizeBytes">>;
+  }): Promise<void>;
+  removeAll(): Promise<void>;
+  storageStats(): Promise<{ availableBytes: number }>;
+}
+
+const nativeAssetCache =
+  registerPlugin<NativeAssetCachePlugin>("NativeAssetCache");
 
 export interface CacheAssetRepositoryOptions {
   maxConcurrentDownloads?: number;
@@ -20,6 +61,72 @@ function positiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1)
     throw new Error(`${name} must be a positive safe integer`);
   return value;
+}
+
+function nativeAssetOptions(asset: PlayerAsset): NativeAssetOptions {
+  if (
+    !asset.id ||
+    !asset.url ||
+    !NATIVE_MIME_TYPES.has(asset.mimeType) ||
+    !SHA256_HEX.test(asset.checksumSha256) ||
+    !Number.isSafeInteger(asset.sizeBytes) ||
+    asset.sizeBytes < 1
+  )
+    throw new Error(
+      `Invalid native asset metadata for ${asset.id || "unknown"}`,
+    );
+  return {
+    assetId: asset.id,
+    url: asset.url,
+    mimeType: asset.mimeType,
+    checksumSha256: asset.checksumSha256,
+    sizeBytes: asset.sizeBytes,
+  };
+}
+
+function isLegacyOnlyAsset(asset: PlayerAsset): boolean {
+  return (
+    asset.kind === "template" &&
+    asset.mimeType === EMERGENCY_TEMPLATE_MIME &&
+    asset.url.startsWith("data:application/json;base64,")
+  );
+}
+
+function nativeAssetIdentity(asset: PlayerAsset): NativeAssetIdentity {
+  const { assetId, mimeType, checksumSha256, sizeBytes } =
+    nativeAssetOptions(asset);
+  return { assetId, mimeType, checksumSha256, sizeBytes };
+}
+
+function nativePlaybackUrl(result: NativeAssetPath, assetId: string): string {
+  const containsControlCharacter =
+    typeof result?.path === "string" &&
+    Array.from(result.path).some((character) => {
+      const codePoint = character.charCodeAt(0);
+      return codePoint < 32 || codePoint === 127;
+    });
+  if (
+    !result ||
+    typeof result.path !== "string" ||
+    !result.path.startsWith("file:///") ||
+    containsControlCharacter
+  )
+    throw new Error(`Android returned an invalid cached path for ${assetId}`);
+  const converted = Capacitor.convertFileSrc(result.path);
+  if (typeof converted !== "string" || converted.length === 0)
+    throw new Error(`Android returned an unusable cached path for ${assetId}`);
+  return converted;
+}
+
+function throwCombinedFailures(operation: string, failures: unknown[]): void {
+  if (failures.length === 0) return;
+  throw new AggregateError(failures, `Failed to ${operation} all asset caches`);
+}
+
+function nativeErrorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error
+    ? error.code
+    : undefined;
 }
 
 function cacheKey(asset: PlayerAsset): Request {
@@ -251,4 +358,95 @@ export class CacheAssetRepository implements AssetRepository {
   async removeAll(): Promise<void> {
     await caches.delete(CACHE_NAME);
   }
+}
+
+/** Android's bounded native cache, with resolve-only verified upgrade fallback. */
+export class NativeAssetRepository implements AssetRepository {
+  constructor(
+    private readonly legacyRepository: AssetRepository = new CacheAssetRepository(),
+  ) {}
+
+  async prefetch(asset: PlayerAsset): Promise<void> {
+    if (asset.kind === "web") return;
+    if (isLegacyOnlyAsset(asset)) {
+      await this.legacyRepository.prefetch(asset);
+      return;
+    }
+    const result = await nativeAssetCache.prefetch(nativeAssetOptions(asset));
+    nativePlaybackUrl(result, asset.id);
+  }
+
+  async resolve(asset: PlayerAsset): Promise<string> {
+    if (asset.kind === "web") return asset.url;
+    if (isLegacyOnlyAsset(asset))
+      return await this.legacyRepository.resolve(asset);
+    let result: NativeAssetPath;
+    try {
+      result = await nativeAssetCache.resolve(nativeAssetIdentity(asset));
+    } catch (error) {
+      if (nativeErrorCode(error) !== "CACHE_MISS") throw error;
+      // Active signed content from an older build may exist only in
+      // CacheStorage. Its resolve path rechecks exact size and SHA-256 and
+      // never downloads, so this fallback cannot silently substitute network.
+      return await this.legacyRepository.resolve(asset);
+    }
+    // A malformed native success is a hard error, never a fallback trigger.
+    return nativePlaybackUrl(result, asset.id);
+  }
+
+  async prune(retainedAssets: PlayerAsset[]): Promise<void> {
+    const retainedNative = retainedAssets
+      .filter((asset) => asset.kind !== "web" && !isLegacyOnlyAsset(asset))
+      .map((asset) => {
+        const { assetId, mimeType, checksumSha256 } =
+          nativeAssetIdentity(asset);
+        return { assetId, mimeType, checksumSha256 };
+      });
+    const results = await Promise.allSettled([
+      nativeAssetCache.prune({ retainedAssets: retainedNative }),
+      this.legacyRepository.prune?.(retainedAssets) ?? Promise.resolve(),
+    ]);
+    throwCombinedFailures(
+      "prune",
+      results
+        .filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        )
+        .map((result) => result.reason),
+    );
+  }
+
+  async removeAll(): Promise<void> {
+    const results = await Promise.allSettled([
+      nativeAssetCache.removeAll(),
+      this.legacyRepository.removeAll(),
+    ]);
+    throwCombinedFailures(
+      "remove",
+      results
+        .filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        )
+        .map((result) => result.reason),
+    );
+  }
+}
+
+export function createAssetRepository(): AssetRepository {
+  return Capacitor.getPlatform() === "android"
+    ? new NativeAssetRepository()
+    : new CacheAssetRepository();
+}
+
+export async function nativeAvailableStorageBytes(): Promise<number> {
+  const result = await nativeAssetCache.storageStats();
+  if (
+    !result ||
+    !Number.isSafeInteger(result.availableBytes) ||
+    result.availableBytes < 0
+  )
+    throw new Error("Android returned invalid asset storage statistics");
+  return result.availableBytes;
 }

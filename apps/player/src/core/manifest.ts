@@ -10,6 +10,7 @@ import type {
 export class ManifestError extends Error {}
 
 const MAX_ITEMS = 500;
+const MAX_CONCURRENT_PREFETCHES = 2;
 // The WebView implementation verifies content in memory. Keep the signed
 // release contract within the repository's enforceable staging limits until
 // native incremental hashing and stream-to-disk activation are available.
@@ -250,7 +251,9 @@ export async function verifySignedPlayerManifest(
 }
 
 export class ManifestManager {
-  private operationTail: Promise<void> = Promise.resolve();
+  private stateTail: Promise<void> = Promise.resolve();
+  private stagingTail: Promise<void> = Promise.resolve();
+  private stagingGeneration = 0;
 
   constructor(
     private readonly store: PlayerStore,
@@ -269,29 +272,115 @@ export class ManifestManager {
     if (Date.parse(candidate.validUntil) <= Date.now())
       throw new ManifestError("Manifest has already expired");
 
-    // Downloads must not occupy the state-transition queue: one blackholed
-    // release can otherwise delay an emergency expiry or playback rollback for
-    // the sum of every asset timeout.
+    const stagingGeneration = this.stagingGeneration;
+    return this.enqueueStaging(() =>
+      this.stageAndActivateExclusive(signedCandidate, trust, stagingGeneration),
+    );
+  }
+
+  cancelPendingStages(): void {
+    this.stagingGeneration += 1;
+  }
+
+  private async stageAndActivateExclusive(
+    signedCandidate: SignedPlayerManifest,
+    trust: ManifestTrust,
+    stagingGeneration: number,
+  ): Promise<PlayerManifest | undefined> {
+    this.assertStagingGeneration(stagingGeneration);
+    const candidate = await verifySignedPlayerManifest(signedCandidate, trust);
+    this.assertStagingGeneration(stagingGeneration);
+    if (!candidate)
+      throw new ManifestError(
+        "Manifest signature or screen binding is invalid",
+      );
+    if (Date.parse(candidate.validUntil) <= Date.now())
+      throw new ManifestError("Manifest has already expired");
+
+    // Remove crash leftovers before reserving space for another release. The
+    // complete staging operation is serialized so a later collection cannot
+    // delete files an earlier release has downloaded but not activated yet.
+    await this.pruneRetainedAssets();
+    this.assertStagingGeneration(stagingGeneration);
     const signedActive = await this.store.getActiveManifest();
     const active = await verifySignedPlayerManifest(signedActive, trust);
+    this.assertStagingGeneration(stagingGeneration);
     const playbackBoundary = manifestPlaybackEndsAt(candidate);
     const playbackEnded =
       playbackBoundary !== undefined && playbackBoundary <= Date.now();
     if (active?.version !== candidate.version && !playbackEnded)
-      await Promise.all(
-        candidate.items.map((item) => this.assets.prefetch(item)),
-      );
+      await this.prefetchAssets(candidate.items, stagingGeneration);
 
-    const result = await this.enqueue(() =>
-      this.activateExclusive(signedCandidate, trust),
+    // Downloads deliberately stay off the state queue: a blackholed release
+    // must not delay emergency expiry recovery or playback rollback.
+    this.assertStagingGeneration(stagingGeneration);
+    const result = await this.enqueueState(() =>
+      this.activateExclusive(signedCandidate, trust, stagingGeneration),
     );
     await this.pruneRetainedAssets();
     return result;
   }
 
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operationTail.then(operation);
-    this.operationTail = result.then(
+  private async prefetchAssets(
+    items: PlayerManifest["items"],
+    stagingGeneration: number,
+  ): Promise<void> {
+    let nextIndex = 0;
+    let stopped = false;
+    let failure: unknown;
+    const worker = async (): Promise<void> => {
+      while (!stopped) {
+        try {
+          this.assertStagingGeneration(stagingGeneration);
+        } catch (error) {
+          if (!stopped) {
+            stopped = true;
+            failure = error;
+          }
+          return;
+        }
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= items.length) return;
+        try {
+          await this.assets.prefetch(items[index]!);
+          this.assertStagingGeneration(stagingGeneration);
+        } catch (error) {
+          if (!stopped) {
+            stopped = true;
+            failure = error;
+          }
+          return;
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from(
+        { length: Math.min(MAX_CONCURRENT_PREFETCHES, items.length) },
+        () => worker(),
+      ),
+    );
+    if (stopped) throw failure;
+  }
+
+  private assertStagingGeneration(expected: number): void {
+    if (expected !== this.stagingGeneration)
+      throw new ManifestError("Manifest staging was cancelled");
+  }
+
+  private enqueueState<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.stateTail.then(operation);
+    this.stateTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private enqueueStaging<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.stagingTail.then(operation);
+    this.stagingTail = result.then(
       () => undefined,
       () => undefined,
     );
@@ -301,8 +390,11 @@ export class ManifestManager {
   private async activateExclusive(
     signedCandidate: SignedPlayerManifest,
     trust: ManifestTrust,
+    stagingGeneration: number,
   ): Promise<PlayerManifest | undefined> {
+    this.assertStagingGeneration(stagingGeneration);
     const candidate = await verifySignedPlayerManifest(signedCandidate, trust);
+    this.assertStagingGeneration(stagingGeneration);
     if (!candidate)
       throw new ManifestError(
         "Manifest signature or screen binding is invalid",
@@ -314,7 +406,9 @@ export class ManifestManager {
       playbackBoundary !== undefined && playbackBoundary <= Date.now();
     const signedActive = await this.store.getActiveManifest();
     const active = await verifySignedPlayerManifest(signedActive, trust);
+    this.assertStagingGeneration(stagingGeneration);
     if (signedActive && !active) await this.store.clearManifests();
+    this.assertStagingGeneration(stagingGeneration);
     await this.store.activateManifest(signedCandidate);
     return candidate.withdrawn || playbackEnded ? undefined : candidate;
   }
@@ -338,7 +432,16 @@ export class ManifestManager {
   }
 
   async recover(trust: ManifestTrust): Promise<PlayerManifest | undefined> {
-    return this.enqueue(() => this.recoverExclusive(trust));
+    const recovered = await this.enqueueState(() =>
+      this.recoverExclusive(trust),
+    );
+    // Recovery must return even if a download is stalled. Queue collection
+    // behind staging without awaiting it so it cannot delete uncommitted files
+    // or delay restoration of last-known-good playback.
+    void this.enqueueStaging(() => this.pruneRetainedAssets()).catch(
+      () => undefined,
+    );
+    return recovered;
   }
 
   private async recoverExclusive(
@@ -394,7 +497,7 @@ export class ManifestManager {
     trust: ManifestTrust,
     expectedActiveVersion?: string,
   ): Promise<PlayerManifest | undefined> {
-    return this.enqueue(() =>
+    return this.enqueueState(() =>
       this.rollbackExclusive(trust, expectedActiveVersion),
     );
   }

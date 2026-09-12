@@ -6,6 +6,11 @@ const native = vi.hoisted(() => ({
   rotateIdentity: vi.fn(),
   finalizeIdentityRotation: vi.fn(),
   signChallenge: vi.fn(),
+  availableBytes: vi.fn(),
+}));
+
+vi.mock("./assets", () => ({
+  nativeAvailableStorageBytes: native.availableBytes,
 }));
 
 vi.mock("@capacitor/core", () => ({
@@ -24,6 +29,7 @@ import {
   installationId,
   rotateDeviceIdentity,
   signDeviceChallenge,
+  freeStorageBytes,
 } from "./device";
 
 const identity = {
@@ -46,11 +52,27 @@ beforeEach(() => {
     signatureFormat: "ES256-DER",
     keyId: identity.keyId,
   });
+  native.availableBytes.mockReset().mockResolvedValue(123_456);
 });
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("device identity", () => {
+  it("reports native cache filesystem capacity on Android", async () => {
+    native.platform = "android";
+    await expect(freeStorageBytes()).resolves.toBe(123_456);
+    expect(native.availableBytes).toHaveBeenCalledOnce();
+  });
+
+  it("keeps browser storage estimation on the web", async () => {
+    const estimate = vi.fn().mockResolvedValue({ quota: 1_000, usage: 250 });
+    Object.defineProperty(navigator, "storage", {
+      configurable: true,
+      value: { estimate },
+    });
+    await expect(freeStorageBytes()).resolves.toBe(750);
+    expect(native.availableBytes).not.toHaveBeenCalled();
+  });
   it("replaces a legacy Android installation ID with the current key fingerprint", async () => {
     native.platform = "android";
     localStorage.setItem("sg-installation-id", "legacy-installation-id");
