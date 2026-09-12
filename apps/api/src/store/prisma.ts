@@ -449,7 +449,7 @@ export class PrismaStore implements DataStore {
     )
       throw new Error("Login failure identifiers must be opaque SHA-256 HMACs");
     await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(474696137)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(474696137)`;
       const [clock] = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
         SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
       if (!clock) throw new Error("Database clock is unavailable");
