@@ -179,8 +179,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   disposable containers and volumes. Render the MinIO bootstrap policy using
   only POSIX shell built-ins available in the pinned client image. Preserve the
   API production dependencies in a clean production-only install, copy the
-  generated Prisma client explicitly, and fail the build if Prisma, Fastify,
-  shared contracts, or the generated client is absent. Install the pinned
+  API workspace's nested modules and generated Prisma client explicitly, and
+  fail the build unless imports resolve from the compiled server's directory. Install the pinned
   Bookworm OpenSSL 3 runtime used when generating and executing Prisma.
 - Replace automatic demo seeding with an explicit one-time bootstrap profile that refuses placeholders and never resets an existing owner password or grants unexpected privileges.
 - Add contributor/agent invariants and AI safety context.
