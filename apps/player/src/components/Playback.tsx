@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AssetRepository,
   PlayerAsset,
@@ -12,10 +12,27 @@ interface Props {
   fallback: boolean;
   identify: boolean;
   onPlaying: (id: string) => void;
-  onPlaybackError: () => void;
+  onPlaybackError: () => void | Promise<void>;
 }
 
-export function Playback({
+const READINESS_TIMEOUT_MS = 30_000;
+
+export function Playback(props: Props) {
+  return props.manifest.items.length ? (
+    <PlaybackContent key={props.manifest.version} {...props} />
+  ) : (
+    <UnavailablePlayback key={props.manifest.version} {...props} />
+  );
+}
+
+function UnavailablePlayback({ onPlaybackError }: Props) {
+  useEffect(() => {
+    void Promise.resolve(onPlaybackError()).catch(() => undefined);
+  }, [onPlaybackError]);
+  return <main className="playback" />;
+}
+
+function PlaybackContent({
   manifest,
   assets,
   offline,
@@ -24,96 +41,279 @@ export function Playback({
   onPlaying,
   onPlaybackError,
 }: Props) {
-  const [index, setIndex] = useState(0);
-  const [source, setSource] = useState<string>();
+  const [position, setPosition] = useState(0);
+  const [source, setSource] = useState<{
+    generation: string;
+    url: string;
+  }>();
   const [template, setTemplate] = useState<{
+    generation: string;
     title: string;
     message: string;
     backgroundColor?: string;
   }>();
-  const item = manifest.items[index % manifest.items.length] as PlayerAsset;
+  const [readyGeneration, setReadyGeneration] = useState<string>();
+  const item = manifest.items[position % manifest.items.length] as PlayerAsset;
+  const {
+    id: itemId,
+    kind: itemKind,
+    url: itemUrl,
+    mimeType: itemMimeType,
+    checksumSha256: itemChecksum,
+    sizeBytes: itemSize,
+    durationSeconds: itemDuration,
+  } = item;
+  const generation = JSON.stringify([
+    manifest.version,
+    position,
+    itemId,
+    itemKind,
+    itemUrl,
+    itemMimeType,
+    itemChecksum,
+    itemSize,
+    itemDuration,
+  ]);
+  const activeGeneration = useRef(generation);
+  const ready = useRef<string | undefined>(undefined);
+  const settled = useRef<string | undefined>(undefined);
+  const activeBlob = useRef<{ generation: string; url: string } | undefined>(
+    undefined,
+  );
+  const activeTemplateRequest = useRef<
+    { generation: string; controller: AbortController } | undefined
+  >(undefined);
+  const onPlayingRef = useRef(onPlaying);
+  const onPlaybackErrorRef = useRef(onPlaybackError);
+  activeGeneration.current = generation;
+  onPlayingRef.current = onPlaying;
+  onPlaybackErrorRef.current = onPlaybackError;
+
+  const revokeBlob = useCallback((candidateGeneration: string) => {
+    if (activeBlob.current?.generation !== candidateGeneration) return;
+    URL.revokeObjectURL(activeBlob.current.url);
+    activeBlob.current = undefined;
+  }, []);
+
+  const markReady = useCallback(
+    (candidateGeneration: string, assetId: string) => {
+      if (
+        activeGeneration.current !== candidateGeneration ||
+        ready.current === candidateGeneration ||
+        settled.current === candidateGeneration
+      )
+        return;
+      ready.current = candidateGeneration;
+      setReadyGeneration(candidateGeneration);
+      onPlayingRef.current(assetId);
+    },
+    [],
+  );
+
+  const fail = useCallback(
+    (candidateGeneration: string) => {
+      if (
+        activeGeneration.current !== candidateGeneration ||
+        settled.current === candidateGeneration
+      )
+        return;
+      settled.current = candidateGeneration;
+      setReadyGeneration(undefined);
+      if (activeTemplateRequest.current?.generation === candidateGeneration) {
+        activeTemplateRequest.current.controller.abort();
+        activeTemplateRequest.current = undefined;
+      }
+      revokeBlob(candidateGeneration);
+      setSource(undefined);
+      setTemplate(undefined);
+      void Promise.resolve(onPlaybackErrorRef.current()).catch(() => undefined);
+    },
+    [revokeBlob],
+  );
+
+  const advance = useCallback(
+    (candidateGeneration: string) => {
+      if (
+        activeGeneration.current !== candidateGeneration ||
+        settled.current === candidateGeneration
+      )
+        return;
+      settled.current = candidateGeneration;
+      setReadyGeneration(undefined);
+      revokeBlob(candidateGeneration);
+      setPosition((current) => current + 1);
+    },
+    [revokeBlob],
+  );
 
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | undefined;
-    assets
-      .resolve(item)
-      .then((url) => {
-        if (cancelled) {
+    const templateRequest = new AbortController();
+    activeTemplateRequest.current = { generation, controller: templateRequest };
+    setSource(undefined);
+    setTemplate(undefined);
+    setReadyGeneration(undefined);
+
+    void (async () => {
+      try {
+        const url = await assets.resolve({
+          id: itemId,
+          kind: itemKind,
+          url: itemUrl,
+          mimeType: itemMimeType,
+          checksumSha256: itemChecksum,
+          sizeBytes: itemSize,
+          durationSeconds: itemDuration,
+        });
+        if (
+          cancelled ||
+          activeGeneration.current !== generation ||
+          settled.current === generation
+        ) {
           if (url.startsWith("blob:")) URL.revokeObjectURL(url);
           return;
         }
         objectUrl = url;
-        setSource(url);
-        if (item.kind === "template") {
-          return fetch(url)
-            .then((response) => response.json())
-            .then((value: unknown) => {
-              if (!value || typeof value !== "object")
-                throw new Error("Template content is invalid");
-              const record = value as Record<string, unknown>;
-              if (
-                typeof record.title !== "string" ||
-                typeof record.message !== "string"
-              )
-                throw new Error("Template content is incomplete");
-              setTemplate({
-                title: record.title,
-                message: record.message,
-                ...(typeof record.backgroundColor === "string"
-                  ? { backgroundColor: record.backgroundColor }
-                  : {}),
-              });
-              onPlaying(item.id);
-            });
+        if (url.startsWith("blob:")) activeBlob.current = { generation, url };
+        if (itemKind === "template") {
+          const response = await fetch(url, { signal: templateRequest.signal });
+          if (!response.ok) throw new Error("Template content is unavailable");
+          const contentType = response.headers
+            .get("Content-Type")
+            ?.split(";", 1)[0]
+            ?.trim()
+            .toLowerCase();
+          if (
+            contentType !== "application/json" &&
+            contentType !== "application/vnd.screengoblin.emergency+json"
+          )
+            throw new Error("Template content type is invalid");
+          const value: unknown = await response.json();
+          if (!value || typeof value !== "object")
+            throw new Error("Template content is invalid");
+          const record = value as Record<string, unknown>;
+          if (
+            typeof record.title !== "string" ||
+            record.title.length < 1 ||
+            record.title.length > 120 ||
+            typeof record.message !== "string" ||
+            record.message.length < 1 ||
+            record.message.length > 2_000 ||
+            (record.backgroundColor !== undefined &&
+              (typeof record.backgroundColor !== "string" ||
+                !/^#[0-9a-f]{6}$/i.test(record.backgroundColor)))
+          )
+            throw new Error("Template content is incomplete");
+          if (
+            cancelled ||
+            activeGeneration.current !== generation ||
+            settled.current === generation
+          )
+            return;
+          setSource({ generation, url });
+          setTemplate({
+            generation,
+            title: record.title,
+            message: record.message,
+            ...(typeof record.backgroundColor === "string"
+              ? { backgroundColor: record.backgroundColor }
+              : {}),
+          });
+          return;
         }
-        onPlaying(item.id);
-      })
-      .catch(onPlaybackError);
-    const timer = window.setTimeout(() => {
-      setSource(undefined);
-      setTemplate(undefined);
-      setIndex((current) => (current + 1) % manifest.items.length);
-    }, item.durationSeconds * 1_000);
+        setSource({ generation, url });
+      } catch {
+        if (!cancelled) fail(generation);
+      }
+    })();
+
     return () => {
       cancelled = true;
-      clearTimeout(timer);
-      if (objectUrl?.startsWith("blob:")) URL.revokeObjectURL(objectUrl);
+      templateRequest.abort();
+      if (activeTemplateRequest.current?.generation === generation)
+        activeTemplateRequest.current = undefined;
+      if (objectUrl?.startsWith("blob:")) revokeBlob(generation);
     };
-  }, [assets, item, manifest.items.length, onPlaybackError, onPlaying]);
+  }, [
+    assets,
+    fail,
+    generation,
+    itemChecksum,
+    itemDuration,
+    itemId,
+    itemKind,
+    itemMimeType,
+    itemSize,
+    itemUrl,
+    revokeBlob,
+  ]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (ready.current !== generation) fail(generation);
+    }, READINESS_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [fail, generation]);
+
+  useEffect(() => {
+    if (template?.generation === generation) markReady(generation, item.id);
+  }, [generation, item.id, markReady, template]);
+
+  useEffect(() => {
+    if (readyGeneration !== generation) return;
+    const timer = window.setTimeout(
+      () => advance(generation),
+      item.durationSeconds * 1_000,
+    );
+    return () => clearTimeout(timer);
+  }, [advance, generation, item.durationSeconds, readyGeneration]);
+
+  const currentSource =
+    source?.generation === generation ? source.url : undefined;
+  const currentTemplate =
+    template?.generation === generation ? template : undefined;
 
   return (
     <main className="playback">
-      {source && item.kind === "image" && <img src={source} alt="" />}
-      {source && item.kind === "video" && (
+      {currentSource && item.kind === "image" && (
+        <img
+          src={currentSource}
+          alt=""
+          onLoad={() => markReady(generation, item.id)}
+          onError={() => fail(generation)}
+        />
+      )}
+      {currentSource && item.kind === "video" && (
         <video
-          key={source}
-          src={source}
+          key={currentSource}
+          src={currentSource}
           autoPlay
           muted
           playsInline
-          onEnded={() =>
-            setIndex((current) => (current + 1) % manifest.items.length)
-          }
-          onError={onPlaybackError}
+          onPlaying={() => markReady(generation, item.id)}
+          onEnded={() => advance(generation)}
+          onError={() => fail(generation)}
         />
       )}
-      {source && item.kind === "web" && (
+      {currentSource && item.kind === "web" && (
         <iframe
-          src={source}
+          src={currentSource}
           title="Signage web content"
-          sandbox="allow-scripts allow-forms"
+          sandbox="allow-scripts"
           referrerPolicy="no-referrer"
+          onLoad={() => markReady(generation, item.id)}
+          onError={() => fail(generation)}
         />
       )}
-      {source && item.kind === "template" && template && (
+      {currentSource && item.kind === "template" && currentTemplate && (
         <section
           className="emergency-template"
-          style={{ backgroundColor: template.backgroundColor }}
+          style={{ backgroundColor: currentTemplate.backgroundColor }}
         >
           <p>Emergency message</p>
-          <h1>{template.title}</h1>
-          <div>{template.message}</div>
+          <h1>{currentTemplate.title}</h1>
+          <div>{currentTemplate.message}</div>
         </section>
       )}
       {manifest.priority === "emergency" && (
