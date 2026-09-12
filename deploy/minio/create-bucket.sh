@@ -21,4 +21,4 @@ mc admin policy info local screengoblin-media-rw >/dev/null 2>&1 || \
 mc admin user info local "$S3_ACCESS_KEY_ID" >/dev/null 2>&1 || \
   mc admin user add local "$S3_ACCESS_KEY_ID" "$S3_SECRET_ACCESS_KEY"
 mc admin policy attach local screengoblin-media-rw --user "$S3_ACCESS_KEY_ID"
-mc anonymous set download "local/$S3_BUCKET"
+mc anonymous set none "local/$S3_BUCKET"

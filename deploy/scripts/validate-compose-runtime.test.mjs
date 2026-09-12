@@ -43,6 +43,9 @@ case " $* " in
     ;;
   *" port caddy 80 "*|*" port caddy 443 "*) printf '0.0.0.0:443\\n'; exit 0 ;;
   *" port "*) exit 1 ;;
+  *" exec -T postgres "*) exit 0 ;;
+  *" exec -T minio "*) printf '403'; exit 0 ;;
+  *" exec -T api "*) printf 'valid-capability\nexpired-capability\n'; exit 0 ;;
   *" run --rm "*) exit 0 ;;
 esac
 echo "Unexpected fake docker command: $*" >&2
@@ -71,7 +74,9 @@ body=''
 case "$url" in
   */health/live) status=204 ;;
   */health/ready) status=404 ;;
-  */media/runtime-smoke.txt) body='ScreenGoblin Compose runtime smoke' ;;
+  */media/runtime-smoke.txt) status=404 ;;
+  *capability=valid-capability) body='ScreenGoblin private media runtime smoke' ;;
+  *capability=valid-capabilityx|*capability=expired-capability) status=404 ;;
   *) body='<div id="root"></div>' ;;
 esac
 printf 'HTTP/2 %s\\r\\nContent-Security-Policy: default-src '\''self'\''\\r\\nX-Frame-Options: DENY\\r\\nStrict-Transport-Security: max-age=31536000\\r\\nX-Content-Type-Options: nosniff\\r\\n\\r\\n' "$status" > "$headers"
@@ -124,12 +129,21 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.match(result.stdout, /production-runtime smoke passed/);
     assert.match(scriptSource, /export ACME_EMAIL="ops@smoke\.example\.test"/);
     assert.match(scriptSource, /ACME_EMAIL=\$ACME_EMAIL/);
+    assert.match(scriptSource, /MEDIA_DELIVERY_SECRET=\$MEDIA_DELIVERY_SECRET/);
+    assert.match(scriptSource, /\/media\/runtime-smoke\.txt" 404/);
+    assert.match(scriptSource, /Anonymous MinIO object GET returned/);
+    assert.match(scriptSource, /private-media-valid/);
+    assert.match(scriptSource, /private-media-tampered/);
+    assert.match(scriptSource, /private-media-expired/);
     const commands = readFileSync(f.commandLog, "utf8");
     assert.match(commands, /up --detach --wait --wait-timeout 180/);
     assert.match(commands, /network inspect screengoblin-smoke-test_backend/);
     assert.match(commands, /ps --quiet console/);
     assert.match(commands, /inspect container-console/);
     assert.match(commands, /run --rm --no-deps --entrypoint/);
+    assert.match(commands, /exec -T postgres psql/);
+    assert.match(commands, /exec -T minio curl/);
+    assert.match(commands, /exec -T api node/);
     assert.match(commands, /down --volumes --remove-orphans --timeout 20/);
     assert.match(
       readFileSync(join(f.evidence, "result.txt"), "utf8"),

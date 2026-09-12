@@ -53,6 +53,7 @@ import { mediaPublicationFailure } from "../utils/media-policy.js";
 import { hasCapability } from "../authorization/policy.js";
 import { CAPABILITIES } from "@screengoblin/contracts";
 import { randomToken } from "../utils/crypto.js";
+import { mediaStorageKey } from "../media/delivery.js";
 
 const id = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -1465,10 +1466,12 @@ export class MemoryStore implements DataStore {
     >,
   ) {
     const t = now();
+    const assetId = id();
     const x: MediaRecord = {
-      id: id(),
+      id: assetId,
       organizationId: org,
       ...data,
+      storageKey: mediaStorageKey(org, assetId, data.checksumSha256),
       createdAt: t,
       updatedAt: t,
     };
@@ -1488,10 +1491,12 @@ export class MemoryStore implements DataStore {
     )
       return { created: false, reason: "FORBIDDEN" } as const;
     const timestamp = now();
+    const assetId = id();
     const media: MediaRecord = {
-      id: id(),
+      id: assetId,
       organizationId: org,
       ...data,
+      storageKey: mediaStorageKey(org, assetId, data.checksumSha256),
       createdAt: timestamp,
       updatedAt: timestamp,
     };

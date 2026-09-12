@@ -1758,6 +1758,13 @@ describe("media trust boundary", () => {
     });
     expect(accepted.statusCode).toBe(201);
     expect(accepted.json().checksumSha256).toBe("a".repeat(64));
+    expect(accepted.json()).not.toHaveProperty("storageKey");
+    const listed = await app.inject({
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().data[0]).not.toHaveProperty("storageKey");
 
     const oversized = await app.inject({
       method: "POST",

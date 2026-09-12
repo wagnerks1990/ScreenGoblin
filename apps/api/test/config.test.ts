@@ -8,6 +8,9 @@ const base = {
   REDIS_URL: "redis://redis.example.test:6379/0",
   JWT_SECRET: randomBytes(48).toString("base64url"),
   PAIRING_CODE_PEPPER: randomBytes(48).toString("base64url"),
+  MEDIA_DELIVERY_SECRET: randomBytes(48).toString("base64url"),
+  S3_ACCESS_KEY_ID: "private-media-api",
+  S3_SIGNING_KEY: randomBytes(48).toString("base64url"),
   DEVICE_AUTH_MODE: "proof-v1",
   MANIFEST_SIGNING_PRIVATE_KEY: randomBytes(32).toString("base64url"),
   PUBLIC_API_URL: "https://signage.example.test",
@@ -28,6 +31,12 @@ describe("production configuration", () => {
         PAIRING_CODE_PEPPER: base.JWT_SECRET,
       }),
     ).toThrow();
+  });
+
+  it("requires a distinct private-media capability secret", () => {
+    expect(() =>
+      loadConfig({ ...base, MEDIA_DELIVERY_SECRET: base.JWT_SECRET }),
+    ).toThrow(/MEDIA_DELIVERY_SECRET/);
   });
 
   it("normalizes the public API origin used by pairing responses", () => {

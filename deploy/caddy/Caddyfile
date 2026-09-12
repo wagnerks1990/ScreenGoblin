@@ -11,14 +11,14 @@
     respond 404
   }
 
+  @legacyMedia path /media /media/*
+  handle @legacyMedia {
+    respond 404
+  }
+
   @api path /api /api/* /health/live
   handle @api {
     reverse_proxy api:3001
-  }
-
-  handle_path /media/* {
-    rewrite * /{$S3_BUCKET}{uri}
-    reverse_proxy minio:9000
   }
 
   handle {

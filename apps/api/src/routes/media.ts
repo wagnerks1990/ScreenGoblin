@@ -12,6 +12,13 @@ import {
   usesAllowedMediaScheme,
 } from "../utils/media-url.js";
 import { isSupportedMedia } from "../utils/media-policy.js";
+import type { MediaRecord } from "../domain/types.js";
+
+const publicMedia = (media: MediaRecord) => {
+  const result = { ...media };
+  delete result.storageKey;
+  return result;
+};
 const body = z
   .object({
     name: z.string().trim().min(1).max(180),
@@ -31,7 +38,9 @@ const params = z.object({ id: opaqueId });
 export const mediaRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
   app.get("/media", async (request) => ({
-    data: await app.store.listMedia(request.user.organizationId),
+    data: (await app.store.listMedia(request.user.organizationId)).map(
+      publicMedia,
+    ),
   }));
   app.post("/media", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
@@ -86,7 +95,7 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
         "FORBIDDEN",
         "You do not have permission to perform this action",
       );
-    return reply.code(201).send(result.value);
+    return reply.code(201).send(publicMedia(result.value));
   });
   app.delete("/media/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);

@@ -18,6 +18,8 @@ import { scheduleRoutes } from "./routes/schedules.js";
 import { emergencyRoutes } from "./routes/emergencies.js";
 import { auditRoutes } from "./routes/audits.js";
 import { deviceRoutes, pairingAdminRoutes } from "./routes/devices.js";
+import { mediaDeliveryRoutes } from "./routes/media-delivery.js";
+import type { MediaObjectStore } from "./media/delivery.js";
 import {
   MemoryRateLimitBudget,
   opaqueRateLimitKey,
@@ -30,6 +32,8 @@ export interface BuildOptions {
   jwtSecret: string;
   manifestSigningPrivateKey: string;
   pairingCodePepper: string;
+  mediaDeliverySecret?: string;
+  mediaObjectStore?: MediaObjectStore;
   deviceAuthMode: "proof-v1" | "development-bearer";
   emergencyPublishingEnabled?: boolean;
   corsOrigins?: string[];
@@ -57,6 +61,7 @@ export async function buildApp(
             "req.headers.x-device-challenge",
             "req.headers.x-device-signature",
             "body.password",
+            "req.url",
           ],
         }
       : false,
@@ -66,6 +71,7 @@ export async function buildApp(
     genReqId: () => randomUUID(),
   });
   app.decorate("store", options.store ?? new PrismaStore());
+  app.decorate("mediaObjectStore", options.mediaObjectStore);
   app.decorate(
     "rateLimitBudget",
     options.rateLimitBudget ??
@@ -76,6 +82,8 @@ export async function buildApp(
   app.decorate("config", {
     manifestSigningPrivateKey: options.manifestSigningPrivateKey,
     pairingCodePepper: options.pairingCodePepper,
+    mediaDeliverySecret:
+      options.mediaDeliverySecret ?? options.pairingCodePepper,
     deviceAuthMode: options.deviceAuthMode,
     emergencyPublishingEnabled: options.emergencyPublishingEnabled ?? false,
     mediaAllowedOrigins: options.mediaAllowedOrigins ?? [],
@@ -182,6 +190,7 @@ export async function buildApp(
     },
     { prefix: "/api/v1" },
   );
+  await app.register(mediaDeliveryRoutes, { prefix: "/api/v1/device" });
   await app.register(deviceRoutes, { prefix: "/api/v1/device" });
   app.setNotFoundHandler((_request, reply) =>
     reply

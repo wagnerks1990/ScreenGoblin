@@ -125,8 +125,8 @@ INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
 VALUES ('recovery-membership', 'recovery-org', 'recovery-user', 'OWNER');
 INSERT INTO "Screen" ("id", "organizationId", "name", "location", "status", "orientation", "resolution", "tags", "createdAt", "updatedAt")
 VALUES ('recovery-screen', 'recovery-org', 'Recovery display', 'CI fixture', 'OFFLINE', 'LANDSCAPE', '1920x1080', ARRAY['recovery'], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO "MediaAsset" ("id", "organizationId", "name", "kind", "mimeType", "url", "checksumSha256", "sizeBytes", "durationSeconds", "createdAt", "updatedAt")
-VALUES ('recovery-media', 'recovery-org', 'Recovery media', 'IMAGE', 'image/png', 'https://media.example.test/recovery/object.txt', :'object_sha256', :'object_size'::bigint, 15, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "MediaAsset" ("id", "organizationId", "storageKey", "name", "kind", "mimeType", "url", "checksumSha256", "sizeBytes", "durationSeconds", "createdAt", "updatedAt")
+VALUES ('recovery-media', 'recovery-org', 'organizations/recovery-org/assets/recovery-media/' || :'object_sha256', 'Recovery media', 'IMAGE', 'image/png', 'https://media.example.test/recovery/object.txt', :'object_sha256', :'object_size'::bigint, 15, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Playlist" ("id", "organizationId", "name", "description", "createdAt", "updatedAt")
 VALUES ('recovery-playlist', 'recovery-org', 'Recovery playlist', 'Restore relation fixture', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "PlaylistItem" ("id", "organizationId", "playlistId", "assetId", "position", "durationSeconds")
@@ -137,8 +137,8 @@ INSERT INTO "ScheduleTarget" ("organizationId", "scheduleId", "screenId")
 VALUES ('recovery-org', 'recovery-schedule', 'recovery-screen');
 INSERT INTO "PublishedRelease" ("id", "organizationId", "sourcePlaylistId", "sourcePlaylistName", "sourcePlaylistDescription", "sourcePlaylistUpdatedAt", "digestSha256", "createdById", "createdAt")
 VALUES ('recovery-release', 'recovery-org', 'recovery-playlist', 'Recovery playlist', 'Restore relation fixture', CURRENT_TIMESTAMP, repeat('a', 64), 'recovery-user', CURRENT_TIMESTAMP);
-INSERT INTO "FrozenReleaseItem" ("id", "organizationId", "releaseId", "sourcePlaylistItemId", "sourceAssetId", "assetName", "assetKind", "assetMimeType", "assetUrl", "assetChecksumSha256", "assetSizeBytes", "assetCreatedAt", "position", "durationSeconds", "createdAt")
-VALUES ('recovery-frozen-item', 'recovery-org', 'recovery-release', 'recovery-playlist-item', 'recovery-media', 'Recovery media', 'IMAGE', 'image/png', 'https://media.example.test/recovery/object.txt', :'object_sha256', :'object_size'::bigint, CURRENT_TIMESTAMP, 0, 15, CURRENT_TIMESTAMP);
+INSERT INTO "FrozenReleaseItem" ("id", "organizationId", "releaseId", "sourcePlaylistItemId", "sourceAssetId", "assetName", "assetKind", "assetMimeType", "assetUrl", "assetStorageKey", "assetChecksumSha256", "assetSizeBytes", "assetCreatedAt", "position", "durationSeconds", "createdAt")
+VALUES ('recovery-frozen-item', 'recovery-org', 'recovery-release', 'recovery-playlist-item', 'recovery-media', 'Recovery media', 'IMAGE', 'image/png', 'https://media.example.test/recovery/object.txt', 'organizations/recovery-org/assets/recovery-media/' || :'object_sha256', :'object_sha256', :'object_size'::bigint, CURRENT_TIMESTAMP, 0, 15, CURRENT_TIMESTAMP);
 INSERT INTO "ReleaseAssignment" ("id", "organizationId", "releaseId", "scheduleId", "state", "digestSha256", "createdById", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt")
 VALUES ('recovery-assignment', 'recovery-org', 'recovery-release', 'recovery-schedule', 'ASSIGNED', repeat('b', 64), 'recovery-user', 'Recovery schedule', 'NORMAL', '2026-01-01T00:00:00Z', '2027-01-01T00:00:00Z', 'UTC', ARRAY[1,2,3,4,5], true, CURRENT_TIMESTAMP);
 INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screenId", "liveScreenId", "liveScreenOrganizationId")
@@ -200,15 +200,15 @@ WHERE o.id = 'recovery-org' AND ae.action = 'release.published';"
 restored_object_metadata="$(
   docker exec "$pg_container" psql -U screengoblin \
     -d screengoblin_restore_validation -Atc "
-SELECT concat_ws('|', ma.\"checksumSha256\", ma.\"sizeBytes\", ma.url,
-  fri.\"assetChecksumSha256\", fri.\"assetSizeBytes\", fri.\"assetUrl\")
+SELECT concat_ws('|', ma.\"checksumSha256\", ma.\"sizeBytes\", ma.url, ma.\"storageKey\",
+  fri.\"assetChecksumSha256\", fri.\"assetSizeBytes\", fri.\"assetUrl\", fri.\"assetStorageKey\")
 FROM \"MediaAsset\" ma
 JOIN \"FrozenReleaseItem\" fri
   ON fri.\"sourceAssetId\" = ma.id
  AND fri.\"organizationId\" = ma.\"organizationId\"
 WHERE ma.id = 'recovery-media' AND ma.\"organizationId\" = 'recovery-org';"
 )"
-expected_object_metadata="$object_sha256|$object_size|https://media.example.test/recovery/object.txt|$object_sha256|$object_size|https://media.example.test/recovery/object.txt"
+expected_object_metadata="$object_sha256|$object_size|https://media.example.test/recovery/object.txt|organizations/recovery-org/assets/recovery-media/$object_sha256|$object_sha256|$object_size|https://media.example.test/recovery/object.txt|organizations/recovery-org/assets/recovery-media/$object_sha256"
 [[ "$restored_object_metadata" == "$expected_object_metadata" ]]
 
 mkdir "$work_dir/object-backup"

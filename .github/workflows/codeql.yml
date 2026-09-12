@@ -78,18 +78,42 @@ jobs:
             exit 1
           fi
           approved_boot_receiver=false
+          approved_sigv4=false
           if echo "82bae2a6c5eb8a1544955bde0ee6df85766d4e2d2491726f6b4ffcb2fd754d3a  apps/player/android/app/src/main/java/com/screengoblin/player/BootReceiver.java" \
               | sha256sum --check --status \
             && echo "81cdaccae61838db742fd21fee0353e8ba0d91dc49b6aede44b6dff6e8614801  apps/player/android/app/src/main/AndroidManifest.xml" \
               | sha256sum --check --status; then
             approved_boot_receiver=true
           fi
+          mapfile -t sigv4_constructor_sources < <(
+            git grep -lF 'new S3MediaObjectStore' -- '*.js' '*.jsx' '*.ts' '*.tsx' || true
+          )
+          expected_sigv4_sources=(
+            "apps/api/src/server.ts"
+            "apps/api/test/media-delivery.test.ts"
+          )
+          if [[ "${sigv4_constructor_sources[*]}" == "${expected_sigv4_sources[*]}" ]] \
+            && [[ "$(git hash-object apps/api/src/server.ts)" == "7fb97c881f9ca5e52fcdd6c7fc8ac6bc8f902457" ]] \
+            && [[ "$(git hash-object apps/api/test/media-delivery.test.ts)" == "9aed0bada74a9f59ae322e3f8c945f6926d3c14c" ]] \
+            && [[ "$(git hash-object apps/api/src/media/delivery.ts)" == "395f568168a3492706e56e9f6dbbd0f7c54a06f9" ]]; then
+            approved_sigv4=true
+          fi
           blocking_result='def approved_false_positive:
-            $approved_boot_receiver
-            and .ruleId == "java/improper-intent-verification"
-            and (.locations | length) == 1
-            and .locations[0].physicalLocation.artifactLocation.uri
-              == "apps/player/android/app/src/main/java/com/screengoblin/player/BootReceiver.java";
+            (($approved_boot_receiver
+              and .ruleId == "java/improper-intent-verification"
+              and (.locations | length) == 1
+              and .locations[0].physicalLocation.artifactLocation.uri
+                == "apps/player/android/app/src/main/java/com/screengoblin/player/BootReceiver.java")
+            or ($approved_sigv4
+              and .ruleId == "js/insufficient-password-hash"
+              and .message.text
+                == "Password from [a call to S3MediaObjectStore](1) is hashed insecurely."
+              and (.locations | length) == 1
+              and .locations[0].physicalLocation.artifactLocation.uri
+                == "apps/api/src/media/delivery.ts"
+              and .locations[0].physicalLocation.region.startLine == 182
+              and .locations[0].physicalLocation.region.startColumn == 35
+              and .locations[0].physicalLocation.region.endColumn == 51));
             def evidence_only_uri:
             gsub("\\\\"; "/")
             | test("(^|/)node_modules/|(^|/)apps/player/android/([^/]+/)?build/");
@@ -100,11 +124,15 @@ jobs:
                   (.physicalLocation.artifactLocation.uri // "") as $uri
                   | ($uri == "") or (($uri | evidence_only_uri) | not)
                 ) end)'
-          finding_count="$(jq -s --argjson approved_boot_receiver "$approved_boot_receiver" \
+          finding_count="$(jq -s \
+            --argjson approved_boot_receiver "$approved_boot_receiver" \
+            --argjson approved_sigv4 "$approved_sigv4" \
             "[.[].runs[]?.results[]? | select(${blocking_result})] | length" \
             "${sarif_files[@]}")"
           if (( finding_count > 0 )); then
-            jq -r --argjson approved_boot_receiver "$approved_boot_receiver" \
+            jq -r \
+              --argjson approved_boot_receiver "$approved_boot_receiver" \
+              --argjson approved_sigv4 "$approved_sigv4" \
               ".runs[]?.results[]? | select(${blocking_result})
               | \"\(.ruleId): \(.message.text)\"" "${sarif_files[@]}"
             echo "CodeQL reported ${finding_count} first-party finding(s)" >&2

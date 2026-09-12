@@ -90,6 +90,8 @@ export interface MediaRecord {
   kind: MediaKind;
   mimeType: string;
   url: string;
+  /** Server-derived private object identity; never accepted from callers. */
+  storageKey?: string;
   checksumSha256: string;
   sizeBytes: number;
   durationSeconds?: number | undefined;
@@ -137,6 +139,7 @@ export interface FrozenReleaseAsset {
   kind: MediaKind;
   mimeType: string;
   url: string;
+  storageKey?: string;
   checksumSha256: string;
   sizeBytes: number;
   createdAt: string;
@@ -672,14 +675,14 @@ export interface DataStore {
     orgId: string,
     data: Omit<
       MediaRecord,
-      "id" | "organizationId" | "createdAt" | "updatedAt"
+      "id" | "organizationId" | "storageKey" | "createdAt" | "updatedAt"
     >,
   ): Promise<MediaRecord>;
   createMediaAndAudit(
     orgId: string,
     data: Omit<
       MediaRecord,
-      "id" | "organizationId" | "createdAt" | "updatedAt"
+      "id" | "organizationId" | "storageKey" | "createdAt" | "updatedAt"
     >,
     audit: UserMutationAuditContext,
   ): Promise<AuditedCreateResult<MediaRecord>>;

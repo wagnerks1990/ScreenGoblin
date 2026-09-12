@@ -24,6 +24,7 @@ import {
   usesAllowedMediaScheme,
 } from "../utils/media-url.js";
 import { mediaPublicationFailure } from "../utils/media-policy.js";
+import { issueMediaCapability, mediaStorageKey } from "../media/delivery.js";
 import {
   decodeCanonicalBase64Url,
   DeviceProofFormatError,
@@ -622,6 +623,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     async (request) => {
       let screen = request.device!;
       let requestChallengeId: string | undefined;
+      let credentialKeyId: string | undefined;
       if (app.config.deviceAuthMode === "proof-v1") {
         if (request.url.includes("?")) throw invalidDeviceProof();
         const proof = await readDeviceProof(request);
@@ -649,6 +651,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         if (!consumed.authenticated) throw invalidDeviceProof();
         screen = consumed.screen;
         requestChallengeId = proof.headers["x-device-challenge-id"];
+        credentialKeyId = consumed.credential.keyId;
       }
       const generatedDate = new Date();
       const generatedAt = generatedDate.toISOString();
@@ -761,7 +764,32 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                   name: item.asset.name,
                   kind: item.asset.kind,
                   mimeType: item.asset.mimeType,
-                  url: item.asset.url,
+                  url: (() => {
+                    const storageKey =
+                      item.asset.storageKey ??
+                      mediaStorageKey(
+                        screen.organizationId,
+                        item.asset.id,
+                        item.asset.checksumSha256,
+                      );
+                    const capability = issueMediaCapability(
+                      {
+                        screenId: screen.id,
+                        organizationId: screen.organizationId,
+                        ...(credentialKeyId ? { credentialKeyId } : {}),
+                        assetId: item.asset.id,
+                        storageKey,
+                        mimeType: item.asset.mimeType,
+                        checksumSha256: item.asset.checksumSha256,
+                        sizeBytes: item.asset.sizeBytes,
+                        expiresAt: validUntil,
+                      },
+                      app.config.mediaDeliverySecret,
+                    );
+                    return `${apiBaseUrl(request)}/media/${encodeURIComponent(
+                      item.asset.id,
+                    )}?capability=${encodeURIComponent(capability)}`;
+                  })(),
                   checksumSha256: item.asset.checksumSha256,
                   sizeBytes: item.asset.sizeBytes,
                   createdAt: item.asset.createdAt,
@@ -794,7 +822,13 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           priority,
           withdrawn,
           playbackEndsAt,
-          items,
+          items:
+            priority === "emergency"
+              ? items
+              : items.map((item) => ({
+                  ...item,
+                  asset: { ...item.asset, url: "" },
+                })),
         }),
       );
       const unsigned = {

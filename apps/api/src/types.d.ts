@@ -1,6 +1,7 @@
 import "@fastify/jwt";
 import type { DataStore, Role, ScreenRecord } from "./domain/types.js";
 import type { RateLimitBudget } from "./utils/rate-limit.js";
+import type { MediaObjectStore } from "./media/delivery.js";
 declare module "@fastify/jwt" {
   interface FastifyJWT {
     payload: {
@@ -23,9 +24,11 @@ declare module "fastify" {
   interface FastifyInstance {
     store: DataStore;
     rateLimitBudget: RateLimitBudget;
+    mediaObjectStore?: MediaObjectStore;
     config: {
       manifestSigningPrivateKey: string;
       pairingCodePepper: string;
+      mediaDeliverySecret: string;
       deviceAuthMode: "proof-v1" | "development-bearer";
       emergencyPublishingEnabled: boolean;
       mediaAllowedOrigins: string[];

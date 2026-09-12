@@ -6,6 +6,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Replace anonymous object-storage delivery with short-lived API capabilities bound to the active device, tenant, immutable asset identity, server-derived storage key, digest, size, method, and manifest lease. The API streams only from its fixed private S3 endpoint; direct Caddy/MinIO media access is removed. Populated legacy media upgrades now abort before mutation unless operators first complete an explicit object copy and checksum/size verification runbook; management DTOs do not expose private storage keys.
+
 - Upgrade the ESLint toolchain to ESLint 10 with matching core, React Hooks,
   React Refresh, and globals packages, and upgrade the DOM matcher package to
   its Node 22-compatible release. Preserve the reviewed Rules of Hooks and
