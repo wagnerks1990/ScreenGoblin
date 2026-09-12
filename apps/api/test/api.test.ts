@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hash } from "bcryptjs";
 import { buildApp } from "../src/app.js";
 import { MemoryStore } from "../src/store/memory.js";
@@ -43,6 +43,77 @@ beforeEach(async () => {
     role: "OWNER",
   });
 });
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const pairDevice = async (installationId: string) => {
+  const code = (
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/pairing-codes",
+      headers: { authorization: `Bearer ${token}` },
+    })
+  ).json().code;
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/device/pair",
+    payload: {
+      code,
+      device: {
+        installationId,
+        model: "Test player",
+        osVersion: "14",
+        playerVersion: "0.1.0",
+      },
+    },
+  });
+  expect(response.statusCode).toBe(201);
+  const credentials = response.json();
+  return {
+    screenId: credentials.screenId as string,
+    headers: {
+      "x-screen-id": credentials.screenId as string,
+      "x-device-token": credentials.deviceToken as string,
+    },
+  };
+};
+
+const scheduledPlaylist = async (
+  screenId: string,
+  overrides: Partial<Parameters<MemoryStore["createSchedule"]>[1]> = {},
+) => {
+  const asset = await store.createMedia("org-a", {
+    name: "Welcome",
+    kind: "image",
+    mimeType: "image/png",
+    url: "https://media.example.test/welcome.png",
+    checksumSha256: "a".repeat(64),
+    sizeBytes: 1024,
+  });
+  const playlist = await store.createPlaylist("org-a", {
+    name: "Lobby",
+    description: "",
+    items: [
+      { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+    ],
+  });
+  return store.createSchedule("org-a", {
+    playlistId: playlist.id,
+    name: "School day",
+    priority: "normal",
+    startsAt: "2026-09-14T00:00:00.000Z",
+    endsAt: "2026-09-15T00:00:00.000Z",
+    timezone: "America/New_York",
+    daysOfWeek: [1],
+    dailyStartMinutes: 9 * 60,
+    dailyEndMinutes: 17 * 60,
+    enabled: true,
+    screenIds: [screenId],
+    ...overrides,
+  });
+};
 
 describe("health and error contract", () => {
   it("reports liveness and readiness", async () => {
@@ -233,6 +304,42 @@ describe("authentication and organization RBAC", () => {
 });
 
 describe("device lifecycle", () => {
+  it("retries pairing-code collisions with a bounded allocation loop", async () => {
+    const create = store.tryCreatePairingAndAudit.bind(store);
+    let attempts = 0;
+    store.tryCreatePairingAndAudit = async (...arguments_) => {
+      attempts += 1;
+      if (attempts < 3) return { created: false, reason: "CODE_COLLISION" };
+      return create(...arguments_);
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/pairing-codes",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().code).toMatch(/^\d{6}$/);
+    expect(attempts).toBe(3);
+  });
+
+  it("fails safely after exhausting pairing-code allocation retries", async () => {
+    let attempts = 0;
+    store.tryCreatePairingAndAudit = async () => {
+      attempts += 1;
+      return { created: false, reason: "CODE_COLLISION" };
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/pairing-codes",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe("PAIRING_CODE_SPACE_EXHAUSTED");
+    expect(attempts).toBe(8);
+  });
+
   it("limits repeated guesses of the same pairing code", async () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const response = await app.inject({
@@ -314,6 +421,7 @@ describe("device lifecycle", () => {
     expect(manifest.json()).toMatchObject({
       screenId: credentials.screenId,
       priority: "normal",
+      withdrawn: true,
       items: [],
     });
     expect(manifest.json().signature).toBeTypeOf("string");
@@ -324,6 +432,229 @@ describe("device lifecycle", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(screens.body).not.toContain("deviceTokenHash");
+  });
+  it("claims a device and records its audit atomically", async () => {
+    const code = (
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/pairing-codes",
+        headers: { authorization: `Bearer ${token}` },
+      })
+    ).json().code;
+    store.audit = async () => {
+      throw new Error("standalone audit must not be used by device claim");
+    };
+
+    const paired = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/pair",
+      payload: {
+        code,
+        device: {
+          installationId: "atomic-claim-device",
+          model: "Test player",
+          osVersion: "14",
+          playerVersion: "0.1.0",
+        },
+      },
+    });
+    expect(paired.statusCode).toBe(201);
+    expect(store.audits).toContainEqual(
+      expect.objectContaining({
+        action: "device.paired",
+        entityId: paired.json().screenId,
+        metadata: { installationId: "atomic-claim-device" },
+      }),
+    );
+  });
+  it("retains a stable semantic version across routine manifest polls", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("stable-release-device");
+    await scheduledPlaylist(device.screenId);
+
+    const first = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    vi.setSystemTime(new Date("2026-09-14T13:31:00.000Z"));
+    const second = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+
+    expect(first).toMatchObject({ withdrawn: false, priority: "normal" });
+    expect(first.items).toHaveLength(1);
+    expect(second.version).toBe(first.version);
+    expect(second.generatedAt).not.toBe(first.generatedAt);
+    expect(second.validUntil).not.toBe(first.validUntil);
+  });
+
+  it("publishes a signed withdrawal when a schedule no longer applies", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("withdrawal-device");
+    const initialBlank = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    const schedule = await scheduledPlaylist(device.screenId);
+    const scheduled = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    await store.deleteSchedule("org-a", schedule.id);
+    const withdrawn = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+
+    expect(scheduled).toMatchObject({ withdrawn: false });
+    expect(scheduled.items).toHaveLength(1);
+    expect(withdrawn).toMatchObject({
+      screenId: device.screenId,
+      priority: "normal",
+      withdrawn: true,
+      items: [],
+      signatureAlgorithm: "Ed25519",
+    });
+    expect(withdrawn.signature).toBeTypeOf("string");
+    expect(withdrawn.version).not.toBe(scheduled.version);
+    expect(withdrawn.version).toBe(initialBlank.version);
+  });
+
+  it("publishes a signed withdrawal for an applicable empty playlist", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("empty-playlist-device");
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Empty lobby",
+      description: "",
+      items: [],
+    });
+    await store.createSchedule("org-a", {
+      playlistId: playlist.id,
+      name: "Empty school day",
+      priority: "priority",
+      startsAt: "2026-09-14T00:00:00.000Z",
+      endsAt: "2026-09-15T00:00:00.000Z",
+      timezone: "America/New_York",
+      daysOfWeek: [1],
+      dailyStartMinutes: 9 * 60,
+      dailyEndMinutes: 17 * 60,
+      enabled: true,
+      screenIds: [device.screenId],
+    });
+
+    const manifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(manifest).toMatchObject({
+      priority: "normal",
+      withdrawn: true,
+      items: [],
+      signatureAlgorithm: "Ed25519",
+    });
+    expect(manifest).not.toHaveProperty("playbackEndsAt");
+  });
+
+  it("publishes a signed withdrawal when every scheduled asset is expired", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("expired-playlist-device");
+    const asset = await store.createMedia("org-a", {
+      name: "Expired welcome",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/expired.png",
+      checksumSha256: "b".repeat(64),
+      sizeBytes: 1024,
+      expiresAt: "2026-09-14T13:29:00.000Z",
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Expired lobby",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    await store.createSchedule("org-a", {
+      playlistId: playlist.id,
+      name: "Expired school day",
+      priority: "normal",
+      startsAt: "2026-09-14T00:00:00.000Z",
+      endsAt: "2026-09-15T00:00:00.000Z",
+      timezone: "America/New_York",
+      daysOfWeek: [1],
+      dailyStartMinutes: 9 * 60,
+      dailyEndMinutes: 17 * 60,
+      enabled: true,
+      screenIds: [device.screenId],
+    });
+
+    const manifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(manifest).toMatchObject({
+      priority: "normal",
+      withdrawn: true,
+      items: [],
+      signatureAlgorithm: "Ed25519",
+    });
+  });
+
+  it("publishes the selected schedule end separately from the envelope lease", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:58:00.000Z"));
+    const device = await pairDevice("absolute-expiry-device");
+    await scheduledPlaylist(device.screenId, {
+      endsAt: "2026-09-14T13:59:00.000Z",
+      dailyEndMinutes: 17 * 60,
+    });
+
+    const manifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(manifest.playbackEndsAt).toBe("2026-09-14T13:59:00.000Z");
+    expect(manifest.validUntil).toBe("2026-09-14T14:03:00.000Z");
+  });
+
+  it("publishes the next daily playback boundary in its time zone", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:58:00.000Z"));
+    const device = await pairDevice("daily-expiry-device");
+    await scheduledPlaylist(device.screenId, {
+      endsAt: "2026-09-14T20:00:00.000Z",
+      dailyEndMinutes: 10 * 60,
+    });
+
+    const manifest = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(manifest.playbackEndsAt).toBe("2026-09-14T14:00:00.000Z");
+    expect(manifest.validUntil).toBe("2026-09-14T14:03:00.000Z");
   });
   it("rejects bad device credentials", async () => {
     const r = await app.inject({

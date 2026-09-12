@@ -3,8 +3,11 @@ import type { AssetRepository, PlayerManifest, PlayerStore } from "./types";
 export class ManifestError extends Error {}
 
 const MAX_ITEMS = 500;
-const MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
-const MAX_RELEASE_BYTES = 4 * 1024 * 1024 * 1024;
+// The WebView implementation verifies content in memory. Keep the signed
+// release contract within the repository's enforceable staging limits until
+// native incremental hashing and stream-to-disk activation are available.
+const MAX_ASSET_BYTES = 128 * 1024 * 1024;
+const MAX_RELEASE_BYTES = 512 * 1024 * 1024;
 
 function isAllowedAssetUrl(url: string, emergencyTemplate: boolean): boolean {
   try {
@@ -43,11 +46,26 @@ export function assertManifest(
       "Manifest generation time is too far in the future",
     );
   if (
+    manifest.playbackEndsAt !== undefined &&
+    (typeof manifest.playbackEndsAt !== "string" ||
+      Number.isNaN(Date.parse(manifest.playbackEndsAt)))
+  )
+    throw new ManifestError("Manifest playback boundary is invalid");
+  if (
     !manifest.priority ||
     !["normal", "campaign", "priority", "emergency"].includes(manifest.priority)
   )
     throw new ManifestError("Manifest priority is invalid");
-  if (!manifest.items.length)
+  if (typeof manifest.withdrawn !== "boolean")
+    throw new ManifestError("Manifest withdrawal state is missing");
+  if (
+    manifest.withdrawn &&
+    (manifest.priority !== "normal" || manifest.items.length !== 0)
+  )
+    throw new ManifestError(
+      "Withdrawn manifests must be empty normal releases",
+    );
+  if (!manifest.withdrawn && !manifest.items.length)
     throw new ManifestError("Manifest contains no playable items");
   if (manifest.items.length > MAX_ITEMS)
     throw new ManifestError("Manifest contains too many items");
@@ -85,44 +103,98 @@ export function assertManifest(
 }
 
 export class ManifestManager {
+  private stagingTail: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly store: PlayerStore,
     private readonly assets: AssetRepository,
   ) {}
 
-  async stageAndActivate(candidate: unknown): Promise<PlayerManifest> {
+  async stageAndActivate(
+    candidate: unknown,
+  ): Promise<PlayerManifest | undefined> {
+    const operation = this.stagingTail.then(() =>
+      this.stageAndActivateExclusive(candidate),
+    );
+    this.stagingTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  private async stageAndActivateExclusive(
+    candidate: unknown,
+  ): Promise<PlayerManifest | undefined> {
     assertManifest(candidate);
     if (Date.parse(candidate.validUntil) <= Date.now())
       throw new ManifestError("Manifest has already expired");
     const active = await this.store.getActiveManifest();
-    if (active?.version === candidate.version) return active;
-    await Promise.all(
-      candidate.items
-        .filter((item) => item.kind !== "web")
-        .map((item) => this.assets.prefetch(item)),
-    );
+    const playbackEnded =
+      candidate.playbackEndsAt !== undefined &&
+      Date.parse(candidate.playbackEndsAt) <= Date.now();
+    if (active?.version !== candidate.version && !playbackEnded)
+      await Promise.all(
+        candidate.items
+          .filter((item) => item.kind !== "web")
+          .map((item) => this.assets.prefetch(item)),
+      );
     await this.store.activateManifest(candidate);
-    return candidate;
+    if (this.assets.prune) {
+      try {
+        const activeAfterActivation = await this.store.getActiveManifest();
+        const previousAfterActivation = await this.store.getPreviousManifest();
+        const retainedAssets = [activeAfterActivation, previousAfterActivation]
+          .filter((manifest): manifest is PlayerManifest => Boolean(manifest))
+          .flatMap((manifest) => manifest.items);
+        await this.assets.prune(retainedAssets);
+      } catch {
+        // Cache collection is best-effort and must not make a successful,
+        // durable activation appear to have failed.
+      }
+    }
+    return candidate.withdrawn || playbackEnded ? undefined : candidate;
   }
 
   async recover(): Promise<PlayerManifest | undefined> {
     const active = await this.store.getActiveManifest();
+    if (active?.withdrawn) return undefined;
+    // `validUntil` is only the signed-envelope refresh lease for normal
+    // last-known-good playback. `playbackEndsAt` is the signed hard schedule
+    // boundary and blanks locally without reviving an older release.
+    if (
+      active?.playbackEndsAt !== undefined &&
+      Date.parse(active.playbackEndsAt) <= Date.now()
+    )
+      return undefined;
     if (
       active?.priority === "emergency" &&
       Date.parse(active.validUntil) <= Date.now()
     ) {
-      const previous = await this.store.getPreviousManifest();
+      const rollbackCandidate = await this.store.getPreviousManifest();
       if (
-        previous?.priority === "emergency" &&
-        Date.parse(previous.validUntil) <= Date.now()
+        rollbackCandidate?.priority === "emergency" &&
+        Date.parse(rollbackCandidate.validUntil) <= Date.now()
       )
         return undefined;
-      return this.store.rollback();
+      const previous = await this.store.rollback(active.version);
+      return previous?.withdrawn ? undefined : previous;
     }
-    return active ?? this.store.rollback();
+    if (active) return active;
+    const previous = await this.store.rollback();
+    return previous?.withdrawn ? undefined : previous;
   }
 
-  async rollback(): Promise<PlayerManifest | undefined> {
-    return this.store.rollback();
+  async rollback(
+    expectedActiveVersion?: string,
+  ): Promise<PlayerManifest | undefined> {
+    const resultingActive = await this.store.rollback(expectedActiveVersion);
+    if (
+      resultingActive?.withdrawn ||
+      (resultingActive?.playbackEndsAt !== undefined &&
+        Date.parse(resultingActive.playbackEndsAt) <= Date.now())
+    )
+      return undefined;
+    return resultingActive;
   }
 }

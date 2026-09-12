@@ -121,7 +121,7 @@ model PairingCode {
   id             String        @id @default(cuid())
   organizationId String
   screenId       String?
-  codeHash       String        @unique
+  codeHash       String
   status         PairingStatus @default(PENDING)
   expiresAt      DateTime
   claimedAt      DateTime?
@@ -130,6 +130,7 @@ model PairingCode {
   screen         Screen?       @relation(fields: [screenId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, status, expiresAt])
+  @@index([codeHash])
 }
 
 model MediaAsset {

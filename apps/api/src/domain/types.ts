@@ -115,6 +115,22 @@ export interface PairingRecord {
   screenId?: string | undefined;
 }
 
+export type PairingCreateResult =
+  | { created: true; pairing: PairingRecord }
+  | { created: false; reason: "CODE_COLLISION" };
+
+export interface PairingClaimAuditContext {
+  ipAddress?: string | undefined;
+  requestId?: string | undefined;
+  metadata?: Record<string, unknown> | undefined;
+}
+
+export interface PairingCreateAuditContext {
+  actorUserId: string;
+  ipAddress?: string | undefined;
+  requestId?: string | undefined;
+}
+
 export interface DataStore {
   ping(): Promise<void>;
   close?(): Promise<void>;
@@ -148,6 +164,17 @@ export interface DataStore {
     codeHash: string,
     expiresAt: string,
   ): Promise<PairingRecord>;
+  tryCreatePairing(
+    orgId: string,
+    codeHash: string,
+    expiresAt: string,
+  ): Promise<PairingCreateResult>;
+  tryCreatePairingAndAudit(
+    orgId: string,
+    codeHash: string,
+    expiresAt: string,
+    audit: PairingCreateAuditContext,
+  ): Promise<PairingCreateResult>;
   claimPairing(
     codeHash: string,
     device: {
@@ -157,6 +184,17 @@ export interface DataStore {
       playerVersion: string;
     },
     tokenHash: string,
+  ): Promise<ScreenRecord | null>;
+  claimPairingAndAudit(
+    codeHash: string,
+    device: {
+      installationId: string;
+      model: string;
+      osVersion: string;
+      playerVersion: string;
+    },
+    tokenHash: string,
+    audit: PairingClaimAuditContext,
   ): Promise<ScreenRecord | null>;
   authenticateDevice(screenId: string): Promise<ScreenRecord | null>;
   heartbeat(

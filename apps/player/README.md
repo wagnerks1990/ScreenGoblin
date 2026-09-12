@@ -8,6 +8,8 @@ Offline-first signage runtime for Android TV, HDMI dongles, Chromium kiosks, and
 - A manifest is promoted only after every required binary asset is safely cached.
 - The prior manifest remains available for automatic playback rollback.
 - Existing content continues when the API is unavailable. Connectivity status stays unobtrusive in the lower corner.
+- Signed withdrawals and signed schedule boundaries blank content without reviving an older schedule; stale poll and rollback callbacks cannot overwrite a newer version.
+- Cache-miss verification is limited to 128 MiB per asset and 512 MiB per manifest, with two concurrent downloads and active/rollback generation pruning. Larger media requires the planned native incremental hash/stream-to-disk path.
 - Web items are sandboxed but inherently require connectivity unless the remote application implements its own caching. Do not use web items as the only emergency or fallback content.
 
 The current API/player integration supports admin-created pairing codes,
@@ -29,7 +31,7 @@ npm test
 npm run build
 ```
 
-The API must expose the contract documented in [docs/PLAYER_PROTOCOL.md](docs/PLAYER_PROTOCOL.md). Serve asset URLs with CORS enabled. Asset `sizeBytes` and `checksumSha256` must describe the exact response bytes (after any server-side content encoding is decoded by Fetch).
+The API must expose the contract documented in [docs/PLAYER_PROTOCOL.md](docs/PLAYER_PROTOCOL.md). Serve asset URLs with CORS enabled. Asset `sizeBytes` and `checksumSha256` must describe the exact response bytes (after any server-side content encoding is decoded by Fetch). Cache-miss assets above 128 MiB and manifests above 512 MiB are rejected until native streaming verification exists.
 
 ## Android
 

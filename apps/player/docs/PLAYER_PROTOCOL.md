@@ -30,12 +30,18 @@ verify these proofs. Until that server protocol, nonce replay cache, lifecycle,
 and local-erasure flow exist, the current IndexedDB bearer token remains the
 actual authentication mechanism.
 
-The manifest includes `version`, `generatedAt`, `validUntil`, `screenId`, `priority`, and ordered playlist `items`. Each playlist item contains an `asset` plus `durationSeconds`; the player normalizes that wire shape before staging. Image, video, and template checksums are mandatory. URLs should be immutable or short-lived signed URLs whose content bytes stay stable for the URL lifetime.
+The manifest includes `version`, `generatedAt`, `validUntil`, `screenId`, `priority`, required signed `withdrawn`, optional signed `playbackEndsAt`, and ordered playlist `items`. Each playlist item contains an `asset` plus `durationSeconds`; the player normalizes that wire shape before staging. A withdrawal is an empty normal release that intentionally clears playback. `validUntil` is the renewable envelope lease; normal last-known-good playback may continue past it during an outage. `playbackEndsAt` is a hard schedule boundary and blanks locally even offline. Image, video, and template checksums are mandatory. URLs should be immutable or short-lived signed URLs whose content bytes stay stable for the URL lifetime.
 
 The envelope declares `signatureAlgorithm: Ed25519` and includes `signature`.
 Pairing returns `manifestVerificationKey`; the player pins that public key and
 rejects altered manifests, wrong-screen manifests, unsupported algorithms, and
 expired releases before staging. Changing the signing key currently requires
 controlled player re-enrollment; overlap/key-ID rotation is still required.
+
+The WebView cache-miss path permits at most 128 MiB per asset and 512 MiB per
+manifest, downloads at most two assets concurrently, verifies exact size and
+SHA-256 before activation, and prunes entries outside the active and rollback
+generations. Native incremental hashing, stream-to-disk activation, quota
+telemetry, and physical full-disk recovery evidence remain release gates.
 
 Emergency manifests use priority `emergency`; the player visibly labels them. Normal schedules are restored by publishing a new normal manifest. Device authentication tokens should be independently revocable and rotated by the server.

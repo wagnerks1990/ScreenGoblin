@@ -38,17 +38,26 @@ Independent passes covered backend/application security, Console UX/accessibilit
 - Governance, privacy, incident, SLO, supported-device, authorization, and
   immutable-release documents now exist as explicit unapproved NO-GO plans.
 - Reproducible validation, changelog, contributor/agent invariants, AI boundaries, and corrected current-state protocol documentation were added.
+- Pairing allocation now handles live-code collisions and expired-code reuse;
+  both issuance and claim audit writes are transactional with their mutations.
+- Manifest polling uses stable semantic versions, signed withdrawals, and signed
+  schedule playback boundaries. Player synchronization and rollback are
+  serialized/version-conditional, and asset staging has bounded memory,
+  concurrency, deadlines, integrity checks, and generation pruning.
+- CI now exercises PrismaStore against migrated PostgreSQL for tenant-scoped
+  access, pairing races and rollback, uniqueness, BIGINT safety, and
+  deterministic multi-organization identity behavior.
 
 ## Remaining blocking work
 
 1. Server enrollment and replay-safe verification of the Android Keystore key, credential rotation/revocation/re-enrollment/decommission, and verified local erasure.
-2. Pairing-code collision handling, abuse alert delivery/telemetry, and production threshold calibration for the distributed request budgets.
+2. Pairing abuse alert delivery/telemetry and production threshold calibration for the distributed request budgets.
 3. First-class location/group/screen permission scopes and separate publish, device-control, audit, and emergency capabilities.
 4. Immutable asset/content/playlist/manifest releases with draft, review, independent approval, publish, target snapshot, rollback parent, and optimistic concurrency.
 5. Server-owned upload, type detection, malware scanning/transcoding, private media delivery, signed URL expiry, and tenant/object-storage isolation.
 6. Emergency step-up MFA, independent approval, idempotent signed activation/clear, per-device received/verified/rendered/restored acknowledgements, partial-delivery escalation, and tabletop/physical-device evidence.
-7. Durable two-slot native content cache with decode probes, storage reservation/GC, crash/power-loss tests, bundled neutral fallback, proof of play, screenshots, watchdog, commands, and update rings.
-8. PostgreSQL-backed tenant/integrity/concurrency tests, browser E2E/accessibility/visual tests, Android emulator tests, supported physical-device matrix, load/soak/offline-window evidence, and measurable release thresholds.
+7. Durable native stream-to-disk content cache with decode probes, quota/free-space telemetry, crash/power-loss tests, bundled neutral fallback, proof of play, screenshots, watchdog, commands, and update rings. The web cache now bounds verification memory and retains active/rollback generations but is not physical-device evidence.
+8. Database-enforced composite tenant foreign keys and broader PostgreSQL integrity/concurrency coverage, browser E2E/accessibility/visual tests, Android emulator tests, supported physical-device matrix, load/soak/offline-window evidence, and measurable release thresholds.
 9. Registry promotion, immutable image/APK artifacts, digest pinning, provenance/signing, protected release environments, migration compatibility, off-host encrypted restoration, and measured RPO/RTO. CI image scans, SBOM generation, and disposable rollback drills are implemented but are not production evidence.
 10. Approval of the draft data-flow, retention, no-student-PII, incident, SLO, supported-device, and go/no-go records, plus privacy/content policy, subprocessor review, counsel review, and named operational ownership.
 

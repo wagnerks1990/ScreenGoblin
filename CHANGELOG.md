@@ -22,6 +22,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Enforce the configured API log level and reject unsafe production origins or reused trust secrets.
 - Make container filesystem scanning fail on unresolved HIGH/CRITICAL findings.
 - Upgrade Vitest and its coverage provider to the fixed major release, removing the known development-tool path traversal advisory.
+- Make pairing-code allocation collision-aware and reusable after expiry while
+  keeping issuance, claim, credential creation, and their required audit events
+  transactional.
+- Bound Player requests, retries, download concurrency, verification memory, and
+  retained CacheStorage generations; reject oversized or streaming-overflow
+  assets before activation.
 
 ### Fixed
 
@@ -30,6 +36,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   the complete Console session after unauthorized mutations.
 - Preserve the last verified normal manifest across repeated emergency polls, early clear, expiry, reboot, and later playback rollback.
 - Make emergency manifest versions and durations stable across polling.
+- Keep normal manifest versions stable across envelope refreshes, emit signed
+  withdrawals for absent or unplayable schedules, and enforce signed daily or
+  absolute playback boundaries without sacrificing ordinary offline
+  last-known-good playback.
+- Serialize Player synchronization and make IndexedDB rollback version-conditional
+  so stale polls, expiry callbacks, and playback failures cannot overwrite a
+  newer release or withdrawal.
 - Stop authenticated Console failures from silently displaying demo fleet data.
 - Load the Fleet page from the live API and visibly disable unimplemented device commands.
 - Clear passwords from Console state after close and every login attempt.
@@ -51,6 +64,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   and upload each image's SARIF report under a distinct code-scanning category.
 - Make the recovery drill wait for the requested PostgreSQL database instead of
   accepting the image's temporary initialization server as ready.
+- Exercise PrismaStore against a migrated PostgreSQL service in CI, including
+  tenant ID substitution, concurrent pairing, transaction rollback, uniqueness,
+  safe BIGINT conversion, and deterministic multi-organization identity lookup.
 
 ## 0.1.0 — 2026-09-11
 

@@ -51,13 +51,17 @@ The UI derives online/warning/offline state from server receipt time, never from
 
 A manifest contains:
 
-- screen ID, version, generation time, and expiry;
+- screen ID, stable semantic version, generation time, and expiry;
 - schedule priority and ordered items;
+- a signed `withdrawn` flag; a withdrawal is an empty, normal-priority release that intentionally clears playback;
+- an optional signed `playbackEndsAt` boundary for the selected schedule, distinct from the routinely refreshed envelope lease;
 - immutable asset URL, media type, size, SHA-256, and duration;
 - minimum compatible player version where needed;
 - a signature over a canonical representation.
 
-The player downloads into a staging cache, validates size and SHA-256, then atomically marks the new manifest active. It retains at least one prior complete normal manifest, and emergency overlays never replace that rollback baseline. The API signs manifests with Ed25519. During pairing the player pins that deployment's public verification key and verifies the exact signed envelope plus its expected screen ID before staging. Signing-key rotation with overlap/key IDs remains a pre-production gate. A failed signature, download, clock check, or activation preserves the last-known-good manifest.
+The player downloads into a staging cache, validates size and SHA-256, then atomically marks the new manifest active. The WebView path bounds cache-miss content to 128 MiB per asset and 512 MiB per release, limits concurrency to two downloads, and prunes outside active/rollback generations; native stream-to-disk verification remains a release gate for larger content. It retains at least one prior complete normal manifest, and emergency overlays never replace that rollback baseline. The API signs manifests with Ed25519. During pairing the player pins that deployment's public verification key and verifies the exact signed envelope plus its expected screen ID before staging. Signing-key rotation with overlap/key IDs remains a pre-production gate. A failed signature, download, clock check, or activation preserves the last-known-good manifest.
+
+Routine polls may refresh `generatedAt`, `validUntil`, and the signature without changing `version`; the version changes only when the semantic release changes. `validUntil` is the signed-envelope lease, while `playbackEndsAt` is the hard schedule authorization boundary enforced locally during an outage. When no schedule applies, or an applicable schedule has no playable non-expired assets, the API emits a signed withdrawal so previously active content does not continue past its authorization window.
 
 Emergency overrides are distinct, expire explicitly, and never erase the baseline schedule. Emergency publishing remains disabled by default until separate approval, player acknowledgement, and partial-delivery handling are implemented and physically tested.
 
