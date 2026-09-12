@@ -57,6 +57,7 @@ import {
   assignmentSnapshotDigest,
   canonicalAssignmentSnapshot,
   canonicalReleaseSnapshot,
+  canonicalUtcInstant,
   hasValidStoredAssignmentDigest,
   ReleaseSnapshotError,
   releaseSnapshotDigest,
@@ -3520,8 +3521,10 @@ export class PrismaStore implements DataStore {
             const frozenSchedule = {
               name: data.name,
               priority: data.priority,
-              startsAt: data.startsAt,
-              ...(data.endsAt ? { endsAt: data.endsAt } : {}),
+              startsAt: canonicalUtcInstant(data.startsAt),
+              ...(data.endsAt
+                ? { endsAt: canonicalUtcInstant(data.endsAt) }
+                : {}),
               timezone: data.timezone,
               daysOfWeek: [...data.daysOfWeek],
               ...(data.dailyStartMinutes !== undefined

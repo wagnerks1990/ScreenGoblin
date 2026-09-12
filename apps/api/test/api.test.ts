@@ -896,6 +896,91 @@ describe("immutable ordinary release publication", () => {
     screenIds: [screenId],
   });
 
+  it("orders absolute windows by instant and stores one canonical UTC spelling", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Fractional window",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const asset = await store.createMedia("org-a", {
+      name: "Fractional window",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/fractional-window.png",
+      checksumSha256: "9".repeat(64),
+      sizeBytes: 3,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Fractional window",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    const key = crypto.randomUUID();
+    const valid = {
+      ...schedulePayload(playlist.id, screen.id),
+      startsAt: "2026-09-14T00:00:00.2Z",
+      endsAt: "2026-09-14T00:00:00.21Z",
+    };
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: scheduleHeaders(token, key),
+      payload: valid,
+    });
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toMatchObject({
+      startsAt: "2026-09-14T00:00:00.200Z",
+      endsAt: "2026-09-14T00:00:00.210Z",
+    });
+
+    const equivalentReplay = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: scheduleHeaders(token, key),
+      payload: {
+        ...valid,
+        startsAt: "2026-09-14T00:00:00.2000Z",
+        endsAt: "2026-09-14T00:00:00.210Z",
+      },
+    });
+    expect(equivalentReplay.statusCode).toBe(201);
+    expect(equivalentReplay.json()).toEqual(first.json());
+    expect(store.schedules).toHaveLength(1);
+    expect(store.schedules[0]).toMatchObject({
+      startsAt: "2026-09-14T00:00:00.200Z",
+      endsAt: "2026-09-14T00:00:00.210Z",
+    });
+    expect(store.releaseAssignments[0]!.schedule).toMatchObject({
+      startsAt: "2026-09-14T00:00:00.200Z",
+      endsAt: "2026-09-14T00:00:00.210Z",
+    });
+    expect(store.idempotencyRecords[0]!.response).toMatchObject({
+      startsAt: "2026-09-14T00:00:00.200Z",
+      endsAt: "2026-09-14T00:00:00.210Z",
+    });
+
+    for (const [startsAt, endsAt] of [
+      ["2026-09-14T00:00:00.20Z", "2026-09-14T00:00:00.2Z"],
+      ["2026-09-14T00:00:00.21Z", "2026-09-14T00:00:00.2Z"],
+    ]) {
+      const rejected = await app.inject({
+        method: "POST",
+        url: "/api/v1/schedules",
+        headers: scheduleHeaders(),
+        payload: { ...valid, startsAt, endsAt },
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().error).toMatchObject({
+        code: "VALIDATION_ERROR",
+      });
+    }
+    expect(store.schedules).toHaveLength(1);
+  });
+
   it("enforces the release capability compatibility matrix", async () => {
     const screen = await store.createScreen("org-a", {
       name: "Lobby",

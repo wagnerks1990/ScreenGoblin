@@ -4217,6 +4217,122 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).toBe(2);
   });
 
+  it("persists and replays fractional schedule windows in canonical UTC", async () => {
+    const organization = await createOrganization("canonical-window");
+    const actor = await createMember(
+      organization.id,
+      "PUBLISHER",
+      "canonical-window-publisher",
+    );
+    const screen = await store.createScreen(organization.id, {
+      name: "Canonical window screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia(organization.id, {
+      name: "Canonical window media",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/canonical-window.png",
+      checksumSha256: "4".repeat(64),
+      sizeBytes: 100,
+    });
+    const playlist = await store.createPlaylist(organization.id, {
+      name: "Canonical window playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+    const input = {
+      playlistId: playlist.id,
+      name: "Canonical window schedule",
+      priority: "normal" as const,
+      startsAt: "2026-09-14T00:00:00.2Z",
+      endsAt: "2026-09-14T00:00:00.21Z",
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+      screenIds: [screen.id],
+    };
+    const equivalentInput = {
+      ...input,
+      startsAt: "2026-09-14T00:00:00.2000Z",
+      endsAt: "2026-09-14T00:00:00.210Z",
+    };
+    expect(schedulePublicationRequestDigest(equivalentInput)).toBe(
+      schedulePublicationRequestDigest(input),
+    );
+    const idempotency = {
+      keyHash: proofHash(),
+      requestDigestSha256: schedulePublicationRequestDigest(input),
+    };
+    const first = await store.publishScheduleAndAudit(
+      organization.id,
+      input,
+      { actorUserId: actor.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+      idempotency,
+    );
+    if (!first.published) throw new Error("canonical publication failed");
+    const replay = await store.publishScheduleAndAudit(
+      organization.id,
+      equivalentInput,
+      { actorUserId: actor.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+      idempotency,
+    );
+    expect(replay).toMatchObject({
+      published: true,
+      replayed: true,
+      schedule: {
+        id: first.schedule.id,
+        startsAt: "2026-09-14T00:00:00.200Z",
+        endsAt: "2026-09-14T00:00:00.210Z",
+      },
+    });
+    expect(first.schedule).toMatchObject({
+      startsAt: "2026-09-14T00:00:00.200Z",
+      endsAt: "2026-09-14T00:00:00.210Z",
+    });
+    const [storedSchedule, storedAssignment, storedIdempotency] =
+      await Promise.all([
+        prisma.schedule.findUniqueOrThrow({ where: { id: first.schedule.id } }),
+        prisma.releaseAssignment.findUniqueOrThrow({
+          where: { id: first.assignment.id },
+        }),
+        prisma.idempotencyRecord.findFirstOrThrow({
+          where: { organizationId: organization.id },
+        }),
+      ]);
+    expect(storedSchedule.startsAt.toISOString()).toBe(
+      "2026-09-14T00:00:00.200Z",
+    );
+    expect(storedSchedule.endsAt?.toISOString()).toBe(
+      "2026-09-14T00:00:00.210Z",
+    );
+    expect(storedAssignment.startsAt.toISOString()).toBe(
+      "2026-09-14T00:00:00.200Z",
+    );
+    expect(storedAssignment.endsAt?.toISOString()).toBe(
+      "2026-09-14T00:00:00.210Z",
+    );
+    expect(storedIdempotency.responseBody).toMatchObject({
+      startsAt: "2026-09-14T00:00:00.200Z",
+      endsAt: "2026-09-14T00:00:00.210Z",
+    });
+    expect(await prisma.schedule.count()).toBe(1);
+    expect(await prisma.releaseAssignment.count()).toBe(1);
+    expect(await prisma.auditEvent.count()).toBe(1);
+  });
+
   it("replays a withdrawn publication without reactivation and uses a fresh key for a new intent", async () => {
     const organization = await createOrganization("release-reactivation");
     const actor = await createUser("release-reactivation@example.test");

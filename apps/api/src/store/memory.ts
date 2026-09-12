@@ -54,6 +54,7 @@ import {
   assignmentSnapshotDigest,
   canonicalAssignmentSnapshot,
   canonicalReleaseSnapshot,
+  canonicalUtcInstant,
   hasValidStoredAssignmentDigest,
   ReleaseSnapshotError,
   releaseSnapshotDigest,
@@ -2180,6 +2181,8 @@ export class MemoryStore implements DataStore {
       id: id(),
       organizationId: org,
       ...data,
+      startsAt: canonicalUtcInstant(data.startsAt),
+      ...(data.endsAt ? { endsAt: canonicalUtcInstant(data.endsAt) } : {}),
       createdAt: t,
       updatedAt: t,
     };
@@ -2312,8 +2315,8 @@ export class MemoryStore implements DataStore {
     const frozenSchedule = {
       name: data.name,
       priority: data.priority,
-      startsAt: data.startsAt,
-      ...(data.endsAt ? { endsAt: data.endsAt } : {}),
+      startsAt: canonicalUtcInstant(data.startsAt),
+      ...(data.endsAt ? { endsAt: canonicalUtcInstant(data.endsAt) } : {}),
       timezone: data.timezone,
       daysOfWeek: [...data.daysOfWeek],
       ...(data.dailyStartMinutes !== undefined
@@ -2371,6 +2374,8 @@ export class MemoryStore implements DataStore {
       id: scheduleId,
       organizationId: org,
       ...data,
+      startsAt: frozenSchedule.startsAt,
+      ...(frozenSchedule.endsAt ? { endsAt: frozenSchedule.endsAt } : {}),
       screenIds,
       releaseId: release.id,
       assignmentId,
