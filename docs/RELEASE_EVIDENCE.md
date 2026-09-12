@@ -65,7 +65,8 @@ Strict Gradle dependency locks also pin the selected buildscript, app, generated
 Cordova bridge, and Capacitor Android transitive graphs. Because Capacitor is
 regenerated under `node_modules`, its lock state is deliberately redirected to
 a unique checked-in path under `apps/player/android/gradle/dependency-locks`.
-The build uses Android Gradle Plugin 8.10.1 with explicit scanner-fixed
+The build uses Android Gradle Plugin 8.10.1 and Google Services plugin 4.5.0
+with explicit scanner-fixed
 resolution pins for Netty 4.1.137.Final, Protobuf 3.25.5, Bouncy Castle 1.84,
 jose4j 0.9.6, and JDOM 2.0.6.1 across root, regenerated-project buildscript,
 and Android test-platform configurations.

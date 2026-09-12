@@ -6,6 +6,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Upgrade the Android Google Services Gradle plugin to 4.5.0 with its exact
+  buildscript lock and strict artifact verification checksums. Retain the
+  checksum-locked Gradle 8.11.1 wrapper paired with Android Gradle Plugin 8.10.1;
+  a Gradle 9 migration remains a separate Android toolchain change.
+
 - Replace anonymous object-storage delivery with short-lived API capabilities bound to the active device, tenant, immutable asset identity, server-derived storage key, digest, size, method, and manifest lease. The API streams only from its fixed private S3 endpoint; direct Caddy/MinIO media access is removed. Populated legacy media upgrades now abort before mutation unless operators first complete an explicit object copy and checksum/size verification runbook; management DTOs do not expose private storage keys.
 
 - Upgrade the ESLint toolchain to ESLint 10 with matching core, React Hooks,
