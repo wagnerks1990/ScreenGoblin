@@ -75,6 +75,17 @@ older than 30 days are pruned on the next insert; a dormant database therefore
 needs a separately approved retention job if exact-time deletion is required.
 Do not treat this bounded local table as a SIEM or durable long-term archive.
 
+`AuditEvent` rejects ordinary updates and direct row deletion while its
+organization exists. The exceptions are deliberate: deleting a `User` sets
+`actorUserId` to null, and deleting an `Organization` cascades all of that
+tenant's local events. Do not perform organization deletion when records may be
+subject to a hold; ScreenGoblin has no implemented hold check, tenant tombstone,
+or deletion ledger. The current API database login owns the table and can
+disable the trigger or use `TRUNCATE`, so the trigger is not a control against
+database credential compromise or privileged administration. `/health/ready`
+checks database reachability, not audit completeness, export delivery, or
+retention health; no such pipeline exists yet.
+
 Container logs:
 
 ```bash
@@ -108,6 +119,19 @@ deploy/scripts/postgres-restore.sh /path/to/screengoblin-TIMESTAMP.dump
 The restore requires the adjacent checksum and refuses to replace any existing database by default. Restoring into a protected database requires the explicit `ALLOW_DANGEROUS_RESTORE=I_UNDERSTAND_THIS_CAN_DESTROY_DATA` acknowledgement; replacing an existing database separately requires `ALLOW_EXISTING_RESTORE_DATABASE=I_UNDERSTAND_THIS_OVERWRITES_A_DATABASE`. Take a fresh backup, stop writers, and obtain the operational approval required by local policy before either override. Do not use an override for routine validation.
 
 Object storage needs a matching versioned backup and integrity inventory; the PostgreSQL scripts do not back up MinIO. Test restoration into an isolated environment at least quarterly and verify a sample manifest can be reconstructed with its media. `.github/workflows/recovery-drill.yml` applies the real Prisma migration chain, restores a representative tenant/content/schedule/immutable-release/audit graph, validates its constraints and references, matches restored database media metadata to a restored MinIO object's exact size and SHA-256, and exercises retained-image rollback. It runs monthly, when recovery implementation changes, and when Prisma migrations change. It pulls exact fixture tags once, records their resolved repository digests, and uses those immutable digests with `--pull never` during the drill.
+
+The disposable recovery drill also verifies that the local audit metadata
+validator and mutation trigger survive dump/restore and reject an ordinary
+update. That result does not prove hostile-owner resistance, off-host audit
+delivery, retention, legal-hold enforcement, or recovery of deleted tenants.
+
+The audit-integrity migration validates every existing audit row and refuses
+out-of-bounds legacy data rather than truncating it. Its transaction holds a
+write-conflicting table lock through validation and index replacement. Measure
+the audit table on a staging restore, stop API writers, take and verify a fresh
+backup, and schedule an appropriate maintenance window before applying it to a
+non-test database. Investigate rejected rows under approved access; do not edit
+or discard audit evidence merely to make the migration pass.
 
 Root lockfile changes match the recovery workflow's automatic pull-request path
 filter so dependency updates receive recovery evidence for their exact head.

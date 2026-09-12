@@ -4,6 +4,12 @@
 
 **Draft — unapproved and not implemented. NO-GO for production reliance.** Durations below are proposed engineering defaults, not legal advice or authorization. Privacy, records, security, and operations owners must approve applicable periods and verify automated enforcement.
 
+Local audit field bounds and ordinary row-mutation triggers do not change this
+status. Organization deletion still cascades its audit rows, user deletion
+still removes actor attribution, the table-owning database login can bypass the
+trigger, and no expiration job, legal-hold check, tenant tombstone, deletion
+ledger, complete export, or independently retained copy exists.
+
 ## Principles
 
 - Collect only data required to publish approved signage, operate screens, secure the service, and demonstrate system behavior.

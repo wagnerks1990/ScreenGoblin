@@ -34,6 +34,15 @@ no public identity-administration endpoints.
 | Emergency      | Expiring high-priority overrides                                 | Privileged user |
 | Audit          | Security- and publishing-relevant events                         | Admin/auditor   |
 
+`GET /audit-events` returns a tenant-scoped latest-event window of at most 200
+rows, ordered by descending `(createdAt, id)` so timestamp ties are stable. It
+has no cursor or historical-export contract and cannot reconstruct an
+arbitrarily long history. Local rows are shape- and size-bounded. Ordinary
+updates and direct row deletion are rejected by PostgreSQL, with narrow
+exceptions for deleting a referenced user or organization. The table owner can
+disable these controls or truncate the table, so this is not a tamper-evidence,
+WORM, retention, or legal-hold boundary.
+
 ## Authorization rules
 
 Every user resource query must include the authenticated organization boundary. A caller-provided organization ID is never sufficient authorization. Devices are restricted to their own screen and current organization. Object keys must be server-generated and tenant-prefixed. Emergency activation requires a separately audited permission; district-wide two-person approval is a production requirement.

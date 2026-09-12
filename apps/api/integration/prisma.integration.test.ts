@@ -227,6 +227,151 @@ afterAll(async () => {
 });
 
 describe("PrismaStore PostgreSQL integration", () => {
+  it("bounds audit rows and preserves deterministic equal-time reads", async () => {
+    const organization = await createOrganization("audit-bounds");
+    const createdAt = new Date("2026-09-12T12:00:00.000Z");
+    await prisma.auditEvent.createMany({
+      data: [
+        {
+          id: "audit-order-a",
+          organizationId: organization.id,
+          actorType: "system",
+          action: "integration.first",
+          entityType: "test",
+          metadata: {},
+          createdAt,
+        },
+        {
+          id: "audit-order-b",
+          organizationId: organization.id,
+          actorType: "system",
+          action: "integration.second",
+          entityType: "test",
+          metadata: { nested: { values: [1, true, null, "ok"] } },
+          createdAt,
+        },
+      ],
+    });
+    expect(
+      (await store.listAudits(organization.id, 10)).map(({ id }) => id),
+    ).toEqual(["audit-order-b", "audit-order-a"]);
+
+    const invalidMetadata = [
+      "[]",
+      JSON.stringify({ value: "x".repeat(2_049) }),
+      JSON.stringify({ values: Array(257).fill(0) }),
+      JSON.stringify(
+        Object.fromEntries(
+          Array.from({ length: 65 }, (_, index) => [`key-${index}`, index]),
+        ),
+      ),
+      JSON.stringify(
+        Object.fromEntries(
+          Array.from({ length: 20 }, (_, index) => [
+            `key-${index}`,
+            "x".repeat(2_000),
+          ]),
+        ),
+      ),
+    ];
+    let nested: Record<string, unknown> = { value: true };
+    for (let depth = 0; depth < 9; depth++) nested = { nested };
+    invalidMetadata.push(JSON.stringify(nested));
+
+    for (const [index, metadata] of invalidMetadata.entries()) {
+      await expect(
+        prisma.$executeRawUnsafe(
+          `INSERT INTO "AuditEvent" ("id", "organizationId", "actorType", "action", "entityType", "metadata")
+           VALUES ($1, $2, 'system', 'integration.invalid', 'test', $3::jsonb)`,
+          `audit-invalid-metadata-${index}`,
+          organization.id,
+          metadata,
+        ),
+      ).rejects.toMatchObject({
+        code: "P2010",
+        meta: expect.objectContaining({ code: "23514" }),
+      });
+    }
+    const invalidScalars = [
+      { actorType: "x".repeat(33) },
+      { action: "x".repeat(97) },
+      { entityType: "x".repeat(65) },
+      { entityId: "x".repeat(257) },
+      { ipAddress: "x".repeat(65) },
+      { requestId: "x".repeat(129) },
+    ];
+    for (const [index, invalid] of invalidScalars.entries()) {
+      await expect(
+        prisma.$executeRawUnsafe(
+          `INSERT INTO "AuditEvent" ("id", "organizationId", "actorType", "action", "entityType", "entityId", "ipAddress", "requestId", "metadata")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb)`,
+          `audit-invalid-scalar-${index}`,
+          organization.id,
+          invalid.actorType ?? "system",
+          invalid.action ?? "integration.invalid",
+          invalid.entityType ?? "test",
+          invalid.entityId ?? null,
+          invalid.ipAddress ?? null,
+          invalid.requestId ?? null,
+        ),
+      ).rejects.toMatchObject({
+        code: "P2010",
+        meta: expect.objectContaining({ code: "23514" }),
+      });
+    }
+  });
+
+  it("rejects ordinary audit mutation while preserving User and Organization deletion semantics", async () => {
+    const [authority] = await prisma.$queryRaw<
+      Array<{ tableOwner: boolean; canTruncate: boolean }>
+    >`
+      SELECT
+        table_class.relowner = current_user::regrole::oid AS "tableOwner",
+        has_table_privilege(current_user, '"AuditEvent"', 'TRUNCATE') AS "canTruncate"
+      FROM pg_class AS table_class
+      WHERE table_class.oid = '"AuditEvent"'::regclass`;
+    // Ordinary row triggers still fire for the owner. These facts deliberately
+    // record why the trigger is not a hostile-database security boundary.
+    expect(authority).toEqual({ tableOwner: true, canTruncate: true });
+
+    const organization = await createOrganization("audit-mutation");
+    const actor = await createUser(`audit-actor-${randomUUID()}@example.test`);
+    const audit = await prisma.auditEvent.create({
+      data: {
+        organizationId: organization.id,
+        actorUserId: actor.id,
+        actorType: "user",
+        action: "integration.recorded",
+        entityType: "test",
+        metadata: {},
+      },
+    });
+    const rejected = {
+      code: "P2010",
+      meta: expect.objectContaining({ code: "55000" }),
+    };
+
+    await expect(
+      prisma.$executeRaw`UPDATE "AuditEvent" SET "action" = 'integration.changed' WHERE "id" = ${audit.id}`,
+    ).rejects.toMatchObject(rejected);
+    await expect(
+      prisma.$executeRaw`UPDATE "AuditEvent" SET "actorUserId" = NULL WHERE "id" = ${audit.id}`,
+    ).rejects.toMatchObject(rejected);
+    await expect(
+      prisma.$executeRaw`DELETE FROM "AuditEvent" WHERE "id" = ${audit.id}`,
+    ).rejects.toMatchObject(rejected);
+
+    await prisma.user.delete({ where: { id: actor.id } });
+    expect(
+      await prisma.auditEvent.findUnique({ where: { id: audit.id } }),
+    ).toMatchObject({ actorUserId: null, action: "integration.recorded" });
+
+    await prisma.organization.delete({ where: { id: organization.id } });
+    expect(
+      await prisma.auditEvent.findUnique({ where: { id: audit.id } }),
+    ).toBeNull();
+  });
+
   it("keeps tenant-owned reads, lookups, updates, and deletes within the requested organization", async () => {
     const [alpha, beta] = await Promise.all([
       createOrganization("alpha"),
