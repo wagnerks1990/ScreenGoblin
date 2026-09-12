@@ -28,7 +28,14 @@ case " $* " in
   *" down --volumes --remove-orphans "*) exit 0 ;;
   *" ps --all "*) printf 'NAME STATUS\\nsmoke healthy\\n'; exit 0 ;;
   *" ps --quiet "*) printf 'container-%s\\n' "${!#}"; exit 0 ;;
-  *" inspect container-"*) printf 'null\\n'; exit 0 ;;
+  *" inspect container-"*)
+    if [[ "${FAKE_HOST_BINDING:-}" == true ]]; then
+      printf '[{"HostIp":"0.0.0.0","HostPort":"18080"}]\\n'
+    else
+      printf 'null\\n'
+    fi
+    exit 0
+    ;;
   *" logs --no-color "*)
     printf 'JWT_SECRET=%s\\n' "$JWT_SECRET"
     printf '%s' "$JWT_SECRET" > "$FAKE_LEAK_CAPTURE"
@@ -169,6 +176,21 @@ test("bounds startup failure and invokes cleanup", () => {
     const commands = readFileSync(f.commandLog, "utf8");
     assert.match(commands, /up --detach --wait --wait-timeout 180/);
     assert.match(commands, /down --volumes --remove-orphans --timeout 20/);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a real private-service host binding and invokes cleanup", () => {
+  const f = fixture();
+  try {
+    const result = runSmoke(f, { FAKE_HOST_BINDING: "true" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /unexpectedly has host bindings/);
+    assert.match(
+      readFileSync(f.commandLog, "utf8"),
+      /down --volumes --remove-orphans --timeout 20/,
+    );
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }
