@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
+import { CAPABILITIES } from "@screengoblin/contracts";
 import { z } from "zod";
-import { ApiError, requireRole, sendNotFound } from "../utils/http.js";
+import { ApiError, requireCapability, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
 import { validTimeZone } from "../utils/schedule.js";
 const body = z
@@ -44,7 +45,7 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
     data: await app.store.listSchedules(request.user.organizationId),
   }));
   app.post("/schedules", async (request, reply) => {
-    requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
+    requireCapability(request, CAPABILITIES.releasePublish);
     const input = body.parse(request.body);
     const result = await app.store.publishScheduleAndAudit(
       request.user.organizationId,
@@ -57,6 +58,12 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
       { mediaAllowedOrigins: app.config.mediaAllowedOrigins },
     );
     if (!result.published) {
+      if (result.reason === "FORBIDDEN")
+        throw new ApiError(
+          403,
+          "FORBIDDEN",
+          "You do not have permission to perform this action",
+        );
       const errors = {
         PLAYLIST_NOT_FOUND: [
           "INVALID_PLAYLIST",
@@ -85,7 +92,7 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(201).send(result.schedule);
   });
   app.delete("/schedules/:id", async (request, reply) => {
-    requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
+    requireCapability(request, CAPABILITIES.releaseWithdraw);
     const { id } = params.parse(request.params);
     const result = await app.store.withdrawScheduleAndAudit(
       request.user.organizationId,
@@ -96,6 +103,12 @@ export const scheduleRoutes: FastifyPluginAsync = async (app) => {
         requestId: request.id,
       },
     );
+    if (!result.withdrawn && result.reason === "FORBIDDEN")
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to perform this action",
+      );
     if (!result.withdrawn && result.reason === "NOT_FOUND")
       return sendNotFound(reply);
     return reply.code(204).send();

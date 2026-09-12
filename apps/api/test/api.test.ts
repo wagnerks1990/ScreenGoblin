@@ -327,6 +327,88 @@ describe("immutable ordinary release publication", () => {
     screenIds: [screenId],
   });
 
+  it("enforces the release capability compatibility matrix", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Lobby",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const asset = await store.createMedia("org-a", {
+      name: "Welcome",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/welcome.png",
+      checksumSha256: "a".repeat(64),
+      sizeBytes: 3,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Role matrix",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+
+    let publishedScheduleId = "";
+    for (const role of ["OWNER", "ADMIN", "PUBLISHER"] as const) {
+      store.users[0]!.role = role;
+      const roleToken = app.jwt.sign({
+        sub: store.users[0]!.id,
+        email: store.users[0]!.email,
+        organizationId: "org-a",
+        role,
+      });
+      const publication = await app.inject({
+        method: "POST",
+        url: "/api/v1/schedules",
+        headers: { authorization: `Bearer ${roleToken}` },
+        payload: {
+          ...schedulePayload(playlist.id, screen.id),
+          name: `${role} publication`,
+        },
+      });
+      expect(publication.statusCode).toBe(201);
+      publishedScheduleId ||= publication.json().id;
+      const withdrawal = await app.inject({
+        method: "DELETE",
+        url: `/api/v1/schedules/${publication.json().id}`,
+        headers: { authorization: `Bearer ${roleToken}` },
+      });
+      expect(withdrawal.statusCode).toBe(204);
+    }
+
+    store.users[0]!.role = "VIEWER";
+    const viewerToken = app.jwt.sign({
+      sub: store.users[0]!.id,
+      email: store.users[0]!.email,
+      organizationId: "org-a",
+      role: "VIEWER",
+    });
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: { authorization: `Bearer ${viewerToken}` },
+      payload: {
+        ...schedulePayload(playlist.id, screen.id),
+        name: "Viewer publication",
+      },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.code).toBe("FORBIDDEN");
+    const deniedWithdrawal = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/schedules/${publishedScheduleId}`,
+      headers: { authorization: `Bearer ${viewerToken}` },
+    });
+    expect(deniedWithdrawal.statusCode).toBe(403);
+    expect(deniedWithdrawal.json().error.code).toBe("FORBIDDEN");
+    expect(store.schedules).toHaveLength(3);
+    expect(store.releaseAssignments).toHaveLength(6);
+    expect(store.audits).toHaveLength(6);
+  });
+
   it("atomically publishes a frozen release, assignment, schedule, and audit", async () => {
     const screen = await store.createScreen("org-a", {
       name: "Lobby",

@@ -180,12 +180,16 @@ export type SchedulePublicationResult =
         | "SCREEN_NOT_FOUND"
         | "ASSET_NOT_FOUND"
         | "ASSET_NOT_ALLOWED"
-        | "NO_PLAYABLE_ITEMS";
+        | "NO_PLAYABLE_ITEMS"
+        | "FORBIDDEN";
     };
 
 export type ScheduleWithdrawalResult =
   | { withdrawn: true; assignment: ReleaseAssignmentRecord }
-  | { withdrawn: false; reason: "NOT_FOUND" | "ALREADY_WITHDRAWN" };
+  | {
+      withdrawn: false;
+      reason: "NOT_FOUND" | "ALREADY_WITHDRAWN" | "FORBIDDEN";
+    };
 export interface EmergencyRecord {
   id: string;
   organizationId: string;

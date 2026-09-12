@@ -2,7 +2,7 @@
 
 ## Status
 
-**Design proposal — not implemented or approved.** The current API uses one organization membership role (`OWNER`, `ADMIN`, `PUBLISHER`, or `VIEWER`) and organization-filtered queries. That is insufficient for least-privilege multi-location publishing. This plan is compatibility-oriented, but migrations, API contracts, policy review, backfill evidence, and enforcement tests are release gates.
+**Design proposal — not fully implemented or approved.** Ordinary release publication and withdrawal now use a closed, deny-by-default capability adapter backed by current organization membership, while preserving the existing role behavior. The broader API still uses one organization membership role (`OWNER`, `ADMIN`, `PUBLISHER`, or `VIEWER`) and organization-filtered queries. That is insufficient for least-privilege multi-location publishing. Resource scopes, grants, approvals, policy review, backfill evidence, and full enforcement tests remain release gates.
 
 Emergency publishing remains disabled. Nothing in this document authorizes emergency use or allows AI/automation to approve or publish content.
 

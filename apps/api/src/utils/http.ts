@@ -1,5 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Role } from "../domain/types.js";
+import type { Capability } from "@screengoblin/contracts";
+import { hasCapability } from "../authorization/policy.js";
 export class ApiError extends Error {
   constructor(
     readonly statusCode: number,
@@ -11,6 +13,17 @@ export class ApiError extends Error {
 }
 export const requireRole = (request: FastifyRequest, roles: Role[]) => {
   if (!roles.includes(request.user.role))
+    throw new ApiError(
+      403,
+      "FORBIDDEN",
+      "You do not have permission to perform this action",
+    );
+};
+export const requireCapability = (
+  request: FastifyRequest,
+  capability: Capability,
+) => {
+  if (!hasCapability(request.user.role, capability))
     throw new ApiError(
       403,
       "FORBIDDEN",

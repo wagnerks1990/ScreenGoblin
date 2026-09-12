@@ -3,6 +3,13 @@ export type Orientation = "landscape" | "portrait";
 export type ContentKind = "image" | "video" | "web" | "template";
 export type SchedulePriority = "normal" | "campaign" | "priority" | "emergency";
 
+export const CAPABILITIES = {
+  releasePublish: "release.publish",
+  releaseWithdraw: "release.withdraw",
+} as const;
+
+export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
+
 export interface MediaAsset {
   id: string;
   name: string;

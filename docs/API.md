@@ -30,6 +30,8 @@ Shared request and response shapes are defined in `packages/contracts`. The Open
 
 Every user resource query must include the authenticated organization boundary. A caller-provided organization ID is never sufficient authorization. Devices are restricted to their own screen and current organization. Object keys must be server-generated and tenant-prefixed. Emergency activation requires a separately audited permission; district-wide two-person approval is a production requirement.
 
+Ordinary release publication and withdrawal use a closed, deny-by-default capability adapter. The API checks the capability at the route boundary, and the transactional store re-evaluates the actor's current organization membership and capability before writing release state or audit history. For compatibility, `OWNER`, `ADMIN`, and `PUBLISHER` currently receive `release.publish` and `release.withdraw`; `VIEWER` receives neither. This adapter does not yet provide resource scopes, custom grants, or reviewer/publisher separation.
+
 Media metadata creation and manifest publication are fail-closed: each URL origin must exactly match an explicitly configured allowlist entry. Production entries are origin-only HTTPS URLs using non-local DNS hostnames; URL credentials are rejected. The API stores metadata and does not fetch the URL. Players reject redirects while downloading binary assets. Web frames can still load navigation and subresources from their allowlisted entry point, and a hostname can later resolve to a private address, so web content needs a separately controlled content origin, DNS controls, and player-network egress policy before fleet use.
 
 ## Caching and consistency
