@@ -66,6 +66,16 @@ proof spanning this rollout therefore fails closed; an authorized operator must
 issue a new target-bound grant and the Player must begin a new proof exchange.
 Do not restore or relabel the legacy pending authority.
 
+The durable membership-attribution migration is transactional. It backfills
+one `(organizationId, userId)` tombstone for every live membership before
+repointing immutable release and assignment creator foreign keys, then installs
+a membership-insert trigger for future principals. The migration holds table
+locks while validating replacement foreign keys; quiesce publication and
+identity writers, verify the backup, and budget the lock/scan window on a
+restored production-sized copy. Do not update or delete attribution rows
+directly. They survive membership and user deletion and are removed only by
+organization cascade.
+
 ## Verifying interrupted historical migrations
 
 The following already-shipped migrations contain multiple statements and were
@@ -186,9 +196,9 @@ The restore requires the adjacent checksum and refuses to replace any existing d
 
 Object storage needs a matching versioned backup and integrity inventory; the PostgreSQL scripts do not back up MinIO. Test restoration into an isolated environment at least quarterly and verify a sample manifest can be reconstructed with its media. `.github/workflows/recovery-drill.yml` applies the real Prisma migration chain, restores a representative tenant/content/schedule/immutable-release/audit graph, validates its constraints and references, matches restored database media metadata to a restored MinIO object's exact size and SHA-256, and exercises retained-image rollback. It runs monthly, when recovery implementation changes, and when Prisma migrations change. It pulls exact fixture tags once, records their resolved repository digests, and uses those immutable digests with `--pull never` during the drill.
 
-The disposable recovery drill also verifies that the local audit metadata
-validator and mutation trigger survive dump/restore and reject an ordinary
-update. That result does not prove hostile-owner resistance, off-host audit
+The disposable recovery drill also verifies membership-attribution backfill,
+future insertion, restored creator references and mutation guards, plus the
+local audit metadata validator and mutation trigger. That result does not prove hostile-owner resistance, off-host audit
 delivery, retention, legal-hold enforcement, or recovery of deleted tenants.
 
 The audit-integrity migration validates every existing audit row and refuses

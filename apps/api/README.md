@@ -158,6 +158,11 @@ downstream disconnect destroys the upstream object stream.
   memberships while advancing the applicable epoch and revoking affected
   sessions in the same transaction. There are no public password, user-disable,
   role, or membership mutation endpoints in this prototype.
+- Immutable release and assignment creator IDs reference durable tenant-scoped
+  membership-attribution tombstones rather than live memberships. This lets
+  membership removal revoke access without discarding publication provenance.
+  PostgreSQL records tombstones with each membership, rejects their ordinary
+  mutation, and retains them until organization deletion.
 - Failed login attempts for known and unknown accounts produce the same generic
   credential response and one tenant-neutral security event. Events contain
   only deployment-secret, domain-separated HMAC account/source keys, a bounded

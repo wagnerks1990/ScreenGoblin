@@ -80,6 +80,7 @@ model Organization {
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   memberships          Membership[]
+  membershipAttributions MembershipAttribution[]
   locations            Location[]
   screens              Screen[]
   media                MediaAsset[]
@@ -153,11 +154,24 @@ model Membership {
   authorizationEpoch Int                 @default(0)
   organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  publishedReleases  PublishedRelease[]  @relation("PublishedReleaseCreatorMembership")
-  releaseAssignments ReleaseAssignment[] @relation("ReleaseAssignmentCreatorMembership")
   userSessions       UserSession[]
 
   @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+/// Durable, tenant-scoped principal attribution. A database trigger creates
+/// one row for every Membership and custom guards preserve it until its owning
+/// Organization is deleted.
+model MembershipAttribution {
+  organizationId     String
+  userId             String
+  recordedAt         DateTime            @default(now())
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  publishedReleases  PublishedRelease[]  @relation("PublishedReleaseCreatorAttribution")
+  releaseAssignments ReleaseAssignment[] @relation("ReleaseAssignmentCreatorAttribution")
+
+  @@id([organizationId, userId])
   @@index([userId])
 }
 
@@ -440,7 +454,7 @@ model PublishedRelease {
   createdAt                 DateTime            @default(now())
   organization              Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sourcePlaylist            Playlist            @relation(fields: [sourcePlaylistId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  createdBy                 Membership          @relation("PublishedReleaseCreatorMembership", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: Restrict)
+  createdBy                 MembershipAttribution @relation("PublishedReleaseCreatorAttribution", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: Restrict)
   items                     FrozenReleaseItem[]
   assignments               ReleaseAssignment[]
 
@@ -497,7 +511,7 @@ model ReleaseAssignment {
   organization         Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   release              PublishedRelease          @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: Restrict)
   schedule             Schedule                  @relation(fields: [scheduleId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  createdBy            Membership                @relation("ReleaseAssignmentCreatorMembership", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: Restrict)
+  createdBy            MembershipAttribution     @relation("ReleaseAssignmentCreatorAttribution", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: Restrict)
   previousAssignment   ReleaseAssignment?        @relation("ReleaseAssignmentHistory", fields: [previousAssignmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
   nextAssignments      ReleaseAssignment[]       @relation("ReleaseAssignmentHistory")
   targets              ReleaseAssignmentTarget[]

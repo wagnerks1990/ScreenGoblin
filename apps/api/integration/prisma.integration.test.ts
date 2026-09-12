@@ -11,6 +11,8 @@ import {
 } from "../src/domain/types.js";
 import { opaqueSecurityEventKey } from "../src/utils/rate-limit.js";
 import {
+  hasValidStoredAssignmentDigest,
+  hasValidStoredReleaseDigest,
   schedulePublicationKeyHash,
   schedulePublicationRequestDigest,
 } from "../src/releases/canonical.js";
@@ -70,6 +72,89 @@ const waitForOwnerContinuityWaiters = async (minimum: number) => {
   throw new Error(
     `Timed out waiting for ${minimum} owner-continuity transaction(s)`,
   );
+};
+const waitForBlockedStatement = async (queryFragment: string) => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const [activity] = await prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT COUNT(*)::integer AS "count"
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND wait_event_type = 'Lock'
+        AND query LIKE ${`%${queryFragment}%`}`;
+    if ((activity?.count ?? 0) >= 1) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for blocked query: ${queryFragment}`);
+};
+const queueMembershipRowOperations = async (
+  organizationId: string,
+  userId: string,
+  operations: ReadonlyArray<{
+    waitFor: string;
+    run: () => Promise<unknown>;
+  }>,
+) => {
+  const acquired = deferred();
+  const release = deferred();
+  const holder = prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT held_membership."id"
+      FROM "Membership" held_membership
+      WHERE held_membership."organizationId" = ${organizationId}
+        AND held_membership."userId" = ${userId}
+      FOR UPDATE OF held_membership`;
+    acquired.resolve();
+    await release.promise;
+  });
+  const holderSettled = holder.then(
+    () => ({ succeeded: true as const }),
+    (error: unknown) => {
+      acquired.reject(error);
+      return { succeeded: false as const, error };
+    },
+  );
+  const operationSettled: Array<
+    Promise<
+      | { succeeded: true; result: unknown }
+      | { succeeded: false; error: unknown }
+    >
+  > = [];
+  let barrierError: unknown;
+  try {
+    await acquired.promise;
+    for (const operation of operations) {
+      let settled = false;
+      const pending = operation.run().then(
+        (result) => {
+          settled = true;
+          return { succeeded: true as const, result };
+        },
+        (error: unknown) => {
+          settled = true;
+          return { succeeded: false as const, error };
+        },
+      );
+      operationSettled.push(pending);
+      await waitForBlockedStatement(operation.waitFor);
+      if (settled)
+        throw new Error("Membership operation completed before lock release");
+    }
+  } catch (error) {
+    barrierError = error;
+  } finally {
+    release.resolve();
+  }
+  const [holderResult, operationResults] = await Promise.all([
+    holderSettled,
+    Promise.all(operationSettled),
+  ]);
+  if (barrierError) throw barrierError;
+  if (!holderResult.succeeded) throw holderResult.error;
+  return operationResults.map((result) => {
+    if (!result.succeeded) throw result.error;
+    return result.result;
+  });
 };
 const queueOwnerContinuityOperations = async <T>(
   organizationId: string,
@@ -166,6 +251,58 @@ const createMember = async (
     data: { organizationId, userId: user.id, role },
   });
   return user;
+};
+
+const createPublicationFixture = async (
+  organizationId: string,
+  actorUserId: string,
+  label: string,
+) => {
+  const screen = await store.createScreen(organizationId, {
+    name: `${label} screen`,
+    location: "",
+    orientation: "landscape",
+    resolution: "1920x1080",
+    tags: [],
+  });
+  const media = await store.createMedia(organizationId, {
+    name: `${label} asset`,
+    kind: "image",
+    mimeType: "image/png",
+    url: `https://media.example.test/${label}.png`,
+    checksumSha256: "d".repeat(64),
+    sizeBytes: 100,
+  });
+  const playlist = await store.createPlaylist(organizationId, {
+    name: `${label} playlist`,
+    description: "",
+    items: [
+      {
+        id: "ignored",
+        assetId: media.id,
+        position: 0,
+        durationSeconds: 10,
+      },
+    ],
+  });
+  const publication = await store.publishScheduleAndAudit(
+    organizationId,
+    {
+      playlistId: playlist.id,
+      name: `${label} schedule`,
+      priority: "normal",
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+      screenIds: [screen.id],
+    },
+    { actorUserId },
+    { mediaAllowedOrigins: ["https://media.example.test"] },
+    publicationIdempotency(),
+  );
+  if (!publication.published) throw new Error("publication fixture failed");
+  return { screen, media, playlist, publication };
 };
 
 const pairProofDevice = async (label: string, byte: number) => {
@@ -2250,6 +2387,28 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
       },
     });
+    const nonMember = await createUser(
+      `creator-removal-non-member-${randomUUID()}@example.test`,
+    );
+    const otherOrganization = await createOrganization(
+      "creator-removal-other-tenant",
+    );
+    await expect(
+      prisma.membershipAttribution.create({
+        data: {
+          organizationId: organization.id,
+          userId: nonMember.id,
+        },
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      prisma.membershipAttribution.create({
+        data: {
+          organizationId: otherOrganization.id,
+          userId: actor.id,
+        },
+      }),
+    ).rejects.toBeDefined();
     const screen = await store.createScreen(organization.id, {
       name: "NULL check target",
       location: "Lab",
@@ -4412,6 +4571,372 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).resolves.toMatchObject({ role: "OWNER", authorizationEpoch: 0 });
   });
 
+  it("removes a release creator while retaining tenant-scoped, digest-valid provenance", async () => {
+    const organization = await createOrganization("creator-removal");
+    const actor = await createMember(
+      organization.id,
+      "PUBLISHER",
+      "creator-removal",
+    );
+    await createMember(organization.id, "OWNER", "creator-removal-owner");
+    const membership = await prisma.membership.findUniqueOrThrow({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+    });
+    const { publication, screen } = await createPublicationFixture(
+      organization.id,
+      actor.id,
+      "creator-removal",
+    );
+    const tokenHash = "6".repeat(64);
+    await prisma.userSession.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        tokenHash,
+        authenticationEpoch: 0,
+        authorizationEpoch: 0,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const grant = await prisma.pairingCode.create({
+      data: {
+        id: "g".repeat(43),
+        organizationId: organization.id,
+        purpose: "NEW_SCREEN",
+        targetScreenId: screen.id,
+        targetScreenReferenceId: screen.id,
+        targetOrganizationId: organization.id,
+        expectedGeneration: 0,
+        authorizedByUserId: actor.id,
+        authorizedByMembershipId: membership.id,
+        authorizedByAuthenticationEpoch: 0,
+        authorizedByAuthorizationEpoch: 0,
+        requestReason: "Creator removal regression",
+        codeHash: "7".repeat(64),
+        status: "PENDING",
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const attempt = await prisma.pairingAttempt.create({
+      data: {
+        id: "h".repeat(43),
+        organizationId: organization.id,
+        pairingCodeId: grant.id,
+        keyId: "i".repeat(43),
+        publicKeySpki: Buffer.alloc(91, 1),
+        algorithm: "ES256",
+        securityLevel: "software",
+        challengeHashSha256: "8".repeat(64),
+        transcriptDigestSha256: "9".repeat(64),
+        expiresAt: new Date(Date.now() + 30_000),
+      },
+    });
+
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_creator_removal_audit" CHECK ("action" <> \'identity.membership_removed\')',
+    );
+    try {
+      await expect(
+        store.removeMembershipAndAudit(organization.id, actor.id, {
+          reason: "Rejected creator removal",
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_creator_removal_audit"',
+      );
+    }
+    await expect(
+      prisma.membership.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: organization.id,
+            userId: actor.id,
+          },
+        },
+      }),
+    ).resolves.not.toBeNull();
+    await expect(
+      prisma.userSession.findUnique({ where: { tokenHash } }),
+    ).resolves.not.toBeNull();
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: grant.id } }),
+    ).resolves.toMatchObject({ status: "PENDING" });
+    await expect(
+      prisma.pairingAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+    ).resolves.toMatchObject({ cancelledAt: null });
+
+    await expect(
+      store.removeMembershipAndAudit(organization.id, actor.id, {
+        reason: "Creator left the tenant",
+        requestId: "creator-removal-request",
+      }),
+    ).resolves.toEqual({ updated: true });
+
+    await expect(
+      prisma.membership.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: organization.id,
+            userId: actor.id,
+          },
+        },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.userSession.findUnique({ where: { tokenHash } }),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: grant.id } }),
+    ).resolves.toMatchObject({ status: "REVOKED" });
+    await expect(
+      prisma.pairingAttempt.findUniqueOrThrow({ where: { id: attempt.id } }),
+    ).resolves.toEqual(
+      expect.objectContaining({ cancelledAt: expect.any(Date) }),
+    );
+    await expect(
+      prisma.membershipAttribution.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: organization.id,
+            userId: actor.id,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      organizationId: organization.id,
+      userId: actor.id,
+    });
+    const retainedRelease = await prisma.publishedRelease.findUniqueOrThrow({
+      where: { id: publication.release.id },
+      include: { items: { orderBy: { position: "asc" } } },
+    });
+    const retainedAssignment = await prisma.releaseAssignment.findUniqueOrThrow(
+      {
+        where: { id: publication.assignment.id },
+        include: { targets: true },
+      },
+    );
+    expect(retainedRelease.createdById).toBe(actor.id);
+    expect(retainedAssignment.createdById).toBe(actor.id);
+    const active = await store.activeOrdinaryReleases(
+      organization.id,
+      screen.id,
+      new Date().toISOString(),
+    );
+    expect(active).toHaveLength(1);
+    expect(hasValidStoredReleaseDigest(active[0]!.release)).toBe(true);
+    expect(
+      hasValidStoredAssignmentDigest(active[0]!.assignment, active[0]!.release),
+    ).toBe(true);
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          organizationId: organization.id,
+          action: "identity.membership_removed",
+          entityId: membership.id,
+          requestId: "creator-removal-request",
+        },
+      }),
+    ).toBe(1);
+    const attributionBeforeRejoin =
+      await prisma.membershipAttribution.findUniqueOrThrow({
+        where: {
+          organizationId_userId: {
+            organizationId: organization.id,
+            userId: actor.id,
+          },
+        },
+      });
+    await expect(
+      prisma.membershipAttribution.update({
+        where: {
+          organizationId_userId: {
+            organizationId: organization.id,
+            userId: actor.id,
+          },
+        },
+        data: { recordedAt: new Date() },
+      }),
+    ).rejects.toBeDefined();
+    const recreatedMembership = await prisma.membership.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        role: "VIEWER",
+      },
+    });
+    await expect(
+      prisma.membershipAttribution.findUniqueOrThrow({
+        where: {
+          organizationId_userId: {
+            organizationId: organization.id,
+            userId: actor.id,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      recordedAt: attributionBeforeRejoin.recordedAt,
+    });
+    await prisma.membership.delete({ where: { id: recreatedMembership.id } });
+
+    const cascadeOrganization = await createOrganization(
+      "attribution-organization-cascade",
+    );
+    const cascadeActor = await createMember(
+      cascadeOrganization.id,
+      "OWNER",
+      "attribution-organization-cascade",
+    );
+    await prisma.membership.delete({
+      where: {
+        organizationId_userId: {
+          organizationId: cascadeOrganization.id,
+          userId: cascadeActor.id,
+        },
+      },
+    });
+    await expect(
+      prisma.membershipAttribution.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: cascadeOrganization.id,
+            userId: cascadeActor.id,
+          },
+        },
+      }),
+    ).resolves.not.toBeNull();
+    await prisma.organization.delete({
+      where: { id: cascadeOrganization.id },
+    });
+    await expect(
+      prisma.membershipAttribution.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: cascadeOrganization.id,
+            userId: cascadeActor.id,
+          },
+        },
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("serializes publication against creator membership removal", async () => {
+    const runScenario = async (
+      label: string,
+      order: "REMOVAL_FIRST" | "PUBLICATION_FIRST",
+    ) => {
+      const organization = await createOrganization(label);
+      const actor = await createMember(organization.id, "PUBLISHER", label);
+      await createMember(organization.id, "OWNER", `${label}-owner`);
+      const screen = await store.createScreen(organization.id, {
+        name: `${label} screen`,
+        location: "",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      });
+      const media = await store.createMedia(organization.id, {
+        name: `${label} asset`,
+        kind: "image",
+        mimeType: "image/png",
+        url: `https://media.example.test/${label}.png`,
+        checksumSha256: "a".repeat(64),
+        sizeBytes: 100,
+      });
+      const playlist = await store.createPlaylist(organization.id, {
+        name: `${label} playlist`,
+        description: "",
+        items: [
+          {
+            id: "ignored",
+            assetId: media.id,
+            position: 0,
+            durationSeconds: 10,
+          },
+        ],
+      });
+      const publish = () =>
+        store.publishScheduleAndAudit(
+          organization.id,
+          {
+            playlistId: playlist.id,
+            name: `${label} schedule`,
+            priority: "normal",
+            startsAt: new Date(Date.now() - 60_000).toISOString(),
+            timezone: "UTC",
+            daysOfWeek: [],
+            enabled: true,
+            screenIds: [screen.id],
+          },
+          { actorUserId: actor.id },
+          { mediaAllowedOrigins: ["https://media.example.test"] },
+          publicationIdempotency(),
+        );
+      const remove = () =>
+        store.removeMembershipAndAudit(organization.id, actor.id, {
+          reason: `Concurrent creator removal ${order}`,
+        });
+      const publicationOperation = {
+        waitFor: 'FROM "Membership" AS m',
+        run: publish,
+      };
+      const removalOperation = {
+        waitFor: 'FROM "Membership" membership',
+        run: remove,
+      };
+      const results = await queueMembershipRowOperations(
+        organization.id,
+        actor.id,
+        order === "REMOVAL_FIRST"
+          ? [removalOperation, publicationOperation]
+          : [publicationOperation, removalOperation],
+      );
+      await expect(
+        prisma.membership.findUnique({
+          where: {
+            organizationId_userId: {
+              organizationId: organization.id,
+              userId: actor.id,
+            },
+          },
+        }),
+      ).resolves.toBeNull();
+      return { actor, organization, results };
+    };
+
+    const removalFirst = await runScenario(
+      "creator-removal-race-removal-first",
+      "REMOVAL_FIRST",
+    );
+    expect(removalFirst.results).toEqual([
+      { updated: true },
+      { published: false, reason: "FORBIDDEN" },
+    ]);
+    expect(
+      await prisma.publishedRelease.count({
+        where: { organizationId: removalFirst.organization.id },
+      }),
+    ).toBe(0);
+
+    const publicationFirst = await runScenario(
+      "creator-removal-race-publication-first",
+      "PUBLICATION_FIRST",
+    );
+    expect(publicationFirst.results[0]).toMatchObject({ published: true });
+    expect(publicationFirst.results[1]).toEqual({ updated: true });
+    await expect(
+      prisma.publishedRelease.findFirstOrThrow({
+        where: { organizationId: publicationFirst.organization.id },
+      }),
+    ).resolves.toMatchObject({ createdById: publicationFirst.actor.id });
+  });
+
   it("rechecks release capabilities from locked current memberships before writes", async () => {
     const [organization, otherOrganization] = await Promise.all([
       createOrganization("release-capabilities"),
@@ -5653,8 +6178,16 @@ describe("PrismaStore PostgreSQL integration", () => {
       createOrganization("release-beta"),
     ]);
     const actor = await createUser("release-alpha@example.test");
+    const betaActor = await createUser("release-beta@example.test");
     await prisma.membership.create({
       data: { organizationId: alpha.id, userId: actor.id, role: "OWNER" },
+    });
+    await prisma.membership.create({
+      data: {
+        organizationId: beta.id,
+        userId: betaActor.id,
+        role: "OWNER",
+      },
     });
     const [alphaScreen, betaScreen] = await Promise.all([
       store.createScreen(alpha.id, {
@@ -5772,6 +6305,19 @@ describe("PrismaStore PostgreSQL integration", () => {
           sourcePlaylistUpdatedAt: new Date(),
           digestSha256: "3".repeat(64),
           createdById: actor.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+    await expect(
+      prisma.publishedRelease.create({
+        data: {
+          organizationId: alpha.id,
+          sourcePlaylistId: alphaPlaylist.id,
+          sourcePlaylistName: "Cross-tenant creator",
+          sourcePlaylistDescription: "",
+          sourcePlaylistUpdatedAt: new Date(),
+          digestSha256: "4".repeat(64),
+          createdById: betaActor.id,
         },
       }),
     ).rejects.toMatchObject({ code: "P2003" });

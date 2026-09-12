@@ -4,6 +4,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Preserve tenant-scoped creator provenance for immutable releases and
+  assignments after membership removal. A transactional migration backfills
+  guarded membership-attribution tombstones, records future memberships in the
+  same database transaction, and repoints composite creator foreign keys so
+  access revocation cannot be blocked by retained publication history.
+
 ### Security
 
 - Bound persistent proof-challenge history with database-clock, lock-skipping
