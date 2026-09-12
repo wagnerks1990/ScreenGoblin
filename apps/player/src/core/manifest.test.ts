@@ -78,6 +78,7 @@ class MemoryStore implements PlayerStore {
   previous: PlayerManifest | undefined;
   rawActive: SignedPlayerManifest | undefined;
   rawPrevious: SignedPlayerManifest | undefined;
+  beforeRollback: (() => void) | undefined;
   manifestClears = 0;
   async getCredentials() {
     return this.credentials;
@@ -104,7 +105,10 @@ class MemoryStore implements PlayerStore {
   }
   async activateManifest(value: SignedPlayerManifest) {
     const sameRelease = this.active?.version === value.manifest.version;
-    if (
+    if (value.manifest.withdrawn) {
+      this.previous = undefined;
+      this.rawPrevious = undefined;
+    } else if (
       !sameRelease &&
       this.active &&
       this.active.priority !== "emergency" &&
@@ -114,12 +118,29 @@ class MemoryStore implements PlayerStore {
     this.active = value.manifest;
     this.rawActive = undefined;
   }
-  async rollback(expectedActiveVersion?: string) {
+  async clearPreviousManifest(expectedActiveVersion?: string) {
+    const activeVersion =
+      this.rawActive?.manifest.version ?? this.active?.version;
+    if (
+      expectedActiveVersion === undefined ||
+      activeVersion === expectedActiveVersion
+    ) {
+      this.previous = undefined;
+      this.rawPrevious = undefined;
+    }
+  }
+  async rollback(expectedActiveVersion?: string, eligibleUntilMs?: number) {
     if (
       expectedActiveVersion !== undefined &&
       this.active?.version !== expectedActiveVersion
     )
       return this.active ? signed(this.active) : undefined;
+    this.beforeRollback?.();
+    if (eligibleUntilMs !== undefined && eligibleUntilMs <= Date.now()) {
+      this.previous = undefined;
+      this.rawPrevious = undefined;
+      return undefined;
+    }
     this.active = this.previous;
     return this.previous ? signed(this.previous) : undefined;
   }
@@ -683,7 +704,7 @@ describe("manifest transaction", () => {
       manager.stageAndActivate(signed(withdrawal), trust),
     ).resolves.toBeUndefined();
     expect(store.active).toEqual(withdrawal);
-    expect(store.previous).toEqual(baseline);
+    expect(store.previous).toBeUndefined();
 
     // A fresh manager represents an application reconnect/restart. The signed
     // blank marker must win over the retained safety rollback.
@@ -711,7 +732,101 @@ describe("manifest transaction", () => {
       manager.stageAndActivate(signed(republished), trust),
     ).resolves.toEqual(republished);
     expect(store.active).toEqual(republished);
-    expect(store.previous).toEqual(baseline);
+    expect(store.previous).toBeUndefined();
+    await expect(
+      manager.rollback(trust, republished.version),
+    ).resolves.toBeUndefined();
+    expect(store.active).toBeUndefined();
+  });
+
+  it("never revives withdrawn content after a new release playback failure", async () => {
+    const store = new MemoryStore();
+    const manager = new ManifestManager(store, new MemoryAssets());
+    const baseline = { ...valid, version: "baseline" };
+    const withdrawal: PlayerManifest = {
+      ...valid,
+      version: "withdrawal",
+      withdrawn: true,
+      items: [],
+    };
+    const replacement = { ...valid, version: "replacement" };
+    store.active = baseline;
+
+    await manager.stageAndActivate(signed(withdrawal), trust);
+    await manager.stageAndActivate(signed(replacement), trust);
+
+    await expect(
+      manager.rollback(trust, replacement.version),
+    ).resolves.toBeUndefined();
+    expect(store.active).toBeUndefined();
+    expect(store.previous).toBeUndefined();
+  });
+
+  it("does not let a playback error race revive content past a signed boundary", async () => {
+    const store = new MemoryStore();
+    const baseline = { ...valid, version: "baseline" };
+    const ended = {
+      ...valid,
+      version: "ended",
+      playbackEndsAt: "2020-01-01T00:00:00Z",
+    };
+    store.active = ended;
+    store.previous = baseline;
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).rollback(
+        trust,
+        ended.version,
+      ),
+    ).resolves.toBeUndefined();
+    expect(store.active).toEqual(ended);
+    expect(store.previous).toBeUndefined();
+  });
+
+  it("checks the signed asset deadline inside the rollback state change", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-09-12T00:00:00Z");
+    const store = new MemoryStore();
+    store.active = { ...valid, version: "replacement" };
+    store.previous = {
+      ...valid,
+      version: "baseline",
+      items: [
+        {
+          ...valid.items[0]!,
+          expiresAt: "2026-09-12T00:00:01Z",
+        },
+      ],
+    };
+    store.beforeRollback = () => vi.setSystemTime("2026-09-12T00:00:02Z");
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).rollback(
+        trust,
+        "replacement",
+      ),
+    ).resolves.toBeUndefined();
+    expect(store.active?.version).toBe("replacement");
+    expect(store.previous).toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it("removes a legacy rollback slot when rebooting from a withdrawal", async () => {
+    const store = new MemoryStore();
+    const withdrawal: PlayerManifest = {
+      ...valid,
+      version: "withdrawal",
+      withdrawn: true,
+      items: [],
+    };
+    store.active = withdrawal;
+    store.rawPrevious = signed({ ...valid, version: "legacy-baseline" });
+
+    await expect(
+      new ManifestManager(store, new MemoryAssets()).recover(trust),
+    ).resolves.toBeUndefined();
+    expect(store.active).toEqual(withdrawal);
+    expect(store.rawPrevious).toBeUndefined();
   });
 
   it("activates an ended schedule marker without downloading or playing it", async () => {

@@ -66,6 +66,20 @@ function isStoredManifestPlayable(
   return boundary === undefined || boundary > Date.now();
 }
 
+function rollbackDeadline(
+  active: PlayerManifest,
+  previous: PlayerManifest,
+): number | undefined {
+  const boundaries = [
+    manifestPlaybackEndsAt(active),
+    manifestPlaybackEndsAt(previous),
+    previous.priority === "emergency"
+      ? Date.parse(previous.validUntil)
+      : undefined,
+  ].filter((value): value is number => value !== undefined);
+  return boundaries.length > 0 ? Math.min(...boundaries) : undefined;
+}
+
 function isAllowedAssetUrl(url: string, emergencyTemplate: boolean): boolean {
   try {
     const parsed = new URL(url);
@@ -487,7 +501,10 @@ export class ManifestManager {
       await this.store.clearManifests();
       return undefined;
     }
-    if (active?.withdrawn) return undefined;
+    if (active?.withdrawn) {
+      await this.store.clearPreviousManifest(active.version);
+      return undefined;
+    }
     // `validUntil` is only the signed-envelope refresh lease for normal
     // last-known-good playback. `playbackEndsAt` is the signed hard schedule
     // boundary and blanks locally without reviving an older release.
@@ -507,8 +524,14 @@ export class ManifestManager {
       if (
         rollbackCandidate?.priority === "emergency" &&
         Date.parse(rollbackCandidate.validUntil) <= Date.now()
-      )
+      ) {
+        await this.store.clearPreviousManifest(active.version);
         return undefined;
+      }
+      if (!isStoredManifestPlayable(rollbackCandidate)) {
+        await this.store.clearPreviousManifest(active.version);
+        return undefined;
+      }
       const previous = await this.store.rollback(active.version);
       const verifiedPrevious = await verifySignedPlayerManifest(
         previous,
@@ -518,8 +541,14 @@ export class ManifestManager {
         ? verifiedPrevious
         : undefined;
     }
-    if (active && !isStoredManifestPlayable(active)) return undefined;
-    if (active) return active;
+    if (active) {
+      const boundary = manifestPlaybackEndsAt(active);
+      if (boundary !== undefined && boundary <= Date.now()) {
+        await this.store.clearPreviousManifest(active.version);
+        return undefined;
+      }
+      return active;
+    }
     const signedPrevious = await this.store.getPreviousManifest();
     if (signedPrevious) {
       await this.store.clearManifests();
@@ -547,6 +576,14 @@ export class ManifestManager {
         await this.store.clearManifests();
       return undefined;
     }
+    const activeBoundary = manifestPlaybackEndsAt(active);
+    if (
+      active.withdrawn ||
+      (activeBoundary !== undefined && activeBoundary <= Date.now())
+    ) {
+      await this.store.clearPreviousManifest(active.version);
+      return undefined;
+    }
     if (
       expectedActiveVersion !== undefined &&
       active.version !== expectedActiveVersion
@@ -558,7 +595,14 @@ export class ManifestManager {
       await this.store.clearManifests();
       return undefined;
     }
-    const resultingActive = await this.store.rollback(expectedActiveVersion);
+    if (!isStoredManifestPlayable(previous)) {
+      await this.store.clearManifests();
+      return undefined;
+    }
+    const resultingActive = await this.store.rollback(
+      expectedActiveVersion,
+      rollbackDeadline(active, previous),
+    );
     const verifiedActive = await verifySignedPlayerManifest(
       resultingActive,
       trust,

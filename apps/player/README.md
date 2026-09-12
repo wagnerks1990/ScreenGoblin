@@ -11,8 +11,10 @@ Offline-first signage runtime for Android TV, HDMI dongles, Chromium kiosks, and
 - The exact signed manifest bytes remain with each active/rollback record and
   are reverified against the pinned key and screen before boot recovery or
   promotion. Legacy unsigned or altered records fail closed.
-- The prior signed manifest remains available for explicit playback rollback;
-  a missing or corrupt active marker never promotes it implicitly.
+- A locally eligible prior signed manifest remains available for explicit
+  playback rollback. Accepting a signed withdrawal atomically removes that
+  rollback slot, and expired playback or asset boundaries cannot be crossed;
+  a missing or corrupt active marker never promotes an older release.
 - Existing content continues when the API is unavailable. Connectivity status stays unobtrusive in the lower corner.
 - Signed withdrawals and signed schedule boundaries blank content without reviving an older schedule; stale poll and rollback callbacks cannot overwrite a newer version. A bounded wall-clock watcher rechecks hard boundaries at least every 30 seconds and when the WebView resumes, while an independent countdown prevents a backward clock correction from extending the lifetime calculated when playback began.
 - Android streams binary cache misses into app-private staging files, verifies
