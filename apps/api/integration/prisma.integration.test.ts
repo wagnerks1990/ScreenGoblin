@@ -183,10 +183,10 @@ describe("PrismaStore PostgreSQL integration", () => {
       false,
     );
     await expect(store.deleteMedia(alpha.id, betaMedia.id)).resolves.toBe(
-      false,
+      "NOT_FOUND",
     );
     await expect(store.deletePlaylist(alpha.id, betaPlaylist.id)).resolves.toBe(
-      false,
+      "NOT_FOUND",
     );
   });
 
@@ -598,6 +598,662 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(
       store.findSessionUser(user.id, beta.id),
     ).resolves.toMatchObject({ organizationId: beta.id, role: "VIEWER" });
+  });
+
+  it("freezes published content and schedule selection, then preserves history after withdrawal", async () => {
+    const organization = await createOrganization("immutable-release");
+    const actor = await createUser("release-owner@example.test");
+    await prisma.membership.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        role: "OWNER",
+      },
+    });
+    const screen = await store.createScreen(organization.id, {
+      name: "Release screen",
+      location: "Lobby",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia(organization.id, {
+      name: "Frozen image",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/frozen.png",
+      checksumSha256: "f".repeat(64),
+      sizeBytes: 4_096,
+    });
+    const playlist = await store.createPlaylist(organization.id, {
+      name: "Frozen playlist",
+      description: "Original description",
+      items: [
+        {
+          id: "ignored-by-create",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 30,
+        },
+      ],
+    });
+    const now = new Date();
+    const publicationInput = {
+      playlistId: playlist.id,
+      name: "Frozen schedule",
+      priority: "normal" as const,
+      startsAt: new Date(now.getTime() - 60_000).toISOString(),
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+      screenIds: [screen.id],
+    };
+    const publications = await Promise.all(
+      Array.from({ length: 4 }, (_, index) =>
+        store.publishScheduleAndAudit(
+          organization.id,
+          publicationInput,
+          {
+            actorUserId: actor.id,
+            requestId: `publish-integration-${index}`,
+          },
+          { mediaAllowedOrigins: ["https://media.example.test"] },
+        ),
+      ),
+    );
+    const publication = publications[0]!;
+    expect(publication.published).toBe(true);
+    if (!publication.published)
+      throw new Error("publication unexpectedly failed");
+    expect(
+      publications.map((result) =>
+        result.published
+          ? [result.schedule.id, result.release.id, result.assignment.id]
+          : result,
+      ),
+    ).toEqual(
+      Array.from({ length: 4 }, () => [
+        publication.schedule.id,
+        publication.release.id,
+        publication.assignment.id,
+      ]),
+    );
+    expect(await prisma.schedule.count()).toBe(1);
+    expect(await prisma.publishedRelease.count()).toBe(1);
+    expect(await prisma.releaseAssignment.count()).toBe(1);
+    expect(
+      await prisma.auditEvent.count({
+        where: { organizationId: organization.id, action: "release.published" },
+      }),
+    ).toBe(1);
+
+    await prisma.playlist.update({
+      where: { id: playlist.id },
+      data: { name: "Mutated draft", description: "Changed" },
+    });
+    await prisma.playlistItem.updateMany({
+      where: { playlistId: playlist.id },
+      data: { durationSeconds: 5 },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: media.id },
+      data: {
+        name: "Mutated asset",
+        url: "https://media.example.test/mutated.png",
+        checksumSha256: "0".repeat(64),
+      },
+    });
+    await prisma.schedule.update({
+      where: { id: publication.schedule.id },
+      data: { enabled: false, startsAt: new Date(now.getTime() + 86_400_000) },
+    });
+
+    const active = await store.activeOrdinaryReleases(
+      organization.id,
+      screen.id,
+      now.toISOString(),
+    );
+    expect(active).toHaveLength(1);
+    expect(active[0]).toMatchObject({
+      release: {
+        id: publication.release.id,
+        playlistName: "Frozen playlist",
+        playlistDescription: "Original description",
+        digestSha256: publication.release.digestSha256,
+        items: [
+          {
+            asset: {
+              id: media.id,
+              name: "Frozen image",
+              url: "https://media.example.test/frozen.png",
+              checksumSha256: "f".repeat(64),
+            },
+            durationSeconds: 30,
+          },
+        ],
+      },
+      assignment: {
+        id: publication.assignment.id,
+        state: "ASSIGNED",
+        schedule: { name: "Frozen schedule", enabled: true },
+      },
+    });
+    await expect(
+      store.deletePlaylist(organization.id, playlist.id),
+    ).resolves.toBe("IN_USE");
+    await expect(store.deleteMedia(organization.id, media.id)).resolves.toBe(
+      "IN_USE",
+    );
+
+    await expect(
+      prisma.screen.delete({ where: { id: screen.id } }),
+    ).resolves.toMatchObject({ id: screen.id });
+
+    const withdrawal = await store.withdrawScheduleAndAudit(
+      organization.id,
+      publication.schedule.id,
+      { actorUserId: actor.id, requestId: "withdraw-integration" },
+    );
+    expect(withdrawal).toMatchObject({
+      withdrawn: true,
+      assignment: {
+        state: "WITHDRAWN",
+        previousAssignmentId: publication.assignment.id,
+        releaseId: publication.release.id,
+        screenIds: [screen.id],
+      },
+    });
+    await expect(
+      store.activeOrdinaryReleases(
+        organization.id,
+        screen.id,
+        now.toISOString(),
+      ),
+    ).resolves.toEqual([]);
+    expect(
+      await prisma.publishedRelease.count({
+        where: { id: publication.release.id },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.releaseAssignment.count({
+        where: { scheduleId: publication.schedule.id },
+      }),
+    ).toBe(2);
+
+    const retainedTargets = await prisma.releaseAssignmentTarget.findMany({
+      where: { assignment: { scheduleId: publication.schedule.id } },
+      orderBy: { assignment: { createdAt: "asc" } },
+    });
+    expect(retainedTargets).toHaveLength(2);
+    expect(retainedTargets).toEqual(
+      retainedTargets.map(() =>
+        expect.objectContaining({
+          organizationId: organization.id,
+          screenId: screen.id,
+          liveScreenId: null,
+          liveScreenOrganizationId: null,
+        }),
+      ),
+    );
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          organizationId: organization.id,
+          action: { in: ["release.published", "release.withdrawn"] },
+        },
+      }),
+    ).toBe(2);
+  });
+
+  it("creates a new active assignment when unchanged content is republished after withdrawal", async () => {
+    const organization = await createOrganization("release-reactivation");
+    const actor = await createUser("release-reactivation@example.test");
+    await prisma.membership.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        role: "OWNER",
+      },
+    });
+    const screen = await store.createScreen(organization.id, {
+      name: "Reactivation screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia(organization.id, {
+      name: "Reactivation media",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/reactivation.png",
+      checksumSha256: "5".repeat(64),
+      sizeBytes: 100,
+    });
+    const playlist = await store.createPlaylist(organization.id, {
+      name: "Reactivation playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+    const now = new Date();
+    const input = {
+      playlistId: playlist.id,
+      name: "Reactivation schedule",
+      priority: "normal" as const,
+      startsAt: new Date(now.getTime() - 60_000).toISOString(),
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+      screenIds: [screen.id],
+    };
+    const first = await store.publishScheduleAndAudit(
+      organization.id,
+      input,
+      { actorUserId: actor.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+    );
+    if (!first.published) throw new Error("initial publication failed");
+    await store.withdrawScheduleAndAudit(organization.id, first.schedule.id, {
+      actorUserId: actor.id,
+    });
+
+    const second = await store.publishScheduleAndAudit(
+      organization.id,
+      input,
+      { actorUserId: actor.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+    );
+    expect(second.published).toBe(true);
+    if (!second.published) throw new Error("republication failed");
+    expect(second.release.id).toBe(first.release.id);
+    expect(second.assignment.id).not.toBe(first.assignment.id);
+    expect(second.schedule.id).not.toBe(first.schedule.id);
+    await expect(
+      store.activeOrdinaryReleases(
+        organization.id,
+        screen.id,
+        now.toISOString(),
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        release: expect.objectContaining({ id: first.release.id }),
+        assignment: expect.objectContaining({
+          id: second.assignment.id,
+          state: "ASSIGNED",
+        }),
+      }),
+    ]);
+    expect(await prisma.schedule.count()).toBe(2);
+    expect(await prisma.publishedRelease.count()).toBe(1);
+    expect(await prisma.releaseAssignment.count()).toBe(3);
+  });
+
+  it("rejects cross-tenant release sources, targets, frozen assets, and actors", async () => {
+    const [alpha, beta] = await Promise.all([
+      createOrganization("release-alpha"),
+      createOrganization("release-beta"),
+    ]);
+    const actor = await createUser("release-alpha@example.test");
+    await prisma.membership.create({
+      data: { organizationId: alpha.id, userId: actor.id, role: "OWNER" },
+    });
+    const [alphaScreen, betaScreen] = await Promise.all([
+      store.createScreen(alpha.id, {
+        name: "Alpha release screen",
+        location: "",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      }),
+      store.createScreen(beta.id, {
+        name: "Beta release screen",
+        location: "",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      }),
+    ]);
+    const [alphaMedia, betaMedia] = await Promise.all([
+      store.createMedia(alpha.id, {
+        name: "Alpha release asset",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/release-alpha.png",
+        checksumSha256: "1".repeat(64),
+        sizeBytes: 100,
+      }),
+      store.createMedia(beta.id, {
+        name: "Beta release asset",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/release-beta.png",
+        checksumSha256: "2".repeat(64),
+        sizeBytes: 100,
+      }),
+    ]);
+    const [alphaPlaylist, betaPlaylist] = await Promise.all([
+      store.createPlaylist(alpha.id, {
+        name: "Alpha release playlist",
+        description: "",
+        items: [
+          {
+            id: "ignored-alpha",
+            assetId: alphaMedia.id,
+            position: 0,
+            durationSeconds: 10,
+          },
+        ],
+      }),
+      store.createPlaylist(beta.id, {
+        name: "Beta release playlist",
+        description: "",
+        items: [
+          {
+            id: "ignored-beta",
+            assetId: betaMedia.id,
+            position: 0,
+            durationSeconds: 10,
+          },
+        ],
+      }),
+    ]);
+    const input = {
+      playlistId: alphaPlaylist.id,
+      name: "Tenant publication",
+      priority: "normal" as const,
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+      screenIds: [alphaScreen.id],
+    };
+
+    await expect(
+      store.publishScheduleAndAudit(
+        alpha.id,
+        { ...input, playlistId: betaPlaylist.id },
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+      ),
+    ).resolves.toEqual({ published: false, reason: "PLAYLIST_NOT_FOUND" });
+    await expect(
+      store.publishScheduleAndAudit(
+        alpha.id,
+        { ...input, screenIds: [betaScreen.id] },
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+      ),
+    ).resolves.toEqual({ published: false, reason: "SCREEN_NOT_FOUND" });
+    await expect(
+      store.publishScheduleAndAudit(
+        beta.id,
+        {
+          ...input,
+          playlistId: betaPlaylist.id,
+          screenIds: [betaScreen.id],
+        },
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+      ),
+    ).rejects.toThrow("Release actor is not an organization member");
+    expect(await prisma.publishedRelease.count()).toBe(0);
+    expect(await prisma.releaseAssignment.count()).toBe(0);
+    expect(await prisma.schedule.count()).toBe(0);
+
+    await expect(
+      prisma.publishedRelease.create({
+        data: {
+          organizationId: alpha.id,
+          sourcePlaylistId: betaPlaylist.id,
+          sourcePlaylistName: "Wrong tenant",
+          sourcePlaylistDescription: "",
+          sourcePlaylistUpdatedAt: new Date(),
+          digestSha256: "3".repeat(64),
+          createdById: actor.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+
+    const valid = await store.publishScheduleAndAudit(
+      alpha.id,
+      input,
+      { actorUserId: actor.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+    );
+    if (!valid.published) throw new Error("valid tenant publication failed");
+    const sourceItem = await prisma.playlistItem.findFirstOrThrow({
+      where: { playlistId: alphaPlaylist.id },
+    });
+    await expect(
+      prisma.frozenReleaseItem.create({
+        data: {
+          organizationId: alpha.id,
+          releaseId: valid.release.id,
+          sourcePlaylistItemId: sourceItem.id,
+          sourceAssetId: betaMedia.id,
+          assetName: "Cross-tenant frozen asset",
+          assetKind: "IMAGE",
+          assetMimeType: "image/png",
+          assetUrl: betaMedia.url,
+          assetChecksumSha256: betaMedia.checksumSha256,
+          assetSizeBytes: 100n,
+          assetCreatedAt: new Date(betaMedia.createdAt),
+          position: 1,
+          durationSeconds: 10,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+    await expect(
+      prisma.releaseAssignment.create({
+        data: {
+          organizationId: alpha.id,
+          releaseId: valid.release.id,
+          scheduleId: valid.schedule.id,
+          state: "ASSIGNED",
+          digestSha256: "6".repeat(64),
+          createdById: actor.id,
+          scheduleName: "Cross-tenant target",
+          priority: "NORMAL",
+          startsAt: new Date(input.startsAt),
+          timezone: "UTC",
+          daysOfWeek: [],
+          enabled: true,
+          targets: {
+            create: [
+              {
+                screenId: betaScreen.id,
+                liveScreenId: betaScreen.id,
+                liveScreenOrganizationId: alpha.id,
+              },
+            ],
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+    await expect(
+      prisma.releaseAssignmentTarget.create({
+        data: {
+          organizationId: alpha.id,
+          assignmentId: valid.assignment.id,
+          screenId: "partial-null-live-id",
+          liveScreenId: null,
+          liveScreenOrganizationId: alpha.id,
+        },
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      prisma.releaseAssignmentTarget.create({
+        data: {
+          organizationId: alpha.id,
+          assignmentId: valid.assignment.id,
+          screenId: "partial-null-live-org",
+          liveScreenId: "partial-null-live-org",
+          liveScreenOrganizationId: null,
+        },
+      }),
+    ).rejects.toBeDefined();
+    expect(
+      await prisma.releaseAssignment.count({
+        where: { organizationId: alpha.id },
+      }),
+    ).toBe(1);
+  });
+
+  it("rolls back release, schedule, assignment, and targets when publication audit fails", async () => {
+    const organization = await createOrganization("release-audit-rollback");
+    const actor = await createUser("release-rollback@example.test");
+    await prisma.membership.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        role: "OWNER",
+      },
+    });
+    const screen = await store.createScreen(organization.id, {
+      name: "Rollback screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia(organization.id, {
+      name: "Rollback media",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/rollback.png",
+      checksumSha256: "4".repeat(64),
+      sizeBytes: 100,
+    });
+    const playlist = await store.createPlaylist(organization.id, {
+      name: "Rollback playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_release_publish" CHECK ("action" <> \'release.published\')',
+    );
+    try {
+      await expect(
+        store.publishScheduleAndAudit(
+          organization.id,
+          {
+            playlistId: playlist.id,
+            name: "Rollback schedule",
+            priority: "normal",
+            startsAt: new Date(Date.now() - 60_000).toISOString(),
+            timezone: "UTC",
+            daysOfWeek: [],
+            enabled: true,
+            screenIds: [screen.id],
+          },
+          { actorUserId: actor.id },
+          { mediaAllowedOrigins: ["https://media.example.test"] },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_release_publish"',
+      );
+    }
+    expect(await prisma.publishedRelease.count()).toBe(0);
+    expect(await prisma.frozenReleaseItem.count()).toBe(0);
+    expect(await prisma.schedule.count()).toBe(0);
+    expect(await prisma.releaseAssignment.count()).toBe(0);
+    expect(await prisma.releaseAssignmentTarget.count()).toBe(0);
+
+    const publication = await store.publishScheduleAndAudit(
+      organization.id,
+      {
+        playlistId: playlist.id,
+        name: "Withdrawal rollback schedule",
+        priority: "normal",
+        startsAt: new Date(Date.now() - 60_000).toISOString(),
+        timezone: "UTC",
+        daysOfWeek: [],
+        enabled: true,
+        screenIds: [screen.id],
+      },
+      { actorUserId: actor.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+    );
+    if (!publication.published)
+      throw new Error("withdrawal rollback fixture failed");
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_release_withdraw" CHECK ("action" <> \'release.withdrawn\')',
+    );
+    try {
+      await expect(
+        store.withdrawScheduleAndAudit(
+          organization.id,
+          publication.schedule.id,
+          { actorUserId: actor.id },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_release_withdraw"',
+      );
+    }
+    expect(
+      await prisma.releaseAssignment.count({
+        where: { scheduleId: publication.schedule.id },
+      }),
+    ).toBe(1);
+    await expect(
+      store.activeOrdinaryReleases(
+        organization.id,
+        screen.id,
+        new Date().toISOString(),
+      ),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("release migration preflight refuses populated legacy schedules", async () => {
+    const organization = await createOrganization("release-preflight");
+    const playlist = await prisma.playlist.create({
+      data: { organizationId: organization.id, name: "Legacy playlist" },
+    });
+    await prisma.schedule.create({
+      data: {
+        organizationId: organization.id,
+        playlistId: playlist.id,
+        name: "Legacy schedule",
+        startsAt: new Date(),
+      },
+    });
+    const migration = await readFile(
+      new URL(
+        "../prisma/migrations/20260912030000_immutable_ordinary_releases/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const preflight = migration.match(
+      /DO \$release_preflight\$[\s\S]*?\$release_preflight\$;/,
+    )?.[0];
+    expect(preflight).toBeTruthy();
+
+    await expect(prisma.$executeRawUnsafe(preflight!)).rejects.toMatchObject({
+      code: "P2010",
+      meta: expect.objectContaining({ code: "P0001" }),
+    });
+    expect(await prisma.schedule.count()).toBe(1);
   });
 
   it("enforces case-insensitive email uniqueness in PostgreSQL", async () => {
