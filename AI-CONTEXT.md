@@ -18,6 +18,9 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - Player item state is generation-scoped. It reports now-playing and starts the
   display duration only after renderer readiness, blanks stale transitions, and
   invokes bounded single-shot recovery for silent stalls or render failures.
+- The production Player build injects exact shell assets into a content-derived
+  service-worker cache. API requests and verified manifest media never enter or
+  read that shell namespace, and activation prunes shell generations only.
 - Non-web assets are bounded, size/hash verified, and cache-pruned around atomic activation. Emergency overlays never enter the normal rollback chain, and stale callbacks may not roll back a newer active version.
 - Live operational data must fail visibly. Never replace a failed authenticated request with demo values.
 - Published content, schedules, commands, permissions, emergencies, and device lifecycle operations require durable audit coverage.

@@ -44,4 +44,15 @@ SHA-256 before activation, and prunes entries outside the active and rollback
 generations. Native incremental hashing, stream-to-disk activation, quota
 telemetry, and physical full-disk recovery evidence remain release gates.
 
+The service worker has a separate, content-derived shell cache. The production
+build injects the exact hashed JS/CSS outputs into its atomic install allowlist;
+it intercepts only those paths and explicit same-origin shell files. Therefore
+device API calls, media paths, cross-origin media, and the managed asset-cache
+proxy are never intercepted. Activation removes only older shell generations
+and does not touch the content cache used for verified active/rollback media.
+Shell cache writes also require an exact non-redirected same-origin response and
+the expected media type, preventing an SPA HTML fallback from being stored as a
+script or style. A first-ever launch without a previously installed worker still
+requires network access; native/WebView offline behavior remains a device gate.
+
 Emergency manifests use priority `emergency`; the player visibly labels them. Normal schedules are restored by publishing a new normal manifest. Device authentication tokens should be independently revocable and rotated by the server.
