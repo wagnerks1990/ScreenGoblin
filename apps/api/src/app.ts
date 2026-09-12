@@ -17,6 +17,7 @@ import { playlistRoutes } from "./routes/playlists.js";
 import { scheduleRoutes } from "./routes/schedules.js";
 import { emergencyRoutes } from "./routes/emergencies.js";
 import { auditRoutes } from "./routes/audits.js";
+import { locationRoutes } from "./routes/locations.js";
 import { deviceRoutes, pairingAdminRoutes } from "./routes/devices.js";
 import { mediaDeliveryRoutes } from "./routes/media-delivery.js";
 import type { MediaObjectStore } from "./media/delivery.js";
@@ -189,6 +190,7 @@ export async function buildApp(
       await api.register(scheduleRoutes);
       await api.register(emergencyRoutes);
       await api.register(auditRoutes);
+      await api.register(locationRoutes);
       await api.register(pairingAdminRoutes);
     },
     { prefix: "/api/v1" },

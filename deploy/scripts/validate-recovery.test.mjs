@@ -19,6 +19,7 @@ test("recovery drill migrates and restores representative application relations"
   for (const table of [
     "Organization",
     "Membership",
+    "Location",
     "User",
     "Screen",
     "MediaAsset",

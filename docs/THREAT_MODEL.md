@@ -91,6 +91,11 @@ Only ports 80/443 are published. Data services use an internal network. Applicat
 
 ## Security validation gate
 
+The database now supports tenant-bound Location records and optional screen
+classification, with audited owner/admin management. This is data-model
+foundation only: no per-user location grants or resource filtering exist, and
+the organization-wide role limitation remains an open production blocker.
+
 Before production, complete authentication/authorization tests, Android
 hardware/application attestation design, automatic overlapping credential
 rotation, physical-device validation of targeted re-enrollment, verified local

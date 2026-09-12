@@ -41,6 +41,84 @@ function authorized<T extends MemoryStore>(store: T): T {
 }
 
 describe("atomic audited administrative mutations", () => {
+  it("keeps location classification tenant-bound and audit-atomic", async () => {
+    const store = authorized(new MemoryStore());
+    const alpha = await store.createLocationAndAudit("org-a", "Main campus", {
+      actorUserId: actor.id,
+    });
+    if (!alpha.created) throw new Error(alpha.reason);
+    const foreign = new MemoryStore();
+    foreign.users.push({ ...actor, organizationId: "org-b" });
+    const beta = await foreign.createLocationAndAudit("org-b", "Other campus", {
+      actorUserId: actor.id,
+    });
+    if (!beta.created) throw new Error(beta.reason);
+    store.locations.push(beta.value);
+
+    await expect(
+      store.createScreenAndAudit(
+        "org-a",
+        { ...screenInput, locationId: beta.value.id },
+        { actorUserId: actor.id },
+      ),
+    ).resolves.toEqual({ created: false, reason: "INVALID_LOCATION" });
+    const screen = await store.createScreenAndAudit(
+      "org-a",
+      { ...screenInput, locationId: alpha.value.id },
+      { actorUserId: actor.id },
+    );
+    if (!screen.created) throw new Error(screen.reason);
+    expect(screen.value).toMatchObject({
+      location: "Main building",
+      locationId: alpha.value.id,
+      locationName: "Main campus",
+    });
+    await expect(
+      store.deleteLocationAndAudit("org-a", alpha.value.id, {
+        actorUserId: actor.id,
+      }),
+    ).resolves.toEqual({ deleted: false, reason: "IN_USE" });
+  });
+
+  it("rolls back location changes when audit creation fails", async () => {
+    const createStore = authorized(new RejectingAuditStore());
+    await expect(
+      createStore.createLocationAndAudit("org-a", "Main campus", {
+        actorUserId: actor.id,
+      }),
+    ).rejects.toThrow("audit unavailable");
+    expect(createStore.locations).toEqual([]);
+
+    const updateStore = authorized(new RejectingAuditStore());
+    updateStore.locations.push({
+      id: "location-a",
+      organizationId: "org-a",
+      name: "Before",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await expect(
+      updateStore.updateLocationAndAudit("org-a", "location-a", "After", {
+        actorUserId: actor.id,
+      }),
+    ).rejects.toThrow("audit unavailable");
+    expect(updateStore.locations[0]!.name).toBe("Before");
+
+    const deleteStore = authorized(new RejectingAuditStore());
+    deleteStore.locations.push({
+      id: "location-delete",
+      organizationId: "org-a",
+      name: "Still present",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await expect(
+      deleteStore.deleteLocationAndAudit("org-a", "location-delete", {
+        actorUserId: actor.id,
+      }),
+    ).rejects.toThrow("audit unavailable");
+    expect(deleteStore.locations).toHaveLength(1);
+  });
   it("does not create or update screens when the audit write fails", async () => {
     const createStore = authorized(new RejectingAuditStore());
     await expect(

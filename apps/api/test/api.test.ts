@@ -573,6 +573,112 @@ describe("authentication and organization RBAC", () => {
     });
     expect(r.statusCode).toBe(403);
   });
+  it("exposes organization-wide location classifications without claiming scoped authorization", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/locations",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: "Main campus" },
+    });
+    expect(created.statusCode).toBe(201);
+    const location = created.json();
+
+    const classified = await app.inject({
+      method: "POST",
+      url: "/api/v1/screens",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Lobby",
+        location: "Legacy lobby",
+        locationId: location.id,
+      },
+    });
+    expect(classified.statusCode).toBe(201);
+    expect(classified.json()).toMatchObject({
+      location: "Legacy lobby",
+      locationId: location.id,
+      locationName: "Main campus",
+    });
+
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/locations/${location.id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: "Main building" },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({
+      id: location.id,
+      name: "Main building",
+    });
+
+    const viewer = issueTestToken(store.users[1]!);
+    const listed = await app.inject({
+      url: "/api/v1/locations",
+      headers: { authorization: `Bearer ${viewer}` },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({
+      authorizationScope: "organization-role",
+      data: [{ id: location.id, name: "Main building" }],
+    });
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/v1/locations",
+      headers: { authorization: `Bearer ${viewer}` },
+      payload: { name: "Denied" },
+    });
+    expect(denied.statusCode).toBe(403);
+
+    const inUse = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/locations/${location.id}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(inUse.statusCode).toBe(409);
+    expect(inUse.json().error.code).toBe("RESOURCE_IN_USE");
+
+    const unclassified = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/screens/${classified.json().id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { locationId: null },
+    });
+    expect(unclassified.statusCode).toBe(200);
+    expect(unclassified.json()).toMatchObject({ location: "Legacy lobby" });
+    expect(unclassified.json()).not.toHaveProperty("locationId");
+    expect(unclassified.json()).not.toHaveProperty("locationName");
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/locations/${location.id}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(removed.statusCode).toBe(204);
+  });
+
+  it("rejects cross-tenant screen classifications without partial writes", async () => {
+    store.locations.push({
+      id: "00000000-0000-4000-8000-000000000099",
+      organizationId: "org-b",
+      name: "Foreign",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/screens",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Wrong tenant",
+        locationId: "00000000-0000-4000-8000-000000000099",
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.code).toBe("INVALID_LOCATION");
+    expect(store.screens).toEqual([]);
+    expect(store.audits).toEqual([]);
+  });
   it("persists distinct server-owned IDs for audited mutations", async () => {
     const hostileRequestId = "attacker-chosen-duplicate";
     const createScreen = (name: string) =>

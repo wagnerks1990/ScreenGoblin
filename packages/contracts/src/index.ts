@@ -64,6 +64,10 @@ export interface ScreenSummary {
   id: string;
   name: string;
   location: string;
+  /** Stable classification only; not an authorization scope in this release. */
+  locationId?: string;
+  /** Current first-class classification name when one has been assigned. */
+  locationName?: string;
   status: ScreenStatus;
   orientation: Orientation;
   resolution: string;
@@ -71,6 +75,14 @@ export interface ScreenSummary {
   nowPlaying?: string;
   playerVersion?: string;
   tags: string[];
+}
+
+/** Administrative classification. Locations do not grant or restrict access yet. */
+export interface LocationSummary {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PairingRequest {

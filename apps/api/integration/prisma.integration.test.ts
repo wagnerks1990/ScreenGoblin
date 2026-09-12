@@ -641,6 +641,213 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect(await prisma.auditEvent.count()).toBe(0);
   });
 
+  it("enforces location tenant integrity and rolls back location audit failures", async () => {
+    const [organization, otherOrganization] = await Promise.all([
+      createOrganization("location-foundation"),
+      createOrganization("location-foundation-other"),
+    ]);
+    const actor = await createMember(
+      organization.id,
+      "ADMIN",
+      "location-admin",
+    );
+    const location = await prisma.location.create({
+      data: { organizationId: organization.id, name: "Main campus" },
+    });
+    const foreignLocation = await prisma.location.create({
+      data: { organizationId: otherOrganization.id, name: "Foreign campus" },
+    });
+
+    await expect(
+      store.createScreenAndAudit(
+        organization.id,
+        {
+          name: "Cross-tenant classification",
+          location: "Legacy label",
+          locationId: foreignLocation.id,
+          orientation: "landscape",
+          resolution: "1920x1080",
+          tags: [],
+        },
+        { actorUserId: actor.id },
+      ),
+    ).resolves.toEqual({ created: false, reason: "INVALID_LOCATION" });
+    await expect(
+      store.createScreen(organization.id, {
+        name: "Internal cross-tenant classification",
+        location: "Legacy label",
+        locationId: foreignLocation.id,
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_LOCATION" });
+    const internalScreen = await store.createScreen(organization.id, {
+      name: "Internal update fixture",
+      location: "Legacy label",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    await expect(
+      store.updateScreen(organization.id, internalScreen.id, {
+        locationId: foreignLocation.id,
+      }),
+    ).resolves.toBeNull();
+    await prisma.screen.delete({ where: { id: internalScreen.id } });
+    await expect(
+      prisma.screen.create({
+        data: {
+          organizationId: organization.id,
+          name: "Direct cross-tenant classification",
+          location: "Legacy label",
+          locationId: foreignLocation.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2003" });
+
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_location_audits" CHECK ("action" NOT IN ('location.created', 'location.updated', 'location.deleted'))`,
+    );
+    try {
+      await expect(
+        store.createLocationAndAudit(organization.id, "Rolled back", {
+          actorUserId: actor.id,
+        }),
+      ).rejects.toThrow();
+      await expect(
+        store.updateLocationAndAudit(organization.id, location.id, "Changed", {
+          actorUserId: actor.id,
+        }),
+      ).rejects.toThrow();
+      const deletable = await prisma.location.create({
+        data: { organizationId: organization.id, name: "Delete rollback" },
+      });
+      await expect(
+        store.deleteLocationAndAudit(organization.id, deletable.id, {
+          actorUserId: actor.id,
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.location.findUniqueOrThrow({ where: { id: deletable.id } }),
+      ).resolves.toBeDefined();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_location_audits"',
+      );
+    }
+    await expect(
+      prisma.location.findUniqueOrThrow({ where: { id: location.id } }),
+    ).resolves.toMatchObject({ name: "Main campus" });
+    expect(
+      await prisma.location.count({
+        where: { organizationId: organization.id, name: "Rolled back" },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.screen.count({ where: { organizationId: organization.id } }),
+    ).toBe(0);
+  });
+
+  it("serializes screen classification against concurrent location deletion", async () => {
+    const organization = await createOrganization("location-lock-order");
+    const [screenActor, locationActor] = await Promise.all([
+      createMember(organization.id, "ADMIN", "location-screen-actor"),
+      createMember(organization.id, "ADMIN", "location-delete-actor"),
+    ]);
+    const createTarget = await prisma.location.create({
+      data: { organizationId: organization.id, name: "Create race" },
+    });
+    const screenInput = {
+      name: "Concurrent classification",
+      location: "Legacy label",
+      locationId: createTarget.id,
+      orientation: "landscape" as const,
+      resolution: "1920x1080",
+      tags: [],
+    };
+
+    const [createResult, createDeleteResult] = await Promise.all([
+      store.createScreenAndAudit(organization.id, screenInput, {
+        actorUserId: screenActor.id,
+      }),
+      store.deleteLocationAndAudit(organization.id, createTarget.id, {
+        actorUserId: locationActor.id,
+      }),
+    ]);
+    if (createResult.created) {
+      expect(createDeleteResult).toEqual({
+        deleted: false,
+        reason: "IN_USE",
+      });
+      await expect(
+        prisma.location.findUniqueOrThrow({ where: { id: createTarget.id } }),
+      ).resolves.toBeDefined();
+    } else {
+      expect(createResult).toEqual({
+        created: false,
+        reason: "INVALID_LOCATION",
+      });
+      expect(createDeleteResult).toEqual({ deleted: true });
+      expect(
+        await prisma.screen.count({
+          where: { organizationId: organization.id, name: screenInput.name },
+        }),
+      ).toBe(0);
+    }
+
+    const screen = await prisma.screen.create({
+      data: {
+        organizationId: organization.id,
+        name: "Update classification",
+        location: "Unclassified legacy label",
+      },
+    });
+    const updateTarget = await prisma.location.create({
+      data: { organizationId: organization.id, name: "Update race" },
+    });
+    const [updateResult, updateDeleteResult] = await Promise.all([
+      store.updateScreenAndAudit(
+        organization.id,
+        screen.id,
+        { locationId: updateTarget.id },
+        { actorUserId: screenActor.id },
+      ),
+      store.deleteLocationAndAudit(organization.id, updateTarget.id, {
+        actorUserId: locationActor.id,
+      }),
+    ]);
+    if (updateResult.updated) {
+      expect(updateDeleteResult).toEqual({
+        deleted: false,
+        reason: "IN_USE",
+      });
+      await expect(
+        prisma.screen.findUniqueOrThrow({ where: { id: screen.id } }),
+      ).resolves.toMatchObject({ locationId: updateTarget.id });
+    } else {
+      expect(updateResult).toEqual({
+        updated: false,
+        reason: "INVALID_LOCATION",
+      });
+      expect(updateDeleteResult).toEqual({ deleted: true });
+      await expect(
+        prisma.screen.findUniqueOrThrow({ where: { id: screen.id } }),
+      ).resolves.toMatchObject({ locationId: null });
+    }
+
+    const orphanRows = await prisma.$queryRaw<Array<{ orphanCount: bigint }>>`
+      SELECT COUNT(*) AS "orphanCount"
+      FROM "Screen" screen
+      LEFT JOIN "Location" location
+        ON location."id" = screen."locationId"
+       AND location."organizationId" = screen."organizationId"
+      WHERE screen."organizationId" = ${organization.id}
+        AND screen."locationId" IS NOT NULL
+        AND location."id" IS NULL`;
+    expect(orphanRows[0]!.orphanCount).toBe(0n);
+  });
+
   it("writes the established ordinary mutation audit actions and metadata", async () => {
     const organization = await createOrganization("ordinary-audit-shape");
     const actor = await createMember(organization.id, "ADMIN", "audit-shape");
@@ -3246,6 +3453,55 @@ describe("PrismaStore PostgreSQL integration", () => {
       meta: expect.objectContaining({ code: "P0001" }),
     });
     expect(await prisma.mediaAsset.count()).toBe(1);
+  });
+
+  it("location backfill preserves legacy labels and assigns tenant-bound classifications", async () => {
+    const organization = await createOrganization("location-backfill");
+    const [lobby, unassigned] = await Promise.all([
+      prisma.screen.create({
+        data: {
+          organizationId: organization.id,
+          name: "Lobby",
+          location: " Main lobby ",
+        },
+      }),
+      prisma.screen.create({
+        data: { organizationId: organization.id, name: "Unset", location: "" },
+      }),
+    ]);
+    const migration = await readFile(
+      new URL(
+        "../prisma/migrations/20260912151000_location_foundation/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const insert = migration.match(
+      /WITH labels AS \([\s\S]*?FROM labels;/,
+    )?.[0];
+    const update = migration.match(/UPDATE "Screen" screen[\s\S]*?END;/)?.[0];
+    expect(insert).toBeTruthy();
+    expect(update).toBeTruthy();
+    await prisma.$executeRawUnsafe(insert!);
+    await prisma.$executeRawUnsafe(update!);
+
+    const restored = await prisma.screen.findMany({
+      where: { organizationId: organization.id },
+      include: { classifiedLocation: true },
+      orderBy: { name: "asc" },
+    });
+    expect(restored).toMatchObject([
+      {
+        id: lobby.id,
+        location: " Main lobby ",
+        classifiedLocation: { name: "Main lobby" },
+      },
+      {
+        id: unassigned.id,
+        location: "",
+        classifiedLocation: { name: "Unassigned" },
+      },
+    ]);
   });
 
   it("release migration preflight refuses populated legacy schedules", async () => {

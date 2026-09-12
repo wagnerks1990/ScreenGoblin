@@ -13,6 +13,7 @@ import type {
   LoginFailureInput,
   LoginFailureRecord,
   MediaDeliveryAuthorizationInput,
+  LocationRecord,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
@@ -31,6 +32,8 @@ import type {
   SchedulePublicationInput,
   SchedulePublicationResult,
   ScheduleWithdrawalResult,
+  ScreenMutationInput,
+  ScreenMutationPatch,
   ScreenRecord,
   SessionUser,
   SystemIdentityMutationAuditContext,
@@ -64,6 +67,7 @@ export class MemoryStore implements DataStore {
   users: SessionUser[] = [];
   userSessions: UserSessionRecord[] = [];
   loginFailures: LoginFailureRecord[] = [];
+  locations: LocationRecord[] = [];
   screens: ScreenRecord[] = [];
   media: MediaRecord[] = [];
   playlists: PlaylistRecord[] = [];
@@ -414,6 +418,15 @@ export class MemoryStore implements DataStore {
   private publicScreen(screen: ScreenRecord): ScreenRecord {
     const safe = { ...screen };
     delete safe.deviceTokenHash;
+    const location = screen.locationId
+      ? this.locations.find(
+          (candidate) =>
+            candidate.id === screen.locationId &&
+            candidate.organizationId === screen.organizationId,
+        )
+      : undefined;
+    if (location) safe.locationName = location.name;
+    else delete safe.locationName;
     return safe;
   }
   private activeActor(
@@ -429,6 +442,121 @@ export class MemoryStore implements DataStore {
         roles.includes(user.role),
     );
   }
+  async listLocations(org: string) {
+    return this.locations
+      .filter((location) => location.organizationId === org)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((location) => ({ ...location }));
+  }
+  async createLocationAndAudit(
+    org: string,
+    name: string,
+    audit: UserMutationAuditContext,
+  ) {
+    if (!this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]))
+      return { created: false, reason: "FORBIDDEN" } as const;
+    if (
+      this.locations.some(
+        (location) => location.organizationId === org && location.name === name,
+      )
+    )
+      return { created: false, reason: "DUPLICATE" } as const;
+    const timestamp = now();
+    const location: LocationRecord = {
+      id: id(),
+      organizationId: org,
+      name,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "location.created",
+      entityType: "location",
+      entityId: location.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { name },
+    });
+    this.locations.push(location);
+    this.audits.push(auditRecord);
+    return { created: true, value: { ...location } } as const;
+  }
+  async updateLocationAndAudit(
+    org: string,
+    locationId: string,
+    name: string,
+    audit: UserMutationAuditContext,
+  ) {
+    if (!this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]))
+      return { updated: false, reason: "FORBIDDEN" } as const;
+    const location = this.locations.find(
+      (candidate) =>
+        candidate.organizationId === org && candidate.id === locationId,
+    );
+    if (!location) return { updated: false, reason: "NOT_FOUND" } as const;
+    if (
+      this.locations.some(
+        (candidate) =>
+          candidate.organizationId === org &&
+          candidate.id !== locationId &&
+          candidate.name === name,
+      )
+    )
+      return { updated: false, reason: "DUPLICATE" } as const;
+    const updatedAt = now();
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "location.updated",
+      entityType: "location",
+      entityId: locationId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { previousName: location.name, name },
+    });
+    location.name = name;
+    location.updatedAt = updatedAt;
+    this.audits.push(auditRecord);
+    return { updated: true, value: { ...location } } as const;
+  }
+  async deleteLocationAndAudit(
+    org: string,
+    locationId: string,
+    audit: UserMutationAuditContext,
+  ) {
+    if (!this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]))
+      return { deleted: false, reason: "FORBIDDEN" } as const;
+    const index = this.locations.findIndex(
+      (candidate) =>
+        candidate.organizationId === org && candidate.id === locationId,
+    );
+    if (index < 0) return { deleted: false, reason: "NOT_FOUND" } as const;
+    if (
+      this.screens.some(
+        (screen) =>
+          screen.organizationId === org && screen.locationId === locationId,
+      )
+    )
+      return { deleted: false, reason: "IN_USE" } as const;
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "location.deleted",
+      entityType: "location",
+      entityId: locationId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { name: this.locations[index]!.name },
+    });
+    this.locations.splice(index, 1);
+    this.audits.push(auditRecord);
+    return { deleted: true } as const;
+  }
   async listScreens(org: string) {
     return this.screens
       .filter((x) => x.organizationId === org)
@@ -441,19 +569,15 @@ export class MemoryStore implements DataStore {
         .map((x) => this.publicScreen(x))[0] ?? null
     );
   }
-  async createScreen(
-    org: string,
-    data: Pick<
-      ScreenRecord,
-      "name" | "location" | "orientation" | "resolution" | "tags"
-    >,
-  ) {
+  async createScreen(org: string, data: ScreenMutationInput) {
     const t = now();
+    const { locationId, ...screenData } = data;
     const x: ScreenRecord = {
       id: id(),
       organizationId: org,
       status: "offline",
-      ...data,
+      ...screenData,
+      ...(locationId ? { locationId } : {}),
       createdAt: t,
       updatedAt: t,
     };
@@ -462,20 +586,27 @@ export class MemoryStore implements DataStore {
   }
   async createScreenAndAudit(
     org: string,
-    data: Pick<
-      ScreenRecord,
-      "name" | "location" | "orientation" | "resolution" | "tags"
-    >,
+    data: ScreenMutationInput,
     audit: UserMutationAuditContext,
   ) {
     if (!this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]))
       return { created: false, reason: "FORBIDDEN" } as const;
+    if (
+      data.locationId &&
+      !this.locations.some(
+        (location) =>
+          location.organizationId === org && location.id === data.locationId,
+      )
+    )
+      return { created: false, reason: "INVALID_LOCATION" } as const;
     const timestamp = now();
+    const { locationId, ...screenData } = data;
     const screen: ScreenRecord = {
       id: id(),
       organizationId: org,
       status: "offline",
-      ...data,
+      ...screenData,
+      ...(locationId ? { locationId } : {}),
       tags: [...new Set(data.tags)],
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -495,32 +626,21 @@ export class MemoryStore implements DataStore {
     this.audits.push(auditRecord);
     return { created: true, value: this.publicScreen(screen) } as const;
   }
-  async updateScreen(
-    org: string,
-    screenId: string,
-    data: Partial<
-      Pick<
-        ScreenRecord,
-        "name" | "location" | "orientation" | "resolution" | "tags"
-      >
-    >,
-  ) {
+  async updateScreen(org: string, screenId: string, data: ScreenMutationPatch) {
     const x = this.screens.find(
       (screen) => screen.organizationId === org && screen.id === screenId,
     );
     if (!x) return null;
-    Object.assign(x, data, { updatedAt: now() });
+    const { locationId, ...changes } = data;
+    Object.assign(x, changes, { updatedAt: now() });
+    if (locationId === null) delete x.locationId;
+    else if (locationId !== undefined) x.locationId = locationId;
     return x;
   }
   async updateScreenAndAudit(
     org: string,
     screenId: string,
-    data: Partial<
-      Pick<
-        ScreenRecord,
-        "name" | "location" | "orientation" | "resolution" | "tags"
-      >
-    >,
+    data: ScreenMutationPatch,
     audit: UserMutationAuditContext,
   ) {
     if (!this.activeActor(org, audit.actorUserId, ["OWNER", "ADMIN"]))
@@ -530,6 +650,14 @@ export class MemoryStore implements DataStore {
         candidate.organizationId === org && candidate.id === screenId,
     );
     if (!screen) return { updated: false, reason: "NOT_FOUND" } as const;
+    if (
+      data.locationId &&
+      !this.locations.some(
+        (location) =>
+          location.organizationId === org && location.id === data.locationId,
+      )
+    )
+      return { updated: false, reason: "INVALID_LOCATION" } as const;
     const auditRecord = this.buildAuditRecord({
       organizationId: org,
       actorUserId: audit.actorUserId,
@@ -541,12 +669,15 @@ export class MemoryStore implements DataStore {
       ...(audit.requestId ? { requestId: audit.requestId } : {}),
       metadata: {},
     });
+    const { locationId, ...changes } = data;
     Object.assign(
       screen,
-      data,
+      changes,
       data.tags ? { tags: [...new Set(data.tags)] } : {},
       { updatedAt: now() },
     );
+    if (locationId === null) delete screen.locationId;
+    else if (locationId !== undefined) screen.locationId = locationId;
     this.audits.push(auditRecord);
     return { updated: true, value: this.publicScreen(screen) } as const;
   }

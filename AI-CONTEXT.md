@@ -87,6 +87,10 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   current role-to-capability map is only a compatibility adapter; do not treat it
   as scoped authorization or an approval workflow.
 - Tenant-owned database relationships must carry and enforce the same organization ID at the foreign-key boundary; migrations must abort for investigation rather than silently relabel cross-tenant legacy rows.
+- Location is now a stable tenant-bound classification with audited owner/admin
+  CRUD and optional Screen linkage. It has no grants or filtering semantics;
+  effective authorization remains organization-role-wide, and UI or docs must
+  not claim otherwise. The legacy Screen.location label remains compatible.
 - Production media must match an explicit canonical HTTPS origin. The current
   metadata-only boundary accepts only pre-provisioned JPEG, PNG, MP4, and JSON
   template assets, disables web content, and enforces 128 MiB per asset and
