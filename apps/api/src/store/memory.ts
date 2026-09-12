@@ -1,5 +1,6 @@
 import type {
   AuditRecord,
+  ActiveOrdinaryRelease,
   DataStore,
   EmergencyRecord,
   MediaRecord,
@@ -8,11 +9,26 @@ import type {
   PairingCreateAuditContext,
   PairingCreateResult,
   PlaylistRecord,
+  PublishedReleaseRecord,
+  ReleaseAssignmentRecord,
+  ReleaseAuditContext,
+  ReleasePublicationPolicy,
   ScheduleRecord,
+  SchedulePublicationInput,
+  SchedulePublicationResult,
+  ScheduleWithdrawalResult,
   ScreenRecord,
   SessionUser,
 } from "../domain/types.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
+import {
+  assignmentSnapshotDigest,
+  canonicalAssignmentSnapshot,
+  canonicalReleaseSnapshot,
+  ReleaseSnapshotError,
+  releaseSnapshotDigest,
+} from "../releases/canonical.js";
+import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 
 const id = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -23,6 +39,8 @@ export class MemoryStore implements DataStore {
   media: MediaRecord[] = [];
   playlists: PlaylistRecord[] = [];
   schedules: ScheduleRecord[] = [];
+  releases: PublishedReleaseRecord[] = [];
+  releaseAssignments: ReleaseAssignmentRecord[] = [];
   emergencies: EmergencyRecord[] = [];
   audits: AuditRecord[] = [];
   pairings: PairingRecord[] = [];
@@ -340,11 +358,29 @@ export class MemoryStore implements DataStore {
     );
   }
   async deleteMedia(org: string, assetId: string) {
-    const n = this.media.length;
+    if (
+      !this.media.some(
+        (asset) => asset.organizationId === org && asset.id === assetId,
+      )
+    )
+      return "NOT_FOUND" as const;
+    if (
+      this.playlists.some(
+        (playlist) =>
+          playlist.organizationId === org &&
+          playlist.items.some((item) => item.assetId === assetId),
+      ) ||
+      this.releases.some(
+        (release) =>
+          release.organizationId === org &&
+          release.items.some((item) => item.asset.id === assetId),
+      )
+    )
+      return "IN_USE" as const;
     this.media = this.media.filter(
       (x) => !(x.organizationId === org && x.id === assetId),
     );
-    return n !== this.media.length;
+    return "DELETED" as const;
   }
   async listPlaylists(org: string) {
     return this.playlists.filter((x) => x.organizationId === org);
@@ -373,14 +409,37 @@ export class MemoryStore implements DataStore {
     );
   }
   async deletePlaylist(org: string, playlistId: string) {
-    const n = this.playlists.length;
+    if (
+      !this.playlists.some(
+        (playlist) =>
+          playlist.organizationId === org && playlist.id === playlistId,
+      )
+    )
+      return "NOT_FOUND" as const;
+    if (
+      this.schedules.some(
+        (schedule) =>
+          schedule.organizationId === org && schedule.playlistId === playlistId,
+      ) ||
+      this.releases.some(
+        (release) =>
+          release.organizationId === org &&
+          release.sourcePlaylistId === playlistId,
+      )
+    )
+      return "IN_USE" as const;
     this.playlists = this.playlists.filter(
       (x) => !(x.organizationId === org && x.id === playlistId),
     );
-    return n !== this.playlists.length;
+    return "DELETED" as const;
   }
   async listSchedules(org: string) {
-    return this.schedules.filter((x) => x.organizationId === org);
+    return this.schedules.filter((schedule) => {
+      if (schedule.organizationId !== org) return false;
+      if (!schedule.releaseId) return true;
+      const latest = this.latestAssignment(schedule.id);
+      return latest?.state !== "WITHDRAWN";
+    });
   }
   async createSchedule(
     org: string,
@@ -406,6 +465,271 @@ export class MemoryStore implements DataStore {
       (x) => !(x.organizationId === org && x.id === scheduleId),
     );
     return n !== this.schedules.length;
+  }
+  async publishScheduleAndAudit(
+    org: string,
+    data: SchedulePublicationInput,
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+  ): Promise<SchedulePublicationResult> {
+    const screenIds = [...new Set(data.screenIds)].sort();
+    const playlist = this.playlists.find(
+      (candidate) =>
+        candidate.organizationId === org && candidate.id === data.playlistId,
+    );
+    if (!playlist) return { published: false, reason: "PLAYLIST_NOT_FOUND" };
+    if (
+      screenIds.some(
+        (screenId) =>
+          !this.screens.some(
+            (screen) => screen.organizationId === org && screen.id === screenId,
+          ),
+      )
+    )
+      return { published: false, reason: "SCREEN_NOT_FOUND" };
+    const sourceAssets = playlist.items.flatMap((item) => {
+      const asset = this.media.find(
+        (candidate) =>
+          candidate.organizationId === org && candidate.id === item.assetId,
+      );
+      return asset ? [asset] : [];
+    });
+    if (
+      sourceAssets.some(
+        (asset) =>
+          !mediaUrlMatchesAllowedOrigin(asset.url, policy.mediaAllowedOrigins),
+      )
+    )
+      return { published: false, reason: "ASSET_NOT_ALLOWED" };
+
+    let snapshot;
+    try {
+      snapshot = canonicalReleaseSnapshot(playlist, sourceAssets);
+    } catch (error) {
+      if (error instanceof ReleaseSnapshotError)
+        return { published: false, reason: error.reason };
+      throw error;
+    }
+
+    const digestSha256 = releaseSnapshotDigest(snapshot);
+    const timestamp = now();
+    const existingRelease = this.releases.find(
+      (release) =>
+        release.organizationId === org && release.digestSha256 === digestSha256,
+    );
+    const release: PublishedReleaseRecord = existingRelease ?? {
+      id: id(),
+      organizationId: org,
+      sourcePlaylistId: snapshot.sourcePlaylistId,
+      sourcePlaylistUpdatedAt: snapshot.sourcePlaylistUpdatedAt,
+      playlistName: snapshot.playlistName,
+      playlistDescription: snapshot.playlistDescription,
+      digestSha256,
+      items: snapshot.items,
+      createdById: audit.actorUserId,
+      createdAt: timestamp,
+    };
+    const scheduleId = id();
+    const assignmentId = id();
+    const frozenSchedule = {
+      name: data.name,
+      priority: data.priority,
+      startsAt: data.startsAt,
+      ...(data.endsAt ? { endsAt: data.endsAt } : {}),
+      timezone: data.timezone,
+      daysOfWeek: [...data.daysOfWeek],
+      ...(data.dailyStartMinutes !== undefined
+        ? { dailyStartMinutes: data.dailyStartMinutes }
+        : {}),
+      ...(data.dailyEndMinutes !== undefined
+        ? { dailyEndMinutes: data.dailyEndMinutes }
+        : {}),
+      enabled: data.enabled,
+    };
+    const assignmentDigest = assignmentSnapshotDigest(
+      canonicalAssignmentSnapshot({
+        releaseDigestSha256: digestSha256,
+        state: "ASSIGNED",
+        schedule: frozenSchedule,
+        screenIds,
+      }),
+    );
+    const duplicateAssignment = this.releaseAssignments.find(
+      (candidate) =>
+        candidate.organizationId === org &&
+        candidate.state === "ASSIGNED" &&
+        candidate.digestSha256 === assignmentDigest &&
+        this.latestAssignment(candidate.scheduleId)?.id === candidate.id,
+    );
+    if (duplicateAssignment) {
+      const duplicateSchedule = this.schedules.find(
+        (candidate) =>
+          candidate.organizationId === org &&
+          candidate.id === duplicateAssignment.scheduleId,
+      );
+      const duplicateRelease = this.releases.find(
+        (candidate) =>
+          candidate.organizationId === org &&
+          candidate.id === duplicateAssignment.releaseId,
+      );
+      if (!duplicateSchedule || !duplicateRelease)
+        throw new Error("Immutable release assignment references are missing");
+      return {
+        published: true,
+        schedule: duplicateSchedule,
+        release: duplicateRelease,
+        assignment: duplicateAssignment,
+      };
+    }
+    const schedule: ScheduleRecord = {
+      id: scheduleId,
+      organizationId: org,
+      ...data,
+      screenIds,
+      releaseId: release.id,
+      assignmentId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const assignment: ReleaseAssignmentRecord = {
+      id: assignmentId,
+      organizationId: org,
+      releaseId: release.id,
+      scheduleId,
+      screenIds,
+      state: "ASSIGNED",
+      schedule: frozenSchedule,
+      digestSha256: assignmentDigest,
+      createdById: audit.actorUserId,
+      createdAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "release.published",
+      entityType: "published_release",
+      entityId: release.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        scheduleId,
+        assignmentId,
+        digestSha256,
+        assignmentDigestSha256: assignmentDigest,
+        screenCount: assignment.screenIds.length,
+      },
+    });
+
+    if (!existingRelease) this.releases.push(release);
+    this.schedules.push(schedule);
+    this.releaseAssignments.push(assignment);
+    this.audits.push(auditRecord);
+    return { published: true, schedule, release, assignment };
+  }
+
+  async withdrawScheduleAndAudit(
+    org: string,
+    scheduleId: string,
+    audit: ReleaseAuditContext,
+  ): Promise<ScheduleWithdrawalResult> {
+    const schedule = this.schedules.find(
+      (candidate) =>
+        candidate.organizationId === org && candidate.id === scheduleId,
+    );
+    if (!schedule?.releaseId) return { withdrawn: false, reason: "NOT_FOUND" };
+    const previous = this.latestAssignment(scheduleId);
+    if (!previous) return { withdrawn: false, reason: "NOT_FOUND" };
+    if (previous.state === "WITHDRAWN")
+      return { withdrawn: false, reason: "ALREADY_WITHDRAWN" };
+    const release = this.releases.find(
+      (candidate) =>
+        candidate.organizationId === org && candidate.id === schedule.releaseId,
+    );
+    if (!release) return { withdrawn: false, reason: "NOT_FOUND" };
+
+    const assignment: ReleaseAssignmentRecord = {
+      id: id(),
+      organizationId: org,
+      releaseId: schedule.releaseId,
+      scheduleId,
+      screenIds: [...previous.screenIds],
+      state: "WITHDRAWN",
+      schedule: {
+        ...previous.schedule,
+        daysOfWeek: [...previous.schedule.daysOfWeek],
+      },
+      digestSha256: assignmentSnapshotDigest(
+        canonicalAssignmentSnapshot({
+          releaseDigestSha256: release.digestSha256,
+          state: "WITHDRAWN",
+          schedule: previous.schedule,
+          screenIds: previous.screenIds,
+          previousAssignmentId: previous.id,
+        }),
+      ),
+      previousAssignmentId: previous.id,
+      createdById: audit.actorUserId,
+      createdAt: now(),
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "release.withdrawn",
+      entityType: "release_assignment",
+      entityId: assignment.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        scheduleId,
+        releaseId: schedule.releaseId,
+        previousAssignmentId: previous.id,
+        screenCount: assignment.screenIds.length,
+      },
+    });
+    this.releaseAssignments.push(assignment);
+    this.audits.push(auditRecord);
+    return { withdrawn: true, assignment };
+  }
+
+  private latestAssignment(
+    scheduleId: string,
+  ): ReleaseAssignmentRecord | undefined {
+    for (let index = this.releaseAssignments.length - 1; index >= 0; index--) {
+      const assignment = this.releaseAssignments[index];
+      if (assignment?.scheduleId === scheduleId) return assignment;
+    }
+    return undefined;
+  }
+
+  async activeOrdinaryReleases(
+    org: string,
+    screenId: string,
+    at: string,
+  ): Promise<ActiveOrdinaryRelease[]> {
+    const instant = new Date(at);
+    return this.schedules.flatMap((schedule) => {
+      if (schedule.organizationId !== org || !schedule.releaseId) return [];
+      const assignment = this.latestAssignment(schedule.id);
+      if (
+        !assignment ||
+        assignment.organizationId !== org ||
+        assignment.state !== "ASSIGNED" ||
+        !assignment.screenIds.includes(screenId) ||
+        !assignment.schedule.enabled ||
+        assignment.schedule.startsAt > at ||
+        (assignment.schedule.endsAt && assignment.schedule.endsAt <= at) ||
+        !matchesScheduleWindow(assignment.schedule, instant)
+      )
+        return [];
+      const release = this.releases.find(
+        (candidate) =>
+          candidate.organizationId === org &&
+          candidate.id === assignment.releaseId,
+      );
+      return release ? [{ release, assignment }] : [];
+    });
   }
   async activeSchedules(org: string, screenId: string, at: string) {
     const d = new Date(at);
