@@ -204,6 +204,76 @@ describe("proof-v1 device routes", () => {
     ).toHaveLength(1);
   });
 
+  it("clears omitted playback fields in a fresh heartbeat snapshot", async () => {
+    const fixture = await pairingFixture();
+    const { credentials } = await pair(fixture);
+    const screenId = credentials.screenId as string;
+    const sendHeartbeat = async (payload: {
+      installationId: string;
+      playerVersion: string;
+      manifestVersion?: string;
+      nowPlayingAssetId?: string;
+      uptimeSeconds: number;
+      freeStorageBytes: number;
+      networkType: string;
+      occurredAt: string;
+    }) => {
+      const challenge = await issueChallenge(
+        screenId,
+        fixture.identity.keyId,
+        "heartbeat",
+        canonicalHeartbeatDigest(payload),
+      );
+      return app.inject({
+        method: "POST",
+        url: "/api/v1/device/heartbeat",
+        headers: proofHeaders(
+          screenId,
+          fixture.identity.keyId,
+          challenge,
+          fixture.privateKey,
+        ),
+        payload,
+      });
+    };
+
+    const initial = {
+      installationId: fixture.identity.keyId,
+      playerVersion: "0.1.1",
+      manifestVersion: "release-7",
+      nowPlayingAssetId: "asset-7",
+      uptimeSeconds: 120,
+      freeStorageBytes: 1_000_000,
+      networkType: "wifi",
+      occurredAt: new Date().toISOString(),
+    };
+    expect((await sendHeartbeat(initial)).statusCode).toBe(200);
+    expect(store.screens[0]).toMatchObject({
+      manifestVersion: "release-7",
+      nowPlayingAssetId: "asset-7",
+    });
+
+    const cleared = {
+      installationId: fixture.identity.keyId,
+      playerVersion: "0.1.2",
+      uptimeSeconds: 180,
+      freeStorageBytes: 900_000,
+      networkType: "ethernet",
+      occurredAt: new Date(Date.now() + 1).toISOString(),
+    };
+    const response = await sendHeartbeat(cleared);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ accepted: true });
+    expect(store.screens[0]).not.toHaveProperty("manifestVersion");
+    expect(store.screens[0]).not.toHaveProperty("nowPlayingAssetId");
+    expect(store.screens[0]).toMatchObject({
+      playerVersion: "0.1.2",
+      uptimeSeconds: 180,
+      freeStorageBytes: 900_000,
+      networkType: "ethernet",
+    });
+  });
+
   it("accepts a heartbeat proof once and rejects its replay", async () => {
     const fixture = await pairingFixture();
     const { credentials } = await pair(fixture);
