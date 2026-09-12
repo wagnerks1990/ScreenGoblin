@@ -40,6 +40,38 @@ ScreenGoblin is not currently a certified emergency-notification or life-safety 
 | Local audit row mutation        | Incomplete or misleading local history                                | Bounded scalar/JSON fields and a PostgreSQL trigger reject ordinary row updates and direct deletes while preserving current user and tenant deletion semantics. The API currently uses the table-owning login, which can disable the trigger or truncate/rewrite the table. There is no hash chain, independently protected anchor, outbox/export monitor, approved retention job, or legal hold, so these controls address application mistakes rather than a compromised database or administrator.                                                                                                                                                                                                                                                                                           |
 | Screenshot privacy leak         | Unintended personal data                                              | Role-gate, audit, short retention, encryption, disable per location where required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
+The Android application now contains a native-only staged command journal for
+the exact non-shell actions `REFRESH_CONTENT` and `RESTART_RENDERER`. It stores
+credential generation, per-generation monotonic sequence, command identity,
+accepting renderer lifecycle, execution state, and pending terminal
+acknowledgement in dedicated app-private preferences. Process-wide serialization
+protects its in-process read/validate/replace transition, and malformed state,
+lexicographic rollback, conflicting replay, or unsupported actions fail closed.
+A higher credential generation atomically supersedes older-generation pending
+work and terminal acknowledgement state while starting a new sequence domain.
+A restart remains pending until a different renderer lifecycle reports ready
+through a package-private native hook; bridge JavaScript cannot assert readiness,
+and construction, reload, or reboot does not itself report success. That trusted
+native lifecycle integration is not implemented in this unreachable stage.
+The plugin is deliberately not registered with the Capacitor bridge; no API
+route, manifest/heartbeat field, Player JavaScript caller, or Console control can
+deliver a command, so remote commands remain disabled. Preference commit success
+is only an Android API-level persistence result: this repository does not claim
+physical power-loss durability, encrypted or hardware-backed state, protection
+from privileged storage rollback, or survival after application data is cleared.
+If a preference replace returns false or throws, the outcome is uncertain because
+Android's in-memory map may already have changed. The storage namespace is then
+poisoned for the process lifetime, and all later operations return
+`STATE_UNCERTAIN` without reading it. Restarting the process clears only that
+in-memory poison: exact valid stored state is used and malformed state fails
+closed. Manually clearing application data is a destructive reset that erases
+the replay high-water state and does not unpoison an already-running process.
+Authorization, immutable server records, signed proof-bound delivery, expiry,
+audit, capability negotiation, authenticated acknowledgement, trusted native
+readiness integration, and representative device lifecycle/power-loss testing
+remain required before enablement. OS reboot, cache clearing, screenshots,
+updates, emergency actions, and arbitrary or shell execution are not represented.
+
 The repository supply-chain gate now uses the checksum-verified Trivy binary
 for blocking secret and infrastructure/configuration scans and enforces an
 exact lockfile-license allowlist with narrow, expiring exceptions. These are

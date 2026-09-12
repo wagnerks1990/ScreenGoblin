@@ -30,6 +30,17 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   This prevents a later playback failure from reviving content the Player has
   already withdrawn without claiming recall of bytes on disconnected Players.
 
+- Stage a native-only Android command journal for exactly `REFRESH_CONTENT` and
+  `RESTART_RENDERER`. Persist lexicographic credential-generation/sequence,
+  command identity, explicit renderer-ready lifecycle, and terminal
+  acknowledgement state with process-wide in-process serialization. Higher
+  credential generations supersede all older-generation state, while an
+  uncertain preference commit poisons the journal until process restart;
+  reject corrupt state, rollback, conflicting replay, and every other action.
+  The plugin is not registered with the Capacitor bridge, and no server,
+  manifest, heartbeat, Player JavaScript, or Console path can invoke it, so
+  remote commands and emergency operation remain disabled.
+
 - Cap private media delivery at the earliest manifest lease, frozen schedule
   playback boundary, or frozen asset expiry. Bind capabilities to the immutable
   assignment ID/digest and recheck the tenant/screen-specific latest assignment
