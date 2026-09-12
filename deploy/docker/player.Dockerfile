@@ -1,4 +1,4 @@
-FROM node:22.19.0-bookworm-slim AS build
+FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS build
 WORKDIR /app
 ARG VITE_API_URL=https://signage.example.org
 ENV VITE_API_URL=$VITE_API_URL
@@ -10,10 +10,7 @@ COPY packages/contracts ./packages/contracts
 COPY apps/player ./apps/player
 RUN npm run build -w @screengoblin/contracts && npm run build -w @screengoblin/player
 
-FROM nginxinc/nginx-unprivileged:1.29-alpine
-USER root
-RUN apk upgrade --no-cache
-USER 101
+FROM nginxinc/nginx-unprivileged:1.30.4-alpine3.24@sha256:442753882674b49ae2c1de83ed67896131c0777f56df5005e356e62bc3f7e7ce
 COPY deploy/nginx/spa.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/player/dist /usr/share/nginx/html
 EXPOSE 8080

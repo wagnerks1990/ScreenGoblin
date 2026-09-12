@@ -16,7 +16,8 @@
     "test:coverage": "npm run test:coverage --workspaces --if-present",
     "test:integration:postgres": "npm run test:integration -w @screengoblin/api",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "validate": "npm run prisma:generate -w @screengoblin/api && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
+    "validate:container-inputs": "node deploy/scripts/validate-container-inputs.mjs",
+    "validate": "npm run validate:container-inputs && npm run prisma:generate -w @screengoblin/api && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
   },
   "engines": {
     "node": ">=22"

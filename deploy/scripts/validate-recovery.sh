@@ -5,12 +5,25 @@ umask 077
 command -v docker >/dev/null
 command -v sha256sum >/dev/null
 
-readonly POSTGRES_FIXTURE="${POSTGRES_FIXTURE_IMAGE:-postgres:17-alpine}"
-readonly MINIO_FIXTURE="${MINIO_FIXTURE_IMAGE:-quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z}"
-readonly MC_FIXTURE="${MC_FIXTURE_IMAGE:-quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z}"
-readonly ALPINE_FIXTURE="${ALPINE_FIXTURE_IMAGE:-alpine:3.22}"
+readonly POSTGRES_FIXTURE="${POSTGRES_FIXTURE_IMAGE:-postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73}"
+readonly MINIO_FIXTURE="${MINIO_FIXTURE_IMAGE:-quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e}"
+readonly MC_FIXTURE="${MC_FIXTURE_IMAGE:-quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3}"
+readonly ALPINE_FIXTURE="${ALPINE_FIXTURE_IMAGE:-alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce}"
 readonly ROLLBACK_DOCKERFILE="${ROLLBACK_DOCKERFILE:-deploy/docker/api.Dockerfile}"
 readonly EVIDENCE_DIR="${RECOVERY_EVIDENCE_DIR:-recovery-evidence}"
+
+require_digest() {
+  local image="$1"
+  [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]] || {
+    echo "Recovery fixture images must use an explicit sha256 digest: $image" >&2
+    exit 2
+  }
+}
+
+require_digest "$POSTGRES_FIXTURE"
+require_digest "$MINIO_FIXTURE"
+require_digest "$MC_FIXTURE"
+require_digest "$ALPINE_FIXTURE"
 
 if [[ -e "$EVIDENCE_DIR" ]]; then
   echo "Refusing to overwrite existing recovery evidence: $EVIDENCE_DIR" >&2
