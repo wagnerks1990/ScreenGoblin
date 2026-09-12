@@ -43,6 +43,12 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
     ),
   }));
   app.post("/media", async (request, reply) => {
+    if (!app.config.legacyMediaRegistrationEnabled)
+      throw new ApiError(
+        404,
+        "MEDIA_REGISTRATION_DISABLED",
+        "Legacy media metadata registration is disabled",
+      );
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
     const input = body.parse(request.body);
     const mediaUrl = new URL(input.url);

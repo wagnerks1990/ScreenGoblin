@@ -32,6 +32,7 @@ declare module "fastify" {
       deviceAuthMode: "proof-v1" | "development-bearer";
       emergencyPublishingEnabled: boolean;
       mediaAllowedOrigins: string[];
+      legacyMediaRegistrationEnabled: boolean;
       publicApiUrl?: string;
     };
     authenticate: (

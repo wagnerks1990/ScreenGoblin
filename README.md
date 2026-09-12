@@ -62,13 +62,17 @@ players pin its public verification key during pairing.
 
 Point `SCREEN_GOBLIN_HOST` and `PLAYER_HOST` DNS records at the host. Caddy obtains TLS certificates automatically for public names. Do not expose PostgreSQL, Redis, MinIO, or the Caddy admin endpoint to the network.
 
-The MinIO bootstrap grants anonymous read access to the media bucket so standalone players can fetch published assets. Treat media URLs as public. Before storing confidential content, replace this with short-lived signed URLs or an authenticated CDN.
+The MinIO bucket is private and Caddy does not proxy it. Players receive
+short-lived, active-device-bound API capabilities in signed manifests; the API
+streams only the exact server-derived object key from its fixed storage endpoint.
 
 The Console media inventory is intentionally read-only. This prototype has no
-browser upload pipeline: an approved external process may pre-provision only
-non-sensitive JPEG, PNG, MP4, or JSON template objects, after which their
-allowlisted immutable metadata can be registered with the API. Web media is
-disabled. Metadata validation is not malware scanning or safe transcoding.
+browser upload pipeline. Deprecated caller-supplied metadata registration is
+disabled by default and cannot be enabled in production. See
+[`docs/MEDIA_INGESTION_DESIGN.md`](docs/MEDIA_INGESTION_DESIGN.md) for the
+quarantine, scanning, canonicalization, promotion, and recovery gate. Web media,
+images, and video must not be enabled through that future boundary without their
+documented safe-derivative controls.
 
 ## Android player
 

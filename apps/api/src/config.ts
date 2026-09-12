@@ -133,6 +133,10 @@ const schema = z
     CORS_ORIGINS: z.string().default("http://localhost:5173"),
     PUBLIC_API_URL: z.url(),
     MEDIA_ALLOWED_ORIGINS: z.string().default(""),
+    LEGACY_MEDIA_REGISTRATION_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((v) => v === "true"),
     S3_ENDPOINT: z.url().default("http://localhost:9000"),
     S3_REGION: z.string().min(1).default("us-east-1"),
     S3_BUCKET: z
@@ -175,6 +179,13 @@ const schema = z
         path: ["EMERGENCY_FEATURE_ENABLED"],
         message:
           "must remain false in production until the emergency safety gates are implemented",
+      });
+    if (value.LEGACY_MEDIA_REGISTRATION_ENABLED)
+      context.addIssue({
+        code: "custom",
+        path: ["LEGACY_MEDIA_REGISTRATION_ENABLED"],
+        message:
+          "must remain false in production; private ingestion is not implemented",
       });
     if (value.DEVICE_AUTH_MODE !== "proof-v1")
       context.addIssue({

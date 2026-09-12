@@ -69,6 +69,7 @@ beforeEach(async () => {
     deviceAuthMode: "development-bearer",
     publicApiUrl: "https://signage.example.test",
     mediaAllowedOrigins: ["https://media.example.test"],
+    legacyMediaRegistrationEnabled: true,
   });
   token = issueTestToken(store.users[0]!);
 });
@@ -1710,6 +1711,26 @@ describe("device lifecycle", () => {
 });
 
 describe("media trust boundary", () => {
+  it("hides deprecated metadata registration unless explicitly enabled", async () => {
+    app.config.legacyMediaRegistrationEnabled = false;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/media",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: "Caller asserted object",
+        kind: "image",
+        mimeType: "image/png",
+        url: "https://media.example.test/image.png",
+        checksumSha256: "a".repeat(64),
+        sizeBytes: 1,
+      },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe("MEDIA_REGISTRATION_DISABLED");
+    expect(store.media).toEqual([]);
+  });
+
   it("accepts only supported kind and MIME pairs and disables web content", async () => {
     for (const payload of [
       {
