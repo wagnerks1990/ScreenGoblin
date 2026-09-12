@@ -14,6 +14,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  security-events: write
 
 jobs:
   evidence:
@@ -35,7 +37,7 @@ jobs:
           RELEASE_EVIDENCE_ARCHIVES: ${{ github.event_name == 'push' || inputs.include_archives }}
           TRIVY_BIN: ${{ runner.temp }}/trivy
         run: deploy/scripts/build-release-evidence.sh
-      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.17
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         if: always() && hashFiles('release-evidence/sarif/*.sarif') != ''
         with:
           sarif_file: release-evidence/sarif

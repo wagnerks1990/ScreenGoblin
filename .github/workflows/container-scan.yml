@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   security-events: write
 
 concurrency:
@@ -47,7 +48,7 @@ jobs:
       - name: Block unresolved high and critical findings
         run: |
           "$RUNNER_TEMP/trivy" fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed .
-      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         if: always() && hashFiles('trivy-repository.sarif') != ''
         with:
           sarif_file: trivy-repository.sarif
@@ -71,17 +72,17 @@ jobs:
           RELEASE_EVIDENCE_ID: ${{ github.sha }}
           TRIVY_BIN: ${{ runner.temp }}/trivy
         run: deploy/scripts/build-release-evidence.sh
-      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.17
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         if: always() && hashFiles('container-scan-evidence/sarif/api.sarif') != ''
         with:
           sarif_file: container-scan-evidence/sarif/api.sarif
           category: trivy-final-image-api
-      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.17
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         if: always() && hashFiles('container-scan-evidence/sarif/console.sarif') != ''
         with:
           sarif_file: container-scan-evidence/sarif/console.sarif
           category: trivy-final-image-console
-      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.17
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         if: always() && hashFiles('container-scan-evidence/sarif/player-web.sarif') != ''
         with:
           sarif_file: container-scan-evidence/sarif/player-web.sarif

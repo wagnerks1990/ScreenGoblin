@@ -1,0 +1,118 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  security-events: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: java-kotlin
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: matrix.language == 'java-kotlin'
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.7.1
+        if: matrix.language == 'java-kotlin'
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.2
+        if: matrix.language == 'java-kotlin'
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+      - name: Prepare Android dependencies
+        if: matrix.language == 'java-kotlin'
+        run: |
+          npm ci
+          npm run android:sync -w @screengoblin/player
+      - name: Trace Android Java compilation
+        if: matrix.language == 'java-kotlin'
+        working-directory: apps/player/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:compileDebugJavaWithJavac
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: "/language:${{ matrix.language }}"
+          output: codeql-results
+          upload: never
+      - name: Block CodeQL findings
+        shell: bash
+        run: |
+          mapfile -d '' sarif_files < <(find codeql-results -type f -name '*.sarif' -print0)
+          if (( ${#sarif_files[@]} == 0 )); then
+            echo "No CodeQL SARIF output was produced" >&2
+            exit 1
+          fi
+          approved_boot_receiver=false
+          if echo "82bae2a6c5eb8a1544955bde0ee6df85766d4e2d2491726f6b4ffcb2fd754d3a  apps/player/android/app/src/main/java/com/screengoblin/player/BootReceiver.java" \
+              | sha256sum --check --status \
+            && echo "81cdaccae61838db742fd21fee0353e8ba0d91dc49b6aede44b6dff6e8614801  apps/player/android/app/src/main/AndroidManifest.xml" \
+              | sha256sum --check --status; then
+            approved_boot_receiver=true
+          fi
+          blocking_result='def approved_false_positive:
+            $approved_boot_receiver
+            and .ruleId == "java/improper-intent-verification"
+            and (.locations | length) == 1
+            and .locations[0].physicalLocation.artifactLocation.uri
+              == "apps/player/android/app/src/main/java/com/screengoblin/player/BootReceiver.java";
+            def evidence_only_uri:
+            gsub("\\\\"; "/")
+            | test("(^|/)node_modules/|(^|/)apps/player/android/([^/]+/)?build/");
+            (approved_false_positive | not)
+            and ((.locations // []) as $locations
+              | if ($locations | length) == 0 then true
+                else any($locations[];
+                  (.physicalLocation.artifactLocation.uri // "") as $uri
+                  | ($uri == "") or (($uri | evidence_only_uri) | not)
+                ) end)'
+          finding_count="$(jq -s --argjson approved_boot_receiver "$approved_boot_receiver" \
+            "[.[].runs[]?.results[]? | select(${blocking_result})] | length" \
+            "${sarif_files[@]}")"
+          if (( finding_count > 0 )); then
+            jq -r --argjson approved_boot_receiver "$approved_boot_receiver" \
+              ".runs[]?.results[]? | select(${blocking_result})
+              | \"\(.ruleId): \(.message.text)\"" "${sarif_files[@]}"
+            echo "CodeQL reported ${finding_count} first-party finding(s)" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && hashFiles('codeql-results/**/*.sarif') != ''
+        with:
+          name: codeql-${{ matrix.language }}-${{ github.sha }}
+          path: codeql-results
+          if-no-files-found: error
+          retention-days: 14
