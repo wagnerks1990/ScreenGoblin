@@ -29,6 +29,8 @@ import {
   releaseSnapshotDigest,
 } from "../releases/canonical.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
+import { hasCapability } from "../authorization/policy.js";
+import { CAPABILITIES } from "@screengoblin/contracts";
 
 const id = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -472,6 +474,14 @@ export class MemoryStore implements DataStore {
     audit: ReleaseAuditContext,
     policy: ReleasePublicationPolicy,
   ): Promise<SchedulePublicationResult> {
+    const actor = this.users.find(
+      (candidate) =>
+        candidate.id === audit.actorUserId &&
+        candidate.organizationId === org &&
+        !candidate.disabledAt,
+    );
+    if (!hasCapability(actor?.role, CAPABILITIES.releasePublish))
+      return { published: false, reason: "FORBIDDEN" };
     const screenIds = [...new Set(data.screenIds)].sort();
     const playlist = this.playlists.find(
       (candidate) =>
@@ -633,6 +643,14 @@ export class MemoryStore implements DataStore {
     scheduleId: string,
     audit: ReleaseAuditContext,
   ): Promise<ScheduleWithdrawalResult> {
+    const actor = this.users.find(
+      (candidate) =>
+        candidate.id === audit.actorUserId &&
+        candidate.organizationId === org &&
+        !candidate.disabledAt,
+    );
+    if (!hasCapability(actor?.role, CAPABILITIES.releaseWithdraw))
+      return { withdrawn: false, reason: "FORBIDDEN" };
     const schedule = this.schedules.find(
       (candidate) =>
         candidate.organizationId === org && candidate.id === scheduleId,
