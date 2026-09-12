@@ -9,11 +9,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Pin every checked-in container build, service, CI, and recovery-fixture image
   to a registry digest; remove floating OS package upgrades from Docker builds;
   and add a validation gate that rejects mutable container inputs.
+- Enforce strict SHA-256 verification for Android Maven, plugin, and transitive
+  artifacts across CI and CodeQL builds; reject missing metadata, malformed
+  checksums, broad trust exemptions, or verification bypasses in the root gate.
 - Add commit-pinned, first-party-blocking CodeQL `security-extended` analysis for
   JavaScript/TypeScript, native Java, and Actions workflows with retained SARIF
   evidence; upgrade generic Trivy SARIF uploads to the same CodeQL Action v4
-  pin; and checksum-lock the Gradle 8.11.1 distribution. Android dependency
-  metadata remains an open supply-chain gate.
+  pin; and checksum-lock the Gradle 8.11.1 distribution.
 - Retain the exact Ed25519 manifest signing bytes in both Player cache slots and
   reverify them against the pinned key and screen before staging, boot recovery,
   or rollback. Remove legacy/altered records, refuse previous-slot revival when

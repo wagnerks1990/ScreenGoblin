@@ -31,14 +31,20 @@ to either makes the alert blocking again. The full result remains in SARIF.
 The image job also emits CycloneDX SBOMs, Trivy SARIF, Docker image inspection records, image IDs, source commit/tree/archive digests, Dockerfile digests, and SHA-256 checksums. SARIF is uploaded to GitHub code scanning and the remaining evidence is retained as a short-lived workflow artifact. The builder refuses a dirty worktree or a requested evidence ID that differs from the checked-out commit.
 
 Gradle verifies the pinned 8.11.1 distribution ZIP against the checksum
-published for that exact distribution. Docker build stages, Compose services,
-CI services, and recovery fixtures retain readable tags but resolve only through
+published for that exact distribution. The Android build also uses strict
+SHA-256 verification metadata for Maven, plugin, module-metadata, and transitive
+artifacts resolved by its lint, unit-test, debug-assembly, and CodeQL compile
+paths, including release assembly. `npm run validate:gradle-integrity` fails if that metadata or its strict
+configuration is removed, malformed, broadly exempted, or bypassed. These
+checksums pin reviewed bytes; they are not independent proof of publisher
+identity or provenance.
+
+Docker build stages, Compose services, CI services, and recovery fixtures retain readable tags but resolve only through
 checked-in multi-platform SHA-256 digests. Builds do not perform floating OS
 package upgrades; base refreshes require a reviewed digest change and must pass
 the blocking image scan. `npm run validate:container-inputs` rejects new mutable
 Dockerfile `FROM` references, Compose/workflow image declarations,
 `docker://` actions, recovery defaults, or Dockerfile package upgrades.
-Maven/plugin dependency verification remains a separate gate.
 
 Recovery image overrides are accepted only when the operator supplies an
 explicit SHA-256 digest; the drill records the resolved references in its
