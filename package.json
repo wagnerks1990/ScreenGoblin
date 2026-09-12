@@ -12,12 +12,14 @@
     "dev": "concurrently -n api,console,player -c green,cyan,yellow \"npm run dev -w @screengoblin/api\" \"npm run dev -w @screengoblin/console\" \"npm run dev -w @screengoblin/player\"",
     "format:check": "prettier --check .",
     "lint": "npm run lint --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:repository && npm run test --workspaces --if-present",
+    "test:repository": "node --test deploy/scripts/*.test.mjs",
     "test:coverage": "npm run test:coverage --workspaces --if-present",
     "test:integration:postgres": "npm run test:integration -w @screengoblin/api",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "validate:container-inputs": "node deploy/scripts/validate-container-inputs.mjs",
-    "validate": "npm run validate:container-inputs && npm run prisma:generate -w @screengoblin/api && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
+    "validate:gradle-integrity": "node deploy/scripts/validate-gradle-integrity.mjs",
+    "validate": "npm run validate:container-inputs && npm run validate:gradle-integrity && npm run prisma:generate -w @screengoblin/api && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
   },
   "engines": {
     "node": ">=22"
