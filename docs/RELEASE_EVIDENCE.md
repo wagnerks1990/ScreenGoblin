@@ -39,6 +39,17 @@ configuration is removed, malformed, broadly exempted, or bypassed. These
 checksums pin reviewed bytes; they are not independent proof of publisher
 identity or provenance.
 
+Strict Gradle dependency locks also pin the selected buildscript, app, generated
+Cordova bridge, and Capacitor Android transitive graphs. Because Capacitor is
+regenerated under `node_modules`, its lock state is deliberately redirected to
+a unique checked-in path under `apps/player/android/gradle/dependency-locks`.
+The build uses Android Gradle Plugin 8.10.1 with explicit scanner-fixed
+resolution pins for Netty 4.1.137.Final, Protobuf 3.25.5, Bouncy Castle 1.84,
+jose4j 0.9.6, and JDOM 2.0.6.1 across root, regenerated-project buildscript,
+and Android test-platform configurations.
+Lock updates must be explicit, reviewed together with verification-metadata
+changes, and exercised through the complete Android CI task graph.
+
 Docker build stages, Compose services, CI services, and recovery fixtures retain readable tags but resolve only through
 checked-in multi-platform SHA-256 digests. Builds do not perform floating OS
 package upgrades; base refreshes require a reviewed digest change and must pass

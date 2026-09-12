@@ -12,6 +12,14 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Enforce strict SHA-256 verification for Android Maven, plugin, and transitive
   artifacts across CI and CodeQL builds; reject missing metadata, malformed
   checksums, broad trust exemptions, or verification bypasses in the root gate.
+- Lock the Android buildscript, app, generated Cordova bridge, and regenerated
+  Capacitor Android dependency graphs in strict mode; keep included-build lock
+  state in checked-in project paths and reject missing or bypassed locks.
+- Upgrade the Android Gradle Plugin to 8.10.1 and force scanner-fixed Netty,
+  Protobuf, Bouncy Castle, jose4j, and JDOM versions across root, generated
+  buildscript, and Android test-platform graphs; the complete lint, test, debug,
+  and release graph must resolve before refreshed locks and verification
+  checksums are accepted.
 - Add commit-pinned, first-party-blocking CodeQL `security-extended` analysis for
   JavaScript/TypeScript, native Java, and Actions workflows with retained SARIF
   evidence; upgrade generic Trivy SARIF uploads to the same CodeQL Action v4
