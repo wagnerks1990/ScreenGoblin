@@ -302,9 +302,6 @@ export class ManifestManager {
     // delete files an earlier release has downloaded but not activated yet.
     await this.pruneRetainedAssets();
     this.assertStagingGeneration(stagingGeneration);
-    const signedActive = await this.store.getActiveManifest();
-    const active = await verifySignedPlayerManifest(signedActive, trust);
-    this.assertStagingGeneration(stagingGeneration);
     const playbackBoundary = manifestPlaybackEndsAt(candidate);
     const playbackEnded =
       playbackBoundary !== undefined && playbackBoundary <= Date.now();
