@@ -9,6 +9,7 @@ import type {
   DeviceProofInput,
   DeviceProofVerifier,
   EmergencyRecord,
+  HeartbeatUpdateInput,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
@@ -1180,7 +1181,7 @@ export class MemoryStore implements DataStore {
   }
   async heartbeatWithDeviceProof(
     input: DeviceProofInput,
-    data: Partial<ScreenRecord>,
+    data: HeartbeatUpdateInput,
     verify: DeviceProofVerifier,
   ) {
     const active = await this.consumeDeviceProof(input, verify);
@@ -1189,11 +1190,20 @@ export class MemoryStore implements DataStore {
         authenticated: false as const,
         reason: "INVALID_PROOF" as const,
       };
-    Object.assign(active.screen, data, {
+    Object.assign(active.screen, {
+      playerVersion: data.playerVersion,
+      uptimeSeconds: data.uptimeSeconds,
+      freeStorageBytes: data.freeStorageBytes,
+      networkType: data.networkType,
       status: "online",
       lastSeenAt: now(),
       updatedAt: now(),
     });
+    if (data.manifestVersion === null) delete active.screen.manifestVersion;
+    else active.screen.manifestVersion = data.manifestVersion;
+    if (data.nowPlayingAssetId === null)
+      delete active.screen.nowPlayingAssetId;
+    else active.screen.nowPlayingAssetId = data.nowPlayingAssetId;
     return {
       authenticated: true as const,
       credential: { ...active.credential },
@@ -1306,14 +1316,22 @@ export class MemoryStore implements DataStore {
     this.audits.push(auditRecord);
     return { revoked: true as const, credential: { ...credential } };
   }
-  async heartbeat(screenId: string, data: Partial<ScreenRecord>) {
+  async heartbeat(screenId: string, data: HeartbeatUpdateInput) {
     const x = this.screens.find((s) => s.id === screenId);
     if (!x) return null;
-    Object.assign(x, data, {
+    Object.assign(x, {
+      playerVersion: data.playerVersion,
+      uptimeSeconds: data.uptimeSeconds,
+      freeStorageBytes: data.freeStorageBytes,
+      networkType: data.networkType,
       status: "online",
       lastSeenAt: now(),
       updatedAt: now(),
     });
+    if (data.manifestVersion === null) delete x.manifestVersion;
+    else x.manifestVersion = data.manifestVersion;
+    if (data.nowPlayingAssetId === null) delete x.nowPlayingAssetId;
+    else x.nowPlayingAssetId = data.nowPlayingAssetId;
     return x;
   }
   async listMedia(org: string) {

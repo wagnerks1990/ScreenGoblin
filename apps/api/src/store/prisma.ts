@@ -12,6 +12,7 @@ import type {
   DeviceProofInput,
   DeviceProofVerifier,
   EmergencyRecord,
+  HeartbeatUpdateInput,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
@@ -1897,7 +1898,7 @@ export class PrismaStore implements DataStore {
   }
   async heartbeatWithDeviceProof(
     input: DeviceProofInput,
-    data: Partial<ScreenRecord>,
+    data: HeartbeatUpdateInput,
     verify: DeviceProofVerifier,
   ) {
     const consumed = await this.prisma.$transaction(async (tx) => {
@@ -1908,24 +1909,12 @@ export class PrismaStore implements DataStore {
       );
       if (!authenticated) return null;
       const allowed = {
-        ...(data.playerVersion !== undefined
-          ? { playerVersion: data.playerVersion }
-          : {}),
-        ...(data.manifestVersion !== undefined
-          ? { manifestVersion: data.manifestVersion }
-          : {}),
-        ...(data.nowPlayingAssetId !== undefined
-          ? { nowPlayingAssetId: data.nowPlayingAssetId }
-          : {}),
-        ...(data.uptimeSeconds !== undefined
-          ? { uptimeSeconds: BigInt(data.uptimeSeconds) }
-          : {}),
-        ...(data.freeStorageBytes !== undefined
-          ? { freeStorageBytes: BigInt(data.freeStorageBytes) }
-          : {}),
-        ...(data.networkType !== undefined
-          ? { networkType: data.networkType }
-          : {}),
+        playerVersion: data.playerVersion,
+        manifestVersion: data.manifestVersion,
+        nowPlayingAssetId: data.nowPlayingAssetId,
+        uptimeSeconds: BigInt(data.uptimeSeconds),
+        freeStorageBytes: BigInt(data.freeStorageBytes),
+        networkType: data.networkType,
         lastSeenAt: new Date(),
         status: "ONLINE" as const,
       };
@@ -2107,28 +2096,16 @@ export class PrismaStore implements DataStore {
       };
     });
   }
-  async heartbeat(id: string, data: Partial<ScreenRecord>) {
+  async heartbeat(id: string, data: HeartbeatUpdateInput) {
     const x = await this.prisma.screen.findUnique({ where: { id } });
     if (!x) return null;
     const allowed = {
-      ...(data.playerVersion !== undefined
-        ? { playerVersion: data.playerVersion }
-        : {}),
-      ...(data.manifestVersion !== undefined
-        ? { manifestVersion: data.manifestVersion }
-        : {}),
-      ...(data.nowPlayingAssetId !== undefined
-        ? { nowPlayingAssetId: data.nowPlayingAssetId }
-        : {}),
-      ...(data.uptimeSeconds !== undefined
-        ? { uptimeSeconds: BigInt(data.uptimeSeconds) }
-        : {}),
-      ...(data.freeStorageBytes !== undefined
-        ? { freeStorageBytes: BigInt(data.freeStorageBytes) }
-        : {}),
-      ...(data.networkType !== undefined
-        ? { networkType: data.networkType }
-        : {}),
+      playerVersion: data.playerVersion,
+      manifestVersion: data.manifestVersion,
+      nowPlayingAssetId: data.nowPlayingAssetId,
+      uptimeSeconds: BigInt(data.uptimeSeconds),
+      freeStorageBytes: BigInt(data.freeStorageBytes),
+      networkType: data.networkType,
       lastSeenAt: new Date(),
       status: "ONLINE" as const,
     };

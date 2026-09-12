@@ -1151,7 +1151,14 @@ describe("PrismaStore PostgreSQL integration", () => {
       Array.from({ length: 8 }, (_, index) =>
         store.heartbeatWithDeviceProof(
           proof,
-          { playerVersion: `proof-${index}` },
+          {
+            playerVersion: `proof-${index}`,
+            manifestVersion: null,
+            nowPlayingAssetId: null,
+            uptimeSeconds: index,
+            freeStorageBytes: 1_000_000,
+            networkType: "integration",
+          },
           () => true,
         ),
       ),
@@ -1191,7 +1198,14 @@ describe("PrismaStore PostgreSQL integration", () => {
           operation: "heartbeat",
           requestDigestSha256: revokeDigest,
         },
-        { playerVersion: "revoke-race" },
+        {
+          playerVersion: "revoke-race",
+          manifestVersion: null,
+          nowPlayingAssetId: null,
+          uptimeSeconds: 1,
+          freeStorageBytes: 1_000_000,
+          networkType: "integration",
+        },
         () => true,
       ),
       store.revokeDeviceCredentialAndAudit(
@@ -1223,6 +1237,101 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(
       prisma.screen.findUniqueOrThrow({ where: { id: paired.screen.id } }),
     ).resolves.toMatchObject({ credentialRevokedAt: expect.any(Date) });
+  });
+
+  it("persists proof heartbeats as authoritative playback snapshots", async () => {
+    const paired = await pairProofDevice("proof-heartbeat-snapshot", 31);
+    const sendHeartbeat = async (
+      data: {
+        playerVersion: string;
+        manifestVersion: string | null;
+        nowPlayingAssetId: string | null;
+        uptimeSeconds: number;
+        freeStorageBytes: number;
+        networkType: string;
+      },
+    ) => {
+      const requestDigestSha256 = proofHash();
+      const challengeHashSha256 = proofHash();
+      const challenge = await store.issueDeviceAuthChallenge({
+        screenId: paired.screen.id,
+        keyId: paired.credential.keyId,
+        challengeHashSha256,
+        operation: "heartbeat",
+        requestDigestSha256,
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      });
+      if (!challenge) throw new Error("device challenge was not issued");
+      const result = await store.heartbeatWithDeviceProof(
+        {
+          credentialId: paired.credential.id,
+          challengeId: challenge.id,
+          challengeHashSha256,
+          operation: "heartbeat",
+          requestDigestSha256,
+        },
+        data,
+        () => true,
+      );
+      return { challengeId: challenge.id, result };
+    };
+
+    const initial = await sendHeartbeat({
+      playerVersion: "snapshot-1",
+      manifestVersion: "release-7",
+      nowPlayingAssetId: "asset-7",
+      uptimeSeconds: 120,
+      freeStorageBytes: 1_000_000,
+      networkType: "wifi",
+    });
+    expect(initial.result).toMatchObject({
+      authenticated: true,
+      screen: {
+        manifestVersion: "release-7",
+        nowPlayingAssetId: "asset-7",
+      },
+    });
+
+    const cleared = await sendHeartbeat({
+      playerVersion: "snapshot-2",
+      manifestVersion: null,
+      nowPlayingAssetId: null,
+      uptimeSeconds: 180,
+      freeStorageBytes: 900_000,
+      networkType: "ethernet",
+    });
+    expect(cleared.result).toMatchObject({
+      authenticated: true,
+      screen: {
+        playerVersion: "snapshot-2",
+        uptimeSeconds: 180,
+        freeStorageBytes: 900_000,
+        networkType: "ethernet",
+      },
+    });
+    if (!cleared.result.authenticated)
+      throw new Error("heartbeat was not authenticated");
+    expect(cleared.result.screen).not.toHaveProperty("manifestVersion");
+    expect(cleared.result.screen).not.toHaveProperty("nowPlayingAssetId");
+
+    await expect(
+      prisma.screen.findUniqueOrThrow({ where: { id: paired.screen.id } }),
+    ).resolves.toMatchObject({
+      playerVersion: "snapshot-2",
+      manifestVersion: null,
+      nowPlayingAssetId: null,
+      uptimeSeconds: 180n,
+      freeStorageBytes: 900_000n,
+      networkType: "ethernet",
+    });
+    expect(
+      await prisma.deviceAuthChallenge.count({
+        where: {
+          id: { in: [initial.challengeId, cleared.challengeId] },
+          consumedAt: { not: null },
+        },
+      }),
+    ).toBe(2);
   });
 
   it("enforces one live credential per screen at the database boundary", async () => {

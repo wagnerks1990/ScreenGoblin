@@ -36,6 +36,15 @@ export interface ScreenRecord {
   createdAt: string;
   updatedAt: string;
 }
+export interface HeartbeatUpdateInput {
+  playerVersion: string;
+  manifestVersion: string | null;
+  nowPlayingAssetId: string | null;
+  uptimeSeconds: number;
+  freeStorageBytes: number;
+  networkType: string;
+}
+
 export interface MediaRecord {
   id: string;
   organizationId: string;
@@ -583,7 +592,7 @@ export interface DataStore {
   ): Promise<DeviceProofResult>;
   heartbeatWithDeviceProof(
     input: DeviceProofInput,
-    data: Partial<ScreenRecord>,
+    data: HeartbeatUpdateInput,
     verify: DeviceProofVerifier,
   ): Promise<DeviceProofResult>;
   revokeDeviceCredentialAndAudit(
@@ -593,7 +602,7 @@ export interface DataStore {
   ): Promise<DeviceCredentialRevokeResult>;
   heartbeat(
     screenId: string,
-    data: Partial<ScreenRecord>,
+    data: HeartbeatUpdateInput,
   ): Promise<ScreenRecord | null>;
   listMedia(orgId: string): Promise<MediaRecord[]>;
   createMedia(

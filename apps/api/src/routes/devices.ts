@@ -539,6 +539,14 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
     },
     async (request) => {
       const input = heartbeat.parse(request.body);
+      const snapshot = {
+        playerVersion: input.playerVersion,
+        manifestVersion: input.manifestVersion ?? null,
+        nowPlayingAssetId: input.nowPlayingAssetId ?? null,
+        uptimeSeconds: input.uptimeSeconds,
+        freeStorageBytes: input.freeStorageBytes,
+        networkType: input.networkType,
+      };
       if (app.config.deviceAuthMode === "proof-v1") {
         const proof = await readDeviceProof(request);
         if (input.installationId !== proof.authenticated.screen.installationId)
@@ -575,18 +583,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         };
         const result = await app.store.heartbeatWithDeviceProof(
           proofInput,
-          {
-            playerVersion: input.playerVersion,
-            ...(input.manifestVersion !== undefined
-              ? { manifestVersion: input.manifestVersion }
-              : {}),
-            ...(input.nowPlayingAssetId !== undefined
-              ? { nowPlayingAssetId: input.nowPlayingAssetId }
-              : {}),
-            uptimeSeconds: input.uptimeSeconds,
-            freeStorageBytes: input.freeStorageBytes,
-            networkType: input.networkType,
-          },
+          snapshot,
           (credential) =>
             verifyDeviceSignature(
               credential,
@@ -607,7 +604,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           "INSTALLATION_MISMATCH",
           "Installation identity does not match paired device",
         );
-      await app.store.heartbeat(request.device.id, input);
+      await app.store.heartbeat(request.device.id, snapshot);
       return {
         accepted: true,
         serverTime: new Date().toISOString(),
