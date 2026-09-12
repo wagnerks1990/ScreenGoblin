@@ -7,10 +7,6 @@ import {
   Camera,
   Power,
   Trash2,
-  Wifi,
-  HardDrive,
-  Thermometer,
-  Clock3,
   Tag,
   KeyRound,
   AlertTriangle,
@@ -23,7 +19,6 @@ import {
   EmptyState,
   Modal,
   PageHeader,
-  Preview,
   SearchBox,
   Select,
   Status,
@@ -59,13 +54,14 @@ function deviceDescription(device: DeviceReenrollmentCandidate["device"]) {
 }
 
 export function Fleet({ canManage = true }: { canManage?: boolean }) {
+  const liveViewRequested = api.hasLiveSession() || !api.demoAllowed();
   const [fleetScreens, setFleetScreens] = useState<ScreenSummary[]>(
-    api.hasLiveSession() || !api.demoAllowed() ? [] : screens,
+    liveViewRequested ? [] : screens,
   );
   const [loadError, setLoadError] = useState("");
-  const [source, setSource] = useState<"live" | "demo">(
-    api.demoAllowed() ? "demo" : "live",
-  );
+  const [loadState, setLoadState] = useState<
+    "loading" | "live" | "demo" | "error"
+  >(liveViewRequested ? "loading" : "demo");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All statuses");
   const [selected, setSelected] = useState<ScreenSummary | null>(null);
@@ -108,12 +104,12 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
       .screens()
       .then((result) => {
         setFleetScreens(result.data);
-        setSource(result.source);
+        setLoadState(result.source);
         setLoadError("");
       })
       .catch((error: unknown) => {
         setFleetScreens([]);
-        setSource("live");
+        setLoadState("error");
         setLoadError(
           error instanceof Error
             ? error.message
@@ -134,15 +130,6 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
         if (!active) return;
         setReenrollStatus(next);
         setReenrollError("");
-        if (next.status.toLowerCase() === "claimed") {
-          setFleetScreens((current) =>
-            current.map((screen) =>
-              screen.id === next.screenId
-                ? { ...screen, status: "online" }
-                : screen,
-            ),
-          );
-        }
         if (!terminalReenrollmentStatuses.has(next.status.toLowerCase())) {
           timeout = window.setTimeout(poll, 2000);
         }
@@ -207,6 +194,11 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
             : screen,
         ),
       );
+      setSelected((current) =>
+        current?.id === grant.screenId
+          ? { ...current, status: "offline" }
+          : current,
+      );
     } catch (error) {
       setReenrollError(
         error instanceof Error
@@ -270,13 +262,6 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
         selectedCandidateId,
       );
       setReenrollActivation(activation);
-      setFleetScreens((current) =>
-        current.map((screen) =>
-          screen.id === activation.screenId
-            ? { ...screen, status: "online" }
-            : screen,
-        ),
-      );
     } catch (error) {
       setReenrollError(
         error instanceof Error
@@ -298,10 +283,10 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
       <PageHeader
         eyebrow="Operations"
         title="Screen fleet"
-        description="Monitor, troubleshoot, and manage every player."
+        description="Review reported player state and manage enrollment."
         actions={
           <Button
-            disabled={!canManage}
+            disabled={!canManage || !api.hasLiveSession()}
             icon={<MonitorCog size={18} />}
             onClick={async () => {
               setPairOpen(true);
@@ -324,14 +309,20 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
               }
             }}
           >
-            Pair a screen
+            {api.hasLiveSession()
+              ? "Pair a screen"
+              : "Pair a screen unavailable"}
           </Button>
         }
       />
       <p className="data-source-label">
-        {source === "live"
-          ? "Live API data"
-          : "Clearly labeled demonstration data"}
+        {loadState === "loading"
+          ? "Loading live screen data…"
+          : loadState === "live"
+            ? "Live API data"
+            : loadState === "demo"
+              ? "Clearly labeled demonstration data"
+              : "Live API data unavailable"}
       </p>
       <div className="toolbar">
         <SearchBox
@@ -347,7 +338,19 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
           <option>Fallback</option>
         </Select>
       </div>
-      {filtered.length ? (
+      {loadState === "loading" ? (
+        <EmptyState
+          icon={<MonitorCog />}
+          title="Loading screens"
+          message="Requesting current screen records from the live API."
+        />
+      ) : loadState === "error" ? (
+        <EmptyState
+          icon={<MonitorOff />}
+          title="Screen data unavailable"
+          message="No current screen records are available. Reconnect after live API access is restored."
+        />
+      ) : filtered.length ? (
         <div className="table-wrap fleet-table">
           <table>
             <thead>
@@ -401,8 +404,16 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
       ) : (
         <EmptyState
           icon={<MonitorOff />}
-          title="No screens found"
-          message="No screens match your current search and status filter."
+          title={
+            fleetScreens.length ? "No screens match" : "No screens registered"
+          }
+          message={
+            fleetScreens.length
+              ? "No screens match your current search and status filter."
+              : loadState === "live"
+                ? "The live API returned an empty screen inventory."
+                : "This demonstration inventory has no screens."
+          }
         />
       )}
       <Drawer
@@ -413,18 +424,17 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
       >
         {selected && (
           <>
-            <Preview
-              title={
-                selected.status === "offline"
-                  ? "LAST KNOWN GOOD"
-                  : selected.name.toUpperCase()
-              }
-              subtitle={selected.nowPlaying ?? "No active content"}
-              tone={selected.status === "offline" ? "slate" : "green"}
-            />
+            <div className="fleet-preview-unavailable" role="status">
+              <MonitorOff aria-hidden="true" />
+              <span>
+                <b>Screen preview unavailable</b>
+                This API does not provide screenshots or evidence of locally
+                retained playback.
+              </span>
+            </div>
             <div className="drawer-status">
               <Status value={selected.status} />
-              <span>Last heartbeat {selected.lastSeenAt}</span>
+              <span>{heartbeatDescription(selected.lastSeenAt)}</span>
             </div>
             <div className="command-grid">
               <button disabled title="Not available in this pilot">
@@ -446,34 +456,18 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
             </div>
             <div className="drawer-section">
               <h3>Device health</h3>
-              <dl className="health-list">
+              <dl className="detail-list">
                 <div>
-                  <dt>
-                    <Wifi />
-                    Network
-                  </dt>
-                  <dd>Ethernet · 94 Mbps</dd>
+                  <dt>Now playing</dt>
+                  <dd>
+                    {loadState === "demo"
+                      ? (selected.nowPlaying ?? "Not reported")
+                      : "Not available from this API"}
+                  </dd>
                 </div>
                 <div>
-                  <dt>
-                    <HardDrive />
-                    Storage
-                  </dt>
-                  <dd>18.2 GB free</dd>
-                </div>
-                <div>
-                  <dt>
-                    <Thermometer />
-                    Temperature
-                  </dt>
-                  <dd>48°C</dd>
-                </div>
-                <div>
-                  <dt>
-                    <Clock3 />
-                    Uptime
-                  </dt>
-                  <dd>12 days, 4 hours</dd>
+                  <dt>Health telemetry</dt>
+                  <dd>Not exposed by the current Console contract</dd>
                 </div>
               </dl>
             </div>
@@ -500,7 +494,7 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
                 ))}
               </div>
             </div>
-            {canManage && source === "live" && (
+            {canManage && loadState === "live" && (
               <div className="drawer-section device-identity-section">
                 <h3>Device identity</h3>
                 <p>
@@ -727,4 +721,14 @@ export function Fleet({ canManage = true }: { canManage?: boolean }) {
       </Modal>
     </>
   );
+}
+
+function heartbeatDescription(lastSeenAt?: string) {
+  if (!lastSeenAt) return "No heartbeat has been reported";
+  const timestamp = new Date(lastSeenAt);
+  if (Number.isNaN(timestamp.getTime())) return `Last heartbeat ${lastSeenAt}`;
+  return `Last heartbeat ${new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(timestamp)}`;
 }

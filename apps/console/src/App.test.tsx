@@ -287,6 +287,57 @@ describe("ScreenGoblin console", () => {
     ).toBeNull();
   });
 
+  it.each(["loading", "error", "empty"] as const)(
+    "does not show a static fleet count while authenticated screen data is %s",
+    async (state) => {
+      setAdminSession();
+      const response =
+        state === "loading"
+          ? new Promise<Response>(() => undefined)
+          : state === "error"
+            ? Promise.reject(new Error("offline"))
+            : Promise.resolve(
+                new Response(JSON.stringify({ data: [] }), {
+                  status: 200,
+                  headers: { "Content-Type": "application/json" },
+                }),
+              );
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => response),
+      );
+
+      render(
+        <MemoryRouter initialEntries={["/screens"]}>
+          <App />
+        </MemoryRouter>,
+      );
+
+      if (state === "error") await screen.findByRole("alert");
+      if (state === "empty")
+        await screen.findByRole("heading", { name: "No screens registered" });
+
+      const fleetLink = screen.getByRole("link", { name: "Screen fleet" });
+      expect(within(fleetLink).queryByText("2")).toBeNull();
+    },
+  );
+
+  it("keeps demo pairing visibly unavailable without opening a failing dialog", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/screens"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    const pairing = screen.getByRole("button", {
+      name: "Pair a screen unavailable",
+    });
+    expect(pairing).toBeDisabled();
+    await user.click(pairing);
+    expect(screen.queryByRole("dialog", { name: "Pair a screen" })).toBeNull();
+  });
+
   it("filters the media vault and clears an empty state", async () => {
     const user = userEvent.setup();
     render(

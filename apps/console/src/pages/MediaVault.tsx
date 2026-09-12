@@ -62,16 +62,16 @@ export function MediaVault() {
   const [query, setQuery] = useState("");
   const [type, setType] = useState("All types");
   const [view, setView] = useState<"grid" | "list">("grid");
-  const liveSession = api.hasLiveSession() || !api.demoAllowed();
+  const liveViewRequested = api.hasLiveSession() || !api.demoAllowed();
   const [inventory, setInventory] = useState<VaultAsset[]>(
-    liveSession
+    liveViewRequested
       ? []
       : assets.map((asset) => ({ ...asset, source: "provisioned" })),
   );
-  const [loading, setLoading] = useState(liveSession);
+  const [loading, setLoading] = useState(liveViewRequested);
   const [loadError, setLoadError] = useState("");
   useEffect(() => {
-    if (!liveSession) return;
+    if (!liveViewRequested) return;
     let active = true;
     api
       .media()
@@ -95,7 +95,7 @@ export function MediaVault() {
     return () => {
       active = false;
     };
-  }, [liveSession]);
+  }, [liveViewRequested]);
   const filtered = useMemo(
     () =>
       inventory.filter(
@@ -110,18 +110,22 @@ export function MediaVault() {
       <PageHeader
         eyebrow="Content"
         title="Media vault"
-        description="Review media already provisioned through an approved content pipeline."
+        description="Review control-plane media records. This Console does not verify ingestion provenance."
       />
       <div className="vault-boundary" role="status">
         <LockKeyhole size={18} />
         <span>
           <b>
-            {liveSession
-              ? "Live inventory · read only"
-              : "Pre-provisioned sample inventory · read only"}
+            {!liveViewRequested
+              ? "Pre-provisioned sample inventory · read only"
+              : loadError
+                ? "Live inventory unavailable"
+                : loading
+                  ? "Loading live inventory"
+                  : "Live inventory · read only"}
           </b>
-          {liveSession
-            ? " Upload and web-content creation are unavailable in this console."
+          {liveViewRequested
+            ? " These records do not prove that an ingestion, scanning, or approval pipeline ran. Upload and web-content creation are unavailable in this Console."
             : " Connect to the live API to inspect your organization’s inventory; these samples are not live records."}
         </span>
       </div>

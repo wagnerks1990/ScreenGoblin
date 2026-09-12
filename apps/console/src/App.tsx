@@ -129,7 +129,6 @@ export function App() {
             >
               <Icon size={19} />
               <span>{label}</span>
-              {label === "Screen fleet" && <em>2</em>}
             </NavLink>
           ))}
           {canAdmin && (
