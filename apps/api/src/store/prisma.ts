@@ -17,6 +17,7 @@ import type {
   EmergencyRecord,
   HeartbeatUpdateInput,
   LoginFailureInput,
+  MediaDeliveryAuthorizationInput,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
@@ -3322,6 +3323,64 @@ export class PrismaStore implements DataStore {
         },
       ];
     });
+  }
+  async authorizeMediaDelivery(
+    input: MediaDeliveryAuthorizationInput,
+  ): Promise<boolean> {
+    if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1)
+      return false;
+    const at = new Date(input.at);
+    if (!Number.isFinite(at.getTime())) return false;
+    const assignment = await this.prisma.releaseAssignment.findFirst({
+      where: {
+        id: input.assignmentId,
+        organizationId: input.organizationId,
+        digestSha256: input.assignmentDigestSha256,
+        state: "ASSIGNED",
+        enabled: true,
+        startsAt: { lte: at },
+        OR: [{ endsAt: null }, { endsAt: { gt: at } }],
+        nextAssignments: { none: {} },
+        targets: { some: { screenId: input.screenId } },
+        release: {
+          items: {
+            some: {
+              sourceAssetId: input.assetId,
+              assetStorageKey: input.storageKey,
+              assetChecksumSha256: input.checksumSha256,
+              assetSizeBytes: BigInt(input.sizeBytes),
+              OR: [{ assetExpiresAt: null }, { assetExpiresAt: { gt: at } }],
+            },
+          },
+        },
+      },
+      select: {
+        endsAt: true,
+        timezone: true,
+        daysOfWeek: true,
+        dailyStartMinutes: true,
+        dailyEndMinutes: true,
+      },
+    });
+    return Boolean(
+      assignment &&
+      matchesScheduleWindow(
+        {
+          ...(assignment.endsAt
+            ? { endsAt: assignment.endsAt.toISOString() }
+            : {}),
+          timezone: assignment.timezone,
+          daysOfWeek: assignment.daysOfWeek,
+          ...(assignment.dailyStartMinutes != null
+            ? { dailyStartMinutes: assignment.dailyStartMinutes }
+            : {}),
+          ...(assignment.dailyEndMinutes != null
+            ? { dailyEndMinutes: assignment.dailyEndMinutes }
+            : {}),
+        },
+        at,
+      ),
+    );
   }
   async activeSchedules(org: string, screenId: string, at: string) {
     const d = new Date(at);

@@ -105,7 +105,12 @@ A manifest contains:
 - screen ID, stable semantic version, generation time, and expiry;
 - the signed request challenge ID in proof-v1 mode;
 - schedule priority and ordered items;
-- per-item HTTPS delivery URLs containing short-lived signed capabilities no later than the manifest lease; capabilities bind the screen, organization, immutable asset, server-owned storage key, digest, size, and GET method;
+- per-item HTTPS delivery URLs containing short-lived signed capabilities that
+  expire at the earliest manifest lease, schedule playback boundary, or frozen
+  asset expiry; capabilities bind the screen, organization, active immutable
+  assignment ID/digest, asset, server-owned storage key, digest, size, and GET
+  method, and online delivery rechecks that the assignment is still latest and
+  active before reading storage;
 - a signed `withdrawn` flag; a withdrawal is an empty, normal-priority release that intentionally clears playback;
 - an optional signed `playbackEndsAt` boundary for the selected schedule, distinct from the routinely refreshed envelope lease;
 - immutable asset URL, media type, size, SHA-256, and duration;

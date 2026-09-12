@@ -15,6 +15,8 @@ const claims = (overrides: Record<string, unknown> = {}) => ({
   screenId: "screen-a",
   organizationId: "org-a",
   credentialKeyId: "key-a",
+  assignmentId: "assignment-a",
+  assignmentDigestSha256: "b".repeat(64),
   assetId: "asset-a",
   storageKey: mediaStorageKey("org-a", "asset-a", "a".repeat(64)),
   mimeType: "image/png",
@@ -44,6 +46,11 @@ describe("media delivery capabilities", () => {
       secret,
     );
     expect(verifyMediaCapability(wrongKey, secret)).toBeNull();
+    const wrongAssignmentDigest = issueMediaCapability(
+      claims({ assignmentDigestSha256: "invalid" }),
+      secret,
+    );
+    expect(verifyMediaCapability(wrongAssignmentDigest, secret)).toBeNull();
   });
 
   it("signs a GET only for the fixed configured S3 endpoint without redirects", async () => {
@@ -91,6 +98,9 @@ describe("media delivery capabilities", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
+    const authorizeMediaDelivery = vi
+      .spyOn(store, "authorizeMediaDelivery")
+      .mockResolvedValue(true);
     const mismatchedBody = Readable.from(Buffer.from("abc"));
     const getObject = vi
       .fn()
@@ -123,6 +133,15 @@ describe("media delivery capabilities", () => {
     expect(valid.headers["content-type"]).toContain("image/png");
     expect(valid.headers["x-content-type-options"]).toBe("nosniff");
     expect(getObject).toHaveBeenCalledWith(claims().storageKey);
+    expect(authorizeMediaDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org-a",
+        screenId: "screen-a",
+        assignmentId: "assignment-a",
+        assignmentDigestSha256: "b".repeat(64),
+        assetId: "asset-a",
+      }),
+    );
 
     const wrongSize = issueMediaCapability(
       claims({ credentialKeyId: undefined, sizeBytes: 4 }),
@@ -133,6 +152,13 @@ describe("media delivery capabilities", () => {
     });
     expect(mismatched.statusCode).toBe(404);
     expect(mismatchedBody.destroyed).toBe(true);
+
+    authorizeMediaDelivery.mockResolvedValueOnce(false);
+    const withdrawn = await app.inject({
+      url: `/api/v1/device/media/asset-a?capability=${encodeURIComponent(capability)}`,
+    });
+    expect(withdrawn.statusCode).toBe(404);
+    expect(getObject).toHaveBeenCalledTimes(2);
 
     store.screens[0]!.credentialRevokedAt = new Date().toISOString();
     store.screens[0]!.deviceTokenHash = undefined;
@@ -145,6 +171,15 @@ describe("media delivery capabilities", () => {
       url: `/api/v1/device/media/asset-b?capability=${encodeURIComponent(capability)}`,
     });
     expect(tampered.statusCode).toBe(404);
+
+    const crossScreen = issueMediaCapability(
+      claims({ credentialKeyId: undefined, screenId: "screen-b" }),
+      secret,
+    );
+    const crossScreenResponse = await app.inject({
+      url: `/api/v1/device/media/asset-a?capability=${encodeURIComponent(crossScreen)}`,
+    });
+    expect(crossScreenResponse.statusCode).toBe(404);
     await app.close();
   });
 });

@@ -2665,6 +2665,33 @@ describe("PrismaStore PostgreSQL integration", () => {
         schedule: { name: "Frozen schedule", enabled: true },
       },
     });
+    const frozenAsset = active[0]!.release.items[0]!.asset;
+    const deliveryAuthorization = {
+      organizationId: organization.id,
+      screenId: screen.id,
+      assignmentId: publication.assignment.id,
+      assignmentDigestSha256: publication.assignment.digestSha256,
+      assetId: frozenAsset.id,
+      storageKey: frozenAsset.storageKey!,
+      checksumSha256: frozenAsset.checksumSha256,
+      sizeBytes: frozenAsset.sizeBytes,
+      at: now.toISOString(),
+    };
+    await expect(
+      store.authorizeMediaDelivery(deliveryAuthorization),
+    ).resolves.toBe(true);
+    await expect(
+      store.authorizeMediaDelivery({
+        ...deliveryAuthorization,
+        screenId: "another-screen",
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      store.authorizeMediaDelivery({
+        ...deliveryAuthorization,
+        assignmentDigestSha256: "0".repeat(64),
+      }),
+    ).resolves.toBe(false);
     await expect(
       store.deletePlaylist(organization.id, playlist.id),
     ).resolves.toBe("IN_USE");
@@ -2700,6 +2727,9 @@ describe("PrismaStore PostgreSQL integration", () => {
         screenIds: [screen.id],
       },
     });
+    await expect(
+      store.authorizeMediaDelivery(deliveryAuthorization),
+    ).resolves.toBe(false);
     await expect(
       store.activeOrdinaryReleases(
         organization.id,

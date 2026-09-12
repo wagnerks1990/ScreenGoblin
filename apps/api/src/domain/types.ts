@@ -215,6 +215,18 @@ export interface ActiveOrdinaryRelease {
   assignment: ReleaseAssignmentRecord;
 }
 
+export interface MediaDeliveryAuthorizationInput {
+  organizationId: string;
+  screenId: string;
+  assignmentId: string;
+  assignmentDigestSha256: string;
+  assetId: string;
+  storageKey: string;
+  checksumSha256: string;
+  sizeBytes: number;
+  at: string;
+}
+
 export interface ReleasePublicationPolicy {
   mediaAllowedOrigins: string[];
 }
@@ -773,6 +785,9 @@ export interface DataStore {
     screenId: string,
     at: string,
   ): Promise<ActiveOrdinaryRelease[]>;
+  authorizeMediaDelivery(
+    input: MediaDeliveryAuthorizationInput,
+  ): Promise<boolean>;
   activeSchedules(
     orgId: string,
     screenId: string,

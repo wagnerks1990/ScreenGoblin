@@ -30,6 +30,19 @@ export const mediaDeliveryRoutes: FastifyPluginAsync = async (app) => {
     if (!screen || screen.organizationId !== claims.organizationId)
       return reply.code(404).send();
 
+    const authorized = await app.store.authorizeMediaDelivery({
+      organizationId: claims.organizationId,
+      screenId: claims.screenId,
+      assignmentId: claims.assignmentId,
+      assignmentDigestSha256: claims.assignmentDigestSha256,
+      assetId: claims.assetId,
+      storageKey: claims.storageKey,
+      checksumSha256: claims.checksumSha256,
+      sizeBytes: claims.sizeBytes,
+      at: new Date().toISOString(),
+    });
+    if (!authorized) return reply.code(404).send();
+
     if (!app.mediaObjectStore) return reply.code(503).send();
     const object = await app.mediaObjectStore.getObject(claims.storageKey);
     if (!object) return reply.code(404).send();

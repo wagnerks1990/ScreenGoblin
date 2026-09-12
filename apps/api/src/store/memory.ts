@@ -12,6 +12,7 @@ import type {
   HeartbeatUpdateInput,
   LoginFailureInput,
   LoginFailureRecord,
+  MediaDeliveryAuthorizationInput,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
@@ -2228,6 +2229,46 @@ export class MemoryStore implements DataStore {
       );
       return release ? [{ release, assignment }] : [];
     });
+  }
+  async authorizeMediaDelivery(
+    input: MediaDeliveryAuthorizationInput,
+  ): Promise<boolean> {
+    if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1)
+      return false;
+    const at = new Date(input.at);
+    if (!Number.isFinite(at.getTime())) return false;
+    const assignment = this.releaseAssignments.find(
+      (candidate) =>
+        candidate.id === input.assignmentId &&
+        candidate.organizationId === input.organizationId,
+    );
+    if (
+      !assignment ||
+      assignment.digestSha256 !== input.assignmentDigestSha256 ||
+      assignment.state !== "ASSIGNED" ||
+      this.latestAssignment(assignment.scheduleId)?.id !== assignment.id ||
+      !assignment.screenIds.includes(input.screenId) ||
+      !assignment.schedule.enabled ||
+      assignment.schedule.startsAt > input.at ||
+      (assignment.schedule.endsAt && assignment.schedule.endsAt <= input.at) ||
+      !matchesScheduleWindow(assignment.schedule, at)
+    )
+      return false;
+    const release = this.releases.find(
+      (candidate) =>
+        candidate.id === assignment.releaseId &&
+        candidate.organizationId === input.organizationId,
+    );
+    return Boolean(
+      release?.items.some(
+        (item) =>
+          item.asset.id === input.assetId &&
+          item.asset.storageKey === input.storageKey &&
+          item.asset.checksumSha256 === input.checksumSha256 &&
+          item.asset.sizeBytes === input.sizeBytes &&
+          (!item.asset.expiresAt || item.asset.expiresAt > input.at),
+      ),
+    );
   }
   async activeSchedules(org: string, screenId: string, at: string) {
     const d = new Date(at);

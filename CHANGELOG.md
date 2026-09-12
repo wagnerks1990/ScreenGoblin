@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Cap private media delivery at the earliest manifest lease, frozen schedule
+  playback boundary, or frozen asset expiry. Bind capabilities to the immutable
+  assignment ID/digest and recheck the tenant/screen-specific latest assignment
+  before storage access so withdrawal or replacement revokes subsequent online
+  reads immediately without resource-existence disclosure.
+
 - Disable deprecated caller-supplied media metadata registration by default and
   reject enabling it in production. Document the separate durable quarantine,
   fail-closed malware scanning, canonicalization, atomic-visibility promotion,
