@@ -55,6 +55,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Make Player playback state render-truthful: semantic releases restart cleanly,
   readiness starts item duration and telemetry, stalled or failed renders recover
   once, and late events cannot advance or roll back newer content.
+- Isolate the Player service-worker shell cache from API and verified media,
+  atomically pre-cache exact build outputs under a content-derived generation,
+  and remove only obsolete shell generations during activation.
 - Resolve schedule boundaries deterministically across daylight-saving gaps and
   repeated hours: nonexistent boundaries advance to the first valid instant,
   repeated starts use the later occurrence, and repeated ends use the earlier
