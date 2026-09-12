@@ -19,12 +19,26 @@ const screen = z
   .object({
     name: z.string().trim().min(1).max(120),
     location: z.string().trim().max(240).default(""),
+    locationId: opaqueId.nullable().optional(),
     orientation: z.enum(["landscape", "portrait"]).default("landscape"),
     resolution: z
       .string()
       .regex(/^\d{3,5}x\d{3,5}$/)
       .default("1920x1080"),
     tags: z.array(z.string().trim().min(1).max(40)).max(30).default([]),
+  })
+  .strict();
+const screenPatch = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    location: z.string().trim().max(240).optional(),
+    locationId: opaqueId.nullable().optional(),
+    orientation: z.enum(["landscape", "portrait"]).optional(),
+    resolution: z
+      .string()
+      .regex(/^\d{3,5}x\d{3,5}$/)
+      .optional(),
+    tags: z.array(z.string().trim().min(1).max(40)).max(30).optional(),
   })
   .strict();
 const params = z.object({ id: opaqueId });
@@ -54,6 +68,12 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
         requestId: request.id,
       },
     );
+    if (!result.created && result.reason === "INVALID_LOCATION")
+      throw new ApiError(
+        422,
+        "INVALID_LOCATION",
+        "Location is not in this organization",
+      );
     if (!result.created)
       throw new ApiError(
         403,
@@ -65,10 +85,13 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
   app.patch("/screens/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN"]);
     const { id } = params.parse(request.params);
-    const parsed = screen.partial().parse(request.body);
+    const parsed = screenPatch.parse(request.body);
     const changes = {
       ...(parsed.name !== undefined ? { name: parsed.name } : {}),
       ...(parsed.location !== undefined ? { location: parsed.location } : {}),
+      ...(parsed.locationId !== undefined
+        ? { locationId: parsed.locationId }
+        : {}),
       ...(parsed.orientation !== undefined
         ? { orientation: parsed.orientation }
         : {}),
@@ -92,6 +115,12 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
         403,
         "FORBIDDEN",
         "You do not have permission to perform this action",
+      );
+    if (!result.updated && result.reason === "INVALID_LOCATION")
+      throw new ApiError(
+        422,
+        "INVALID_LOCATION",
+        "Location is not in this organization",
       );
     if (!result.updated) return sendNotFound(reply);
     return result.value;

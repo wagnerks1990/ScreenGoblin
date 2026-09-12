@@ -257,6 +257,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Operations
 
+- Add tenant-bound Location classifications with audited owner/admin CRUD,
+  preserve legacy screen location labels, and backfill existing labels without
+  changing organization-role authorization. Per-user location grants and
+  resource filtering remain explicitly unimplemented.
+
 - Upgrade the disposable recovery drill from a synthetic row/object probe to
   the complete Prisma migration chain and a representative restored application
   relation graph whose live and frozen media metadata is bound to independently

@@ -21,6 +21,16 @@ const organization = await prisma.organization.upsert({
   update: {},
   create: { name: organizationName, slug: organizationSlug },
 });
+await prisma.location.upsert({
+  where: {
+    organizationId_name: {
+      organizationId: organization.id,
+      name: "Unassigned",
+    },
+  },
+  update: {},
+  create: { organizationId: organization.id, name: "Unassigned" },
+});
 const existing = await prisma.user.findUnique({
   where: { email },
   include: { memberships: true },

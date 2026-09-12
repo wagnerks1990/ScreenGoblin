@@ -18,6 +18,7 @@ import type {
   HeartbeatUpdateInput,
   LoginFailureInput,
   MediaDeliveryAuthorizationInput,
+  LocationRecord,
   MediaRecord,
   PairingRecord,
   PairingClaimAuditContext,
@@ -37,6 +38,8 @@ import type {
   SchedulePublicationInput,
   SchedulePublicationResult,
   ScheduleWithdrawalResult,
+  ScreenMutationInput,
+  ScreenMutationPatch,
   ScreenRecord,
   SessionUser,
   SystemIdentityMutationAuditContext,
@@ -86,6 +89,16 @@ const screenDto = (
   organizationId: String(x.organizationId),
   name: String(x.name),
   location: String(x.location),
+  ...(x.locationId ? { locationId: String(x.locationId) } : {}),
+  ...(x.classifiedLocation &&
+  typeof x.classifiedLocation === "object" &&
+  "name" in x.classifiedLocation
+    ? {
+        locationName: String(
+          (x.classifiedLocation as Record<string, unknown>).name,
+        ),
+      }
+    : {}),
   status: screenStatus(x),
   orientation: enumLower<ScreenRecord["orientation"]>(String(x.orientation)),
   resolution: String(x.resolution),
@@ -115,6 +128,13 @@ const screenDto = (
   ...(x.credentialGeneration != null
     ? { credentialGeneration: Number(x.credentialGeneration) }
     : {}),
+  createdAt: iso(x.createdAt as Date)!,
+  updatedAt: iso(x.updatedAt as Date)!,
+});
+const locationDto = (x: Record<string, unknown>): LocationRecord => ({
+  id: String(x.id),
+  organizationId: String(x.organizationId),
+  name: String(x.name),
   createdAt: iso(x.createdAt as Date)!,
   updatedAt: iso(x.updatedAt as Date)!,
 });
@@ -395,6 +415,14 @@ const isRetryableWriteConflict = (error: unknown) =>
     (error.code === "P2010" &&
       (error.meta as { code?: unknown } | undefined)?.code === "40001"));
 
+class InvalidLocationClassificationError extends Error {
+  readonly code = "INVALID_LOCATION";
+
+  constructor() {
+    super("Location is not in this organization");
+  }
+}
+
 export class PrismaStore implements DataStore {
   constructor(readonly prisma = new PrismaClient()) {}
   private async lockActiveActorRole(
@@ -411,6 +439,22 @@ export class PrismaStore implements DataStore {
         AND actor."disabledAt" IS NULL
       FOR UPDATE OF membership, actor`;
     return actor?.role;
+  }
+  private async lockLocationForClassification(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    locationId: string,
+  ) {
+    // Classification mutations take the target Location lock before any Screen
+    // lock. Deletion takes Location FOR UPDATE first, so concurrent assignment
+    // either commits before an IN_USE result or observes the completed delete.
+    const [location] = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT location."id"
+      FROM "Location" location
+      WHERE location."id" = ${locationId}
+        AND location."organizationId" = ${organizationId}
+      FOR KEY SHARE OF location`;
+    return Boolean(location);
   }
   private identityMutationMetadata(audit: SystemIdentityMutationAuditContext) {
     const reason = audit.reason.trim();
@@ -886,10 +930,147 @@ export class PrismaStore implements DataStore {
       return { updated: true as const };
     });
   }
+  async listLocations(org: string) {
+    return (
+      await this.prisma.location.findMany({
+        where: { organizationId: org },
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+      })
+    ).map((location) => locationDto(location));
+  }
+  async createLocationAndAudit(
+    org: string,
+    name: string,
+    audit: UserMutationAuditContext,
+  ) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+        if (role !== "OWNER" && role !== "ADMIN")
+          return { created: false as const, reason: "FORBIDDEN" as const };
+        const location = await tx.location.create({
+          data: { organizationId: org, name },
+        });
+        await tx.auditEvent.create({
+          data: {
+            organizationId: org,
+            actorUserId: audit.actorUserId,
+            actorType: "user",
+            action: "location.created",
+            entityType: "location",
+            entityId: location.id,
+            ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+            ...(audit.requestId ? { requestId: audit.requestId } : {}),
+            metadata: { name },
+          },
+        });
+        return { created: true as const, value: locationDto(location) };
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error))
+        return { created: false as const, reason: "DUPLICATE" as const };
+      throw error;
+    }
+  }
+  async updateLocationAndAudit(
+    org: string,
+    id: string,
+    name: string,
+    audit: UserMutationAuditContext,
+  ) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+        if (role !== "OWNER" && role !== "ADMIN")
+          return { updated: false as const, reason: "FORBIDDEN" as const };
+        const [locked] = await tx.$queryRaw<
+          Array<{ id: string; name: string }>
+        >`
+          SELECT location."id", location."name"
+          FROM "Location" location
+          WHERE location."id" = ${id}
+            AND location."organizationId" = ${org}
+          FOR UPDATE OF location`;
+        if (!locked)
+          return { updated: false as const, reason: "NOT_FOUND" as const };
+        const location = await tx.location.update({
+          where: { id },
+          data: { name },
+        });
+        await tx.auditEvent.create({
+          data: {
+            organizationId: org,
+            actorUserId: audit.actorUserId,
+            actorType: "user",
+            action: "location.updated",
+            entityType: "location",
+            entityId: id,
+            ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+            ...(audit.requestId ? { requestId: audit.requestId } : {}),
+            metadata: { previousName: locked.name, name },
+          },
+        });
+        return { updated: true as const, value: locationDto(location) };
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error))
+        return { updated: false as const, reason: "DUPLICATE" as const };
+      throw error;
+    }
+  }
+  async deleteLocationAndAudit(
+    org: string,
+    id: string,
+    audit: UserMutationAuditContext,
+  ) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+        if (role !== "OWNER" && role !== "ADMIN")
+          return { deleted: false as const, reason: "FORBIDDEN" as const };
+        const [locked] = await tx.$queryRaw<
+          Array<{ id: string; name: string }>
+        >`
+          SELECT location."id", location."name"
+          FROM "Location" location
+          WHERE location."id" = ${id}
+            AND location."organizationId" = ${org}
+          FOR UPDATE OF location`;
+        if (!locked)
+          return { deleted: false as const, reason: "NOT_FOUND" as const };
+        const inUse = await tx.screen.findFirst({
+          where: { organizationId: org, locationId: id },
+          select: { id: true },
+        });
+        if (inUse)
+          return { deleted: false as const, reason: "IN_USE" as const };
+        await tx.location.delete({ where: { id } });
+        await tx.auditEvent.create({
+          data: {
+            organizationId: org,
+            actorUserId: audit.actorUserId,
+            actorType: "user",
+            action: "location.deleted",
+            entityType: "location",
+            entityId: id,
+            ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+            ...(audit.requestId ? { requestId: audit.requestId } : {}),
+            metadata: { name: locked.name },
+          },
+        });
+        return { deleted: true as const };
+      });
+    } catch (error) {
+      if (isForeignKeyConstraintError(error))
+        return { deleted: false as const, reason: "IN_USE" as const };
+      throw error;
+    }
+  }
   async listScreens(org: string) {
     return (
       await this.prisma.screen.findMany({
         where: { organizationId: org },
+        include: { classifiedLocation: true },
         orderBy: { name: "asc" },
       })
     ).map((x) => screenDto(x));
@@ -897,140 +1078,185 @@ export class PrismaStore implements DataStore {
   async getScreen(org: string, id: string) {
     const x = await this.prisma.screen.findFirst({
       where: { id, organizationId: org },
+      include: { classifiedLocation: true },
     });
     return x ? screenDto(x) : null;
   }
-  async createScreen(
-    org: string,
-    data: Pick<
-      ScreenRecord,
-      "name" | "location" | "orientation" | "resolution" | "tags"
-    >,
-  ) {
-    return screenDto(
-      await this.prisma.screen.create({
-        data: {
-          organizationId: org,
-          ...data,
-          orientation: data.orientation.toUpperCase() as
-            "LANDSCAPE" | "PORTRAIT",
-        },
-      }),
-    );
+  async createScreen(org: string, data: ScreenMutationInput) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        if (
+          data.locationId &&
+          !(await this.lockLocationForClassification(tx, org, data.locationId))
+        )
+          throw new InvalidLocationClassificationError();
+        const { locationId, ...screenData } = data;
+        return screenDto(
+          await tx.screen.create({
+            data: {
+              organizationId: org,
+              ...screenData,
+              ...(locationId ? { locationId } : {}),
+              orientation: data.orientation.toUpperCase() as
+                "LANDSCAPE" | "PORTRAIT",
+            },
+            include: { classifiedLocation: true },
+          }),
+        );
+      });
+    } catch (error) {
+      if (isForeignKeyConstraintError(error))
+        throw new InvalidLocationClassificationError();
+      throw error;
+    }
   }
   async createScreenAndAudit(
     org: string,
-    data: Pick<
-      ScreenRecord,
-      "name" | "location" | "orientation" | "resolution" | "tags"
-    >,
+    data: ScreenMutationInput,
     audit: UserMutationAuditContext,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
-      if (role !== "OWNER" && role !== "ADMIN")
-        return { created: false as const, reason: "FORBIDDEN" as const };
-      const screen = await tx.screen.create({
-        data: {
-          organizationId: org,
-          ...data,
-          orientation: data.orientation.toUpperCase() as
-            "LANDSCAPE" | "PORTRAIT",
-        },
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+        if (role !== "OWNER" && role !== "ADMIN")
+          return { created: false as const, reason: "FORBIDDEN" as const };
+        if (
+          data.locationId &&
+          !(await this.lockLocationForClassification(tx, org, data.locationId))
+        )
+          return {
+            created: false as const,
+            reason: "INVALID_LOCATION" as const,
+          };
+        const { locationId, ...screenData } = data;
+        const screen = await tx.screen.create({
+          data: {
+            organizationId: org,
+            ...screenData,
+            ...(locationId ? { locationId } : {}),
+            orientation: data.orientation.toUpperCase() as
+              "LANDSCAPE" | "PORTRAIT",
+          },
+          include: { classifiedLocation: true },
+        });
+        await tx.auditEvent.create({
+          data: {
+            organizationId: org,
+            actorUserId: audit.actorUserId,
+            actorType: "user",
+            action: "screen.created",
+            entityType: "screen",
+            entityId: screen.id,
+            ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+            ...(audit.requestId ? { requestId: audit.requestId } : {}),
+            metadata: { name: screen.name },
+          },
+        });
+        return { created: true as const, value: screenDto(screen) };
       });
-      await tx.auditEvent.create({
-        data: {
-          organizationId: org,
-          actorUserId: audit.actorUserId,
-          actorType: "user",
-          action: "screen.created",
-          entityType: "screen",
-          entityId: screen.id,
-          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-          ...(audit.requestId ? { requestId: audit.requestId } : {}),
-          metadata: { name: screen.name },
-        },
-      });
-      return { created: true as const, value: screenDto(screen) };
-    });
+    } catch (error) {
+      if (isForeignKeyConstraintError(error))
+        return { created: false as const, reason: "INVALID_LOCATION" as const };
+      throw error;
+    }
   }
-  async updateScreen(
-    org: string,
-    id: string,
-    data: Partial<
-      Pick<
-        ScreenRecord,
-        "name" | "location" | "orientation" | "resolution" | "tags"
-      >
-    >,
-  ) {
-    if (!(await this.getScreen(org, id))) return null;
-    const { orientation, ...rest } = data;
-    return screenDto(
-      await this.prisma.screen.update({
-        where: { id },
-        data: {
-          ...rest,
-          ...(orientation
-            ? {
-                orientation: orientation.toUpperCase() as
-                  "LANDSCAPE" | "PORTRAIT",
-              }
-            : {}),
-        },
-      }),
-    );
+  async updateScreen(org: string, id: string, data: ScreenMutationPatch) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        if (
+          data.locationId &&
+          !(await this.lockLocationForClassification(tx, org, data.locationId))
+        )
+          return null;
+        const existing = await tx.screen.findFirst({
+          where: { id, organizationId: org },
+          select: { id: true },
+        });
+        if (!existing) return null;
+        const { orientation, locationId, ...rest } = data;
+        return screenDto(
+          await tx.screen.update({
+            where: { id },
+            data: {
+              ...rest,
+              ...(locationId !== undefined ? { locationId } : {}),
+              ...(orientation
+                ? {
+                    orientation: orientation.toUpperCase() as
+                      "LANDSCAPE" | "PORTRAIT",
+                  }
+                : {}),
+            },
+            include: { classifiedLocation: true },
+          }),
+        );
+      });
+    } catch (error) {
+      if (isForeignKeyConstraintError(error)) return null;
+      throw error;
+    }
   }
   async updateScreenAndAudit(
     org: string,
     id: string,
-    data: Partial<
-      Pick<
-        ScreenRecord,
-        "name" | "location" | "orientation" | "resolution" | "tags"
-      >
-    >,
+    data: ScreenMutationPatch,
     audit: UserMutationAuditContext,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
-      if (role !== "OWNER" && role !== "ADMIN")
-        return { updated: false as const, reason: "FORBIDDEN" as const };
-      const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT screen."id"
-        FROM "Screen" screen
-        WHERE screen."id" = ${id} AND screen."organizationId" = ${org}
-        FOR UPDATE OF screen`;
-      if (!locked)
-        return { updated: false as const, reason: "NOT_FOUND" as const };
-      const { orientation, ...rest } = data;
-      const screen = await tx.screen.update({
-        where: { id },
-        data: {
-          ...rest,
-          ...(orientation
-            ? {
-                orientation: orientation.toUpperCase() as
-                  "LANDSCAPE" | "PORTRAIT",
-              }
-            : {}),
-        },
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const role = await this.lockActiveActorRole(tx, org, audit.actorUserId);
+        if (role !== "OWNER" && role !== "ADMIN")
+          return { updated: false as const, reason: "FORBIDDEN" as const };
+        if (
+          data.locationId &&
+          !(await this.lockLocationForClassification(tx, org, data.locationId))
+        )
+          return {
+            updated: false as const,
+            reason: "INVALID_LOCATION" as const,
+          };
+        const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT screen."id"
+          FROM "Screen" screen
+          WHERE screen."id" = ${id} AND screen."organizationId" = ${org}
+          FOR UPDATE OF screen`;
+        if (!locked)
+          return { updated: false as const, reason: "NOT_FOUND" as const };
+        const { orientation, locationId, ...rest } = data;
+        const screen = await tx.screen.update({
+          where: { id },
+          data: {
+            ...rest,
+            ...(locationId !== undefined ? { locationId } : {}),
+            ...(orientation
+              ? {
+                  orientation: orientation.toUpperCase() as
+                    "LANDSCAPE" | "PORTRAIT",
+                }
+              : {}),
+          },
+          include: { classifiedLocation: true },
+        });
+        await tx.auditEvent.create({
+          data: {
+            organizationId: org,
+            actorUserId: audit.actorUserId,
+            actorType: "user",
+            action: "screen.updated",
+            entityType: "screen",
+            entityId: id,
+            ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+            ...(audit.requestId ? { requestId: audit.requestId } : {}),
+            metadata: {},
+          },
+        });
+        return { updated: true as const, value: screenDto(screen) };
       });
-      await tx.auditEvent.create({
-        data: {
-          organizationId: org,
-          actorUserId: audit.actorUserId,
-          actorType: "user",
-          action: "screen.updated",
-          entityType: "screen",
-          entityId: id,
-          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
-          ...(audit.requestId ? { requestId: audit.requestId } : {}),
-          metadata: {},
-        },
-      });
-      return { updated: true as const, value: screenDto(screen) };
-    });
+    } catch (error) {
+      if (isForeignKeyConstraintError(error))
+        return { updated: false as const, reason: "INVALID_LOCATION" as const };
+      throw error;
+    }
   }
   async deleteScreen(org: string, id: string) {
     const r = await this.prisma.screen.deleteMany({

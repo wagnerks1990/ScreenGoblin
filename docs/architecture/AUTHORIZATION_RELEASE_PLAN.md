@@ -167,7 +167,7 @@ Keep existing playlist/schedule endpoints for draft compatibility during a depre
 
 ## Shadow-to-enforced rollout
 
-1. **Schema foundation:** introduce scope/release tables, tenant composite constraints, idempotency and outbox. Backfill and verify with no behavior change.
+1. **Schema foundation:** introduce scope/release tables, tenant composite constraints, idempotency and outbox. First-class Location records and optional screen classification are implemented with no authorization behavior change; per-user grants and filtering remain unimplemented. Backfill and verify with no behavior change.
 2. **Policy shadow:** compute the proposed capability decision beside the legacy role decision. Enforce legacy result, record privacy-safe mismatch metrics with decision IDs, and alert on unexpected grants/denials.
 3. **Grant preview:** expose administrator read-only effective-access reports. Have organization owners validate publisher/viewer scopes; do not auto-grant emergency or destructive fleet capabilities.
 4. **Dual-write releases:** ordinary publishing creates immutable records while existing delivery remains compatible. Compare generated manifests/digests and repair transaction boundaries.

@@ -74,6 +74,7 @@ model Organization {
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   memberships          Membership[]
+  locations            Location[]
   screens              Screen[]
   media                MediaAsset[]
   playlists            Playlist[]
@@ -86,6 +87,20 @@ model Organization {
   deviceCredentials    DeviceCredential[]
   deviceAuthChallenges DeviceAuthChallenge[]
   pairingAttempts      PairingAttempt[]
+}
+
+model Location {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  screens        Screen[]
+
+  @@unique([id, organizationId])
+  @@unique([organizationId, name])
+  @@index([organizationId, createdAt])
 }
 
 model User {
@@ -152,6 +167,7 @@ model Screen {
   organizationId           String
   name                     String
   location                 String                    @default("")
+  locationId               String?
   status                   ScreenStatus              @default(OFFLINE)
   orientation              Orientation               @default(LANDSCAPE)
   resolution               String                    @default("1920x1080")
@@ -172,6 +188,7 @@ model Screen {
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
   organization             Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  classifiedLocation       Location?                 @relation(fields: [locationId, organizationId], references: [id, organizationId], onDelete: Restrict)
   schedules                ScheduleTarget[]
   pairingCodes             PairingCode[]             @relation("PairingResultScreen")
   reenrollmentGrants       PairingCode[]             @relation("PairingTargetScreen")
@@ -180,6 +197,7 @@ model Screen {
 
   @@unique([id, organizationId])
   @@index([organizationId, status])
+  @@index([organizationId, locationId])
 }
 
 model PairingCode {

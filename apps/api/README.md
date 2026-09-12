@@ -29,6 +29,7 @@ All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the
 
 - `POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`
 - `GET|POST|PATCH|DELETE /api/v1/screens`
+- `GET|POST|PATCH|DELETE /api/v1/locations`
 - `GET|DELETE /api/v1/media` (`POST` is deprecated and disabled by default;
   production rejects enabling it)
 - `GET|POST|DELETE /api/v1/playlists`
@@ -67,6 +68,12 @@ stopping such an in-flight object response would require coordinated stream
 revocation across PostgreSQL and object storage.
 
 ## Security and scope
+
+- Locations are stable, tenant-bound administrative classifications. Existing
+  screen location labels remain compatible, and assigning a classification is
+  optional. This foundation does not add user grants, filter resources, or
+  change effective organization-role authorization; locations must not yet be
+  treated as authorization scopes.
 
 - OWNER/ADMIN control screens; PUBLISHER may manage ordinary content and
   schedules; VIEWER is read-only. Legacy emergency routes exist only for

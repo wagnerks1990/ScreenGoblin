@@ -72,6 +72,8 @@ export interface ScreenRecord {
   organizationId: string;
   name: string;
   location: string;
+  locationId?: string | undefined;
+  locationName?: string | undefined;
   status: "online" | "warning" | "offline" | "fallback";
   orientation: "landscape" | "portrait";
   resolution: string;
@@ -92,6 +94,24 @@ export interface ScreenRecord {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface LocationRecord {
+  id: string;
+  organizationId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type LocationCreateResult =
+  | { created: true; value: LocationRecord }
+  | { created: false; reason: "FORBIDDEN" | "DUPLICATE" };
+export type LocationUpdateResult =
+  | { updated: true; value: LocationRecord }
+  | {
+      updated: false;
+      reason: "NOT_FOUND" | "FORBIDDEN" | "DUPLICATE";
+    };
 export interface HeartbeatUpdateInput {
   playerVersion: string;
   manifestVersion: string | null;
@@ -489,6 +509,22 @@ export type AuditedUpdateResult<T> =
   | { updated: true; value: T }
   | { updated: false; reason: "NOT_FOUND" | "FORBIDDEN" };
 
+export type ScreenCreateResult =
+  | { created: true; value: ScreenRecord }
+  | { created: false; reason: "FORBIDDEN" | "INVALID_LOCATION" };
+export type ScreenUpdateResult =
+  | { updated: true; value: ScreenRecord }
+  | {
+      updated: false;
+      reason: "NOT_FOUND" | "FORBIDDEN" | "INVALID_LOCATION";
+    };
+
+export type ScreenMutationInput = Pick<
+  ScreenRecord,
+  "name" | "location" | "orientation" | "resolution" | "tags"
+> & { locationId?: string | null | undefined };
+export type ScreenMutationPatch = Partial<ScreenMutationInput>;
+
 export type AuditedPlaylistCreateResult =
   | { created: true; value: PlaylistRecord }
   | { created: false; reason: "FORBIDDEN" | "INVALID_ASSET" };
@@ -551,44 +587,42 @@ export interface DataStore {
     userId: string,
     audit: SystemIdentityMutationAuditContext,
   ): Promise<MembershipAuthorizationMutationResult>;
+  listLocations(orgId: string): Promise<LocationRecord[]>;
+  createLocationAndAudit(
+    orgId: string,
+    name: string,
+    audit: UserMutationAuditContext,
+  ): Promise<LocationCreateResult>;
+  updateLocationAndAudit(
+    orgId: string,
+    id: string,
+    name: string,
+    audit: UserMutationAuditContext,
+  ): Promise<LocationUpdateResult>;
+  deleteLocationAndAudit(
+    orgId: string,
+    id: string,
+    audit: UserMutationAuditContext,
+  ): Promise<AuditedDeleteResult>;
   listScreens(orgId: string): Promise<ScreenRecord[]>;
   getScreen(orgId: string, id: string): Promise<ScreenRecord | null>;
-  createScreen(
-    orgId: string,
-    data: Pick<
-      ScreenRecord,
-      "name" | "location" | "orientation" | "resolution" | "tags"
-    >,
-  ): Promise<ScreenRecord>;
+  createScreen(orgId: string, data: ScreenMutationInput): Promise<ScreenRecord>;
   createScreenAndAudit(
     orgId: string,
-    data: Pick<
-      ScreenRecord,
-      "name" | "location" | "orientation" | "resolution" | "tags"
-    >,
+    data: ScreenMutationInput,
     audit: UserMutationAuditContext,
-  ): Promise<AuditedCreateResult<ScreenRecord>>;
+  ): Promise<ScreenCreateResult>;
   updateScreen(
     orgId: string,
     id: string,
-    data: Partial<
-      Pick<
-        ScreenRecord,
-        "name" | "location" | "orientation" | "resolution" | "tags"
-      >
-    >,
+    data: ScreenMutationPatch,
   ): Promise<ScreenRecord | null>;
   updateScreenAndAudit(
     orgId: string,
     id: string,
-    data: Partial<
-      Pick<
-        ScreenRecord,
-        "name" | "location" | "orientation" | "resolution" | "tags"
-      >
-    >,
+    data: ScreenMutationPatch,
     audit: UserMutationAuditContext,
-  ): Promise<AuditedUpdateResult<ScreenRecord>>;
+  ): Promise<ScreenUpdateResult>;
   deleteScreen(orgId: string, id: string): Promise<boolean>;
   deleteScreenAndAudit(
     orgId: string,
