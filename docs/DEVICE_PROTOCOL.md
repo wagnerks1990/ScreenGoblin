@@ -177,6 +177,17 @@ pre-production gates.
 
 Routine polls may refresh `generatedAt`, `validUntil`, and the signature without changing `version`; the version changes only when the semantic release changes. Ordinary items, target IDs, priority, schedule windows, and optional asset expiries come from immutable snapshots created by the atomic publication operation, never from subsequently mutable playlist or schedule rows. `validUntil` is the signed-envelope lease, while `playbackEndsAt` and the earliest signed asset expiry are hard authorization boundaries enforced locally during an outage. An immutable withdrawal event removes the assignment from active selection without deleting its history. The API revalidates each selected frozen release as one unit at manifest time. If any item fails its URL-origin, credential, media, expiry, checksum, size, or aggregate policy, the API emits a signed withdrawal with no items instead of changing the approved playlist by omitting only that item. It does the same when no assignment applies, so previously active content cannot continue past its authorization window.
 
+Before active-release selection, manifest signing, or private media delivery,
+the API recomputes the published-release and latest-assignment digests from all
+frozen metadata, ordered items, schedule fields, and targets. A mismatch is
+treated as no active release and media authorization returns not found; altered
+snapshot data is never re-signed. These read checks intentionally do not append
+an `AuditEvent` for every mismatch, because an attacker could amplify those
+writes. Operators must detect repeated withdrawals/404s and database-integrity
+alerts externally. The digests are unkeyed integrity consistency checks, not a
+claim that the database is tamper-proof: an attacker able to rewrite the full
+snapshot and both digests remains outside this control.
+
 When a Player accepts that signed withdrawal, it persists the blank marker and
 removes its previous-manifest rollback slot atomically. Rollback also refuses an
 expired signed playback or asset boundary. These local controls prevent content

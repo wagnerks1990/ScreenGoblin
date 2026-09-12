@@ -128,6 +128,7 @@ const pairDevice = async (installationId: string) => {
 const scheduledPlaylist = async (
   screenId: string,
   overrides: Partial<Parameters<MemoryStore["createSchedule"]>[1]> = {},
+  assetOverrides: { expiresAt?: string } = {},
 ) => {
   const asset = await store.createMedia("org-a", {
     name: "Welcome",
@@ -136,6 +137,7 @@ const scheduledPlaylist = async (
     url: "https://media.example.test/welcome.png",
     checksumSha256: "a".repeat(64),
     sizeBytes: 1024,
+    ...assetOverrides,
   });
   const playlist = await store.createPlaylist("org-a", {
     name: "Lobby",
@@ -1696,13 +1698,82 @@ describe("device lifecycle", () => {
     });
   });
 
+  it("never signs or serves a drifted frozen release or assignment", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("snapshot-integrity-device");
+    await scheduledPlaylist(device.screenId);
+    const initial = (
+      await app.inject({
+        url: "/api/v1/device/manifest",
+        headers: device.headers,
+      })
+    ).json();
+    expect(initial).toMatchObject({ withdrawn: false });
+    const mediaUrl = new URL(initial.items[0].asset.url);
+    const release = structuredClone(store.releases[0]!);
+    const assignment = structuredClone(store.releaseAssignments[0]!);
+    const auditCount = store.audits.length;
+
+    const corruptions: Array<() => void> = [
+      () => {
+        store.releases[0]!.playlistName = "Drifted metadata";
+      },
+      () => {
+        store.releases[0]!.items[0]!.position = 9;
+      },
+      () => {
+        store.releases[0]!.items[0]!.durationSeconds += 1;
+      },
+      () => {
+        store.releases[0]!.items[0]!.asset.name = "Drifted asset";
+      },
+      () => {
+        store.releases[0]!.digestSha256 = "0".repeat(64);
+      },
+      () => {
+        store.releaseAssignments[0]!.screenIds.push("other-screen");
+      },
+      () => {
+        store.releaseAssignments[0]!.schedule.name = "Drifted schedule";
+      },
+      () => {
+        store.releaseAssignments[0]!.digestSha256 = "1".repeat(64);
+      },
+      () => {
+        store.releaseAssignments[0]!.organizationId = "org-b";
+      },
+    ];
+
+    for (const corrupt of corruptions) {
+      store.releases[0] = structuredClone(release);
+      store.releaseAssignments[0] = structuredClone(assignment);
+      corrupt();
+      expect(
+        (
+          await app.inject({
+            url: "/api/v1/device/manifest",
+            headers: device.headers,
+          })
+        ).json(),
+      ).toMatchObject({ withdrawn: true, items: [] });
+      expect(
+        (
+          await app.inject({
+            url: `${mediaUrl.pathname}${mediaUrl.search}`,
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(store.audits).toHaveLength(auditCount);
+    }
+  });
+
   it("carries the frozen asset expiry in the signed manifest", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
     const device = await pairDevice("expiring-release-device");
-    await scheduledPlaylist(device.screenId);
     const expiresAt = "2026-09-14T13:32:00.000Z";
-    store.releases[0]!.items[0]!.asset.expiresAt = expiresAt;
+    await scheduledPlaylist(device.screenId, {}, { expiresAt });
 
     const manifest = (
       await app.inject({

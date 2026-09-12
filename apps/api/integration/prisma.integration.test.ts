@@ -2920,6 +2920,127 @@ describe("PrismaStore PostgreSQL integration", () => {
       }),
     ).resolves.toBe(false);
     await expect(
+      store.authorizeMediaDelivery({
+        ...deliveryAuthorization,
+        organizationId: "another-organization",
+      }),
+    ).resolves.toBe(false);
+
+    const auditCountBeforeIntegrityChecks = await prisma.auditEvent.count();
+    const expectSnapshotRejected = async () => {
+      await expect(
+        store.activeOrdinaryReleases(
+          organization.id,
+          screen.id,
+          now.toISOString(),
+        ),
+      ).resolves.toEqual([]);
+      await expect(
+        store.authorizeMediaDelivery(deliveryAuthorization),
+      ).resolves.toBe(false);
+      await expect(prisma.auditEvent.count()).resolves.toBe(
+        auditCountBeforeIntegrityChecks,
+      );
+    };
+
+    await prisma.publishedRelease.update({
+      where: { id: publication.release.id },
+      data: { sourcePlaylistName: "Drifted frozen metadata" },
+    });
+    await expectSnapshotRejected();
+    await prisma.publishedRelease.update({
+      where: { id: publication.release.id },
+      data: { sourcePlaylistName: publication.release.playlistName },
+    });
+
+    const frozenItem = await prisma.frozenReleaseItem.findFirstOrThrow({
+      where: { releaseId: publication.release.id },
+    });
+    await prisma.frozenReleaseItem.update({
+      where: { id: frozenItem.id },
+      data: { position: frozenItem.position + 1 },
+    });
+    await expectSnapshotRejected();
+    await prisma.frozenReleaseItem.update({
+      where: { id: frozenItem.id },
+      data: { position: frozenItem.position },
+    });
+    await prisma.frozenReleaseItem.update({
+      where: { id: frozenItem.id },
+      data: { assetName: "Drifted frozen asset" },
+    });
+    await expectSnapshotRejected();
+    await prisma.frozenReleaseItem.update({
+      where: { id: frozenItem.id },
+      data: { assetName: frozenItem.assetName },
+    });
+
+    await prisma.publishedRelease.update({
+      where: { id: publication.release.id },
+      data: { digestSha256: "0".repeat(64) },
+    });
+    await expectSnapshotRejected();
+    await prisma.publishedRelease.update({
+      where: { id: publication.release.id },
+      data: { digestSha256: publication.release.digestSha256 },
+    });
+
+    await prisma.releaseAssignment.update({
+      where: { id: publication.assignment.id },
+      data: { scheduleName: "Drifted frozen schedule" },
+    });
+    await expectSnapshotRejected();
+    await prisma.releaseAssignment.update({
+      where: { id: publication.assignment.id },
+      data: { scheduleName: publication.assignment.schedule.name },
+    });
+    await prisma.releaseAssignment.update({
+      where: { id: publication.assignment.id },
+      data: { digestSha256: "1".repeat(64) },
+    });
+    await expectSnapshotRejected();
+    await prisma.releaseAssignment.update({
+      where: { id: publication.assignment.id },
+      data: { digestSha256: publication.assignment.digestSha256 },
+    });
+
+    const driftTarget = await store.createScreen(organization.id, {
+      name: "Unexpected frozen target",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    await prisma.releaseAssignmentTarget.create({
+      data: {
+        organizationId: organization.id,
+        assignmentId: publication.assignment.id,
+        screenId: driftTarget.id,
+        liveScreenId: driftTarget.id,
+        liveScreenOrganizationId: organization.id,
+      },
+    });
+    await expectSnapshotRejected();
+    await prisma.releaseAssignmentTarget.delete({
+      where: {
+        assignmentId_screenId: {
+          assignmentId: publication.assignment.id,
+          screenId: driftTarget.id,
+        },
+      },
+    });
+
+    await expect(
+      store.activeOrdinaryReleases(
+        organization.id,
+        screen.id,
+        now.toISOString(),
+      ),
+    ).resolves.toHaveLength(1);
+    await expect(
+      store.authorizeMediaDelivery(deliveryAuthorization),
+    ).resolves.toBe(true);
+    await expect(
       store.deletePlaylist(organization.id, playlist.id),
     ).resolves.toBe("IN_USE");
     await expect(store.deleteMedia(organization.id, media.id)).resolves.toBe(

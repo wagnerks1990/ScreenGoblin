@@ -50,6 +50,7 @@ import {
   assignmentSnapshotDigest,
   canonicalAssignmentSnapshot,
   canonicalReleaseSnapshot,
+  hasValidStoredAssignmentDigest,
   ReleaseSnapshotError,
   releaseSnapshotDigest,
 } from "../releases/canonical.js";
@@ -2358,7 +2359,9 @@ export class MemoryStore implements DataStore {
           candidate.organizationId === org &&
           candidate.id === assignment.releaseId,
       );
-      return release ? [{ release, assignment }] : [];
+      return release && hasValidStoredAssignmentDigest(assignment, release)
+        ? [{ release, assignment }]
+        : [];
     });
   }
   async authorizeMediaDelivery(
@@ -2390,8 +2393,10 @@ export class MemoryStore implements DataStore {
         candidate.id === assignment.releaseId &&
         candidate.organizationId === input.organizationId,
     );
+    if (!release || !hasValidStoredAssignmentDigest(assignment, release))
+      return false;
     return Boolean(
-      release?.items.some(
+      release.items.some(
         (item) =>
           item.asset.id === input.assetId &&
           item.asset.storageKey === input.storageKey &&

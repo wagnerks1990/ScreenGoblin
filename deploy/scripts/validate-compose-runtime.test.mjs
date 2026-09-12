@@ -50,6 +50,10 @@ case " $* " in
   *" exec -T postgres "*) exit 0 ;;
   *" exec -T minio "*) printf '403'; exit 0 ;;
   *" exec -T api "*) printf 'valid-capability\nexpired-capability\n'; exit 0 ;;
+  *" run --rm --no-deps --entrypoint node api "*)
+    printf 'release-digest\nassignment-digest\nwithdrawal-digest\n'
+    exit 0
+    ;;
   *" run --rm "*) exit 0 ;;
 esac
 echo "Unexpected fake docker command: $*" >&2
@@ -142,6 +146,9 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.match(scriptSource, /private-media-withdrawn/);
     assert.match(scriptSource, /private-media-tampered/);
     assert.match(scriptSource, /private-media-expired/);
+    assert.match(scriptSource, /releaseSnapshotDigest/);
+    assert.match(scriptSource, /canonicalAssignmentSnapshot/);
+    assert.doesNotMatch(scriptSource, /repeat\('[abc]', 64\)/);
     const commands = readFileSync(f.commandLog, "utf8");
     assert.match(commands, /up --detach --wait --wait-timeout 180/);
     assert.match(commands, /network inspect screengoblin-smoke-test_backend/);

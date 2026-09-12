@@ -249,6 +249,77 @@ media_checksum="$(printf '%s' "$media_body" | "$OPENSSL_BIN" dgst -sha256 | awk 
 readonly media_checksum
 readonly media_size="${#media_body}"
 readonly media_storage_key="organizations/$media_org_id/assets/$media_asset_id/$media_checksum"
+readonly media_snapshot_timestamp="2026-09-12T00:00:00.000Z"
+readonly media_schedule_starts_at="2020-01-01T00:00:00.000Z"
+readonly media_schedule_ends_at="2099-01-01T00:00:00.000Z"
+
+mapfile -t media_snapshot_digests < <(
+  "${compose[@]}" run --rm --no-deps --entrypoint node api --input-type=module -e '
+    const [playlistId, playlistItemId, assetId, storageKey, checksum, size,
+      screenId, timestamp, startsAt, endsAt, assignmentId] = process.argv.slice(1);
+    const canonical = await import("./apps/api/dist/releases/canonical.js");
+    const releaseDigest = canonical.releaseSnapshotDigest({
+      schemaVersion: 1,
+      sourcePlaylistId: playlistId,
+      sourcePlaylistUpdatedAt: timestamp,
+      playlistName: "Compose playlist",
+      playlistDescription: "Capability authorization fixture",
+      items: [{
+        id: playlistItemId,
+        asset: {
+          id: assetId,
+          name: "Compose media",
+          kind: "image",
+          mimeType: "image/png",
+          url: "https://signage.example.test/media/compose.png",
+          storageKey,
+          checksumSha256: checksum,
+          sizeBytes: Number(size),
+          createdAt: timestamp,
+        },
+        position: 0,
+        durationSeconds: 15,
+      }],
+    });
+    const schedule = {
+      name: "Compose schedule",
+      priority: "normal",
+      startsAt,
+      endsAt,
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+    };
+    console.log(releaseDigest);
+    console.log(canonical.assignmentSnapshotDigest(
+      canonical.canonicalAssignmentSnapshot({
+        releaseDigestSha256: releaseDigest,
+        state: "ASSIGNED",
+        schedule,
+        screenIds: [screenId],
+      }),
+    ));
+    console.log(canonical.assignmentSnapshotDigest(
+      canonical.canonicalAssignmentSnapshot({
+        releaseDigestSha256: releaseDigest,
+        state: "WITHDRAWN",
+        schedule,
+        screenIds: [screenId],
+        previousAssignmentId: assignmentId,
+      }),
+    ));
+  ' "$media_playlist_id" "$media_playlist_item_id" "$media_asset_id" \
+    "$media_storage_key" "$media_checksum" "$media_size" "$media_screen_id" \
+    "$media_snapshot_timestamp" "$media_schedule_starts_at" \
+    "$media_schedule_ends_at" "$media_assignment_id"
+)
+(( ${#media_snapshot_digests[@]} == 3 )) || {
+  echo "API container did not derive the expected frozen snapshot digests" >&2
+  exit 1
+}
+readonly media_release_digest="${media_snapshot_digests[0]}"
+readonly media_assignment_digest="${media_snapshot_digests[1]}"
+readonly media_withdrawal_digest="${media_snapshot_digests[2]}"
 
 "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh minio-init -ceu '
   mc alias set smoke http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
@@ -288,15 +359,15 @@ VALUES ('$media_playlist_id', '$media_org_id', 'Compose playlist', 'Capability a
 INSERT INTO "PlaylistItem" ("id", "organizationId", "playlistId", "assetId", "position", "durationSeconds")
 VALUES ('$media_playlist_item_id', '$media_org_id', '$media_playlist_id', '$media_asset_id', 0, 15);
 INSERT INTO "Schedule" ("id", "organizationId", "playlistId", "name", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt", "updatedAt")
-VALUES ('$media_schedule_id', '$media_org_id', '$media_playlist_id', 'Compose schedule', 'NORMAL', CURRENT_TIMESTAMP - INTERVAL '1 hour', CURRENT_TIMESTAMP + INTERVAL '1 hour', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+VALUES ('$media_schedule_id', '$media_org_id', '$media_playlist_id', 'Compose schedule', 'NORMAL', '$media_schedule_starts_at', '$media_schedule_ends_at', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "ScheduleTarget" ("organizationId", "scheduleId", "screenId")
 VALUES ('$media_org_id', '$media_schedule_id', '$media_screen_id');
 INSERT INTO "PublishedRelease" ("id", "organizationId", "sourcePlaylistId", "sourcePlaylistName", "sourcePlaylistDescription", "sourcePlaylistUpdatedAt", "digestSha256", "createdById", "createdAt")
-VALUES ('$media_release_id', '$media_org_id', '$media_playlist_id', 'Compose playlist', 'Capability authorization fixture', CURRENT_TIMESTAMP, repeat('a', 64), '$media_user_id', CURRENT_TIMESTAMP);
+VALUES ('$media_release_id', '$media_org_id', '$media_playlist_id', 'Compose playlist', 'Capability authorization fixture', '$media_snapshot_timestamp', '$media_release_digest', '$media_user_id', CURRENT_TIMESTAMP);
 INSERT INTO "FrozenReleaseItem" ("id", "organizationId", "releaseId", "sourcePlaylistItemId", "sourceAssetId", "assetName", "assetKind", "assetMimeType", "assetUrl", "assetStorageKey", "assetChecksumSha256", "assetSizeBytes", "assetCreatedAt", "position", "durationSeconds", "createdAt")
-VALUES ('compose-media-frozen-item', '$media_org_id', '$media_release_id', '$media_playlist_item_id', '$media_asset_id', 'Compose media', 'IMAGE', 'image/png', 'https://signage.example.test/media/compose.png', '$media_storage_key', '$media_checksum', '$media_size'::bigint, CURRENT_TIMESTAMP, 0, 15, CURRENT_TIMESTAMP);
+VALUES ('compose-media-frozen-item', '$media_org_id', '$media_release_id', '$media_playlist_item_id', '$media_asset_id', 'Compose media', 'IMAGE', 'image/png', 'https://signage.example.test/media/compose.png', '$media_storage_key', '$media_checksum', '$media_size'::bigint, '$media_snapshot_timestamp', 0, 15, CURRENT_TIMESTAMP);
 INSERT INTO "ReleaseAssignment" ("id", "organizationId", "releaseId", "scheduleId", "state", "digestSha256", "createdById", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt")
-VALUES ('$media_assignment_id', '$media_org_id', '$media_release_id', '$media_schedule_id', 'ASSIGNED', repeat('b', 64), '$media_user_id', 'Compose schedule', 'NORMAL', CURRENT_TIMESTAMP - INTERVAL '1 hour', CURRENT_TIMESTAMP + INTERVAL '1 hour', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP);
+VALUES ('$media_assignment_id', '$media_org_id', '$media_release_id', '$media_schedule_id', 'ASSIGNED', '$media_assignment_digest', '$media_user_id', 'Compose schedule', 'NORMAL', '$media_schedule_starts_at', '$media_schedule_ends_at', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP);
 INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screenId", "liveScreenId", "liveScreenOrganizationId")
 VALUES ('$media_org_id', '$media_assignment_id', '$media_screen_id', '$media_screen_id', '$media_org_id');
 SQL
@@ -311,7 +382,8 @@ anonymous_status="$("${compose[@]}" exec -T minio curl --silent \
 
 mapfile -t media_capabilities < <(
   "${compose[@]}" exec -T api node --input-type=module -e '
-    const [screenId, organizationId, keyId, assignmentId, assetId, storageKey, checksum, size] =
+    const [screenId, organizationId, keyId, assignmentId, assetId, storageKey,
+      checksum, size, assignmentDigestSha256] =
       process.argv.slice(1);
     const { issueMediaCapability } =
       await import("./apps/api/dist/media/delivery.js");
@@ -320,7 +392,7 @@ mapfile -t media_capabilities < <(
       organizationId,
       credentialKeyId: keyId,
       assignmentId,
-      assignmentDigestSha256: "b".repeat(64),
+      assignmentDigestSha256,
       assetId,
       storageKey,
       mimeType: "text/plain",
@@ -336,7 +408,7 @@ mapfile -t media_capabilities < <(
       process.env.MEDIA_DELIVERY_SECRET,
     ));
   ' "$media_screen_id" "$media_org_id" "$media_key_id" "$media_assignment_id" "$media_asset_id" \
-    "$media_storage_key" "$media_checksum" "$media_size"
+    "$media_storage_key" "$media_checksum" "$media_size" "$media_assignment_digest"
 )
 (( ${#media_capabilities[@]} == 2 )) || {
   echo "API container did not issue the expected media capabilities" >&2
@@ -361,7 +433,7 @@ assert_status "$SCREEN_GOBLIN_HOST" \
   --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set ON_ERROR_STOP=1 <<SQL >/dev/null
 INSERT INTO "ReleaseAssignment" ("id", "organizationId", "releaseId", "scheduleId", "state", "digestSha256", "previousAssignmentId", "createdById", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt")
-VALUES ('compose-media-withdrawal', '$media_org_id', '$media_release_id', '$media_schedule_id', 'WITHDRAWN', repeat('c', 64), '$media_assignment_id', '$media_user_id', 'Compose schedule', 'NORMAL', CURRENT_TIMESTAMP - INTERVAL '1 hour', CURRENT_TIMESTAMP + INTERVAL '1 hour', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP);
+VALUES ('compose-media-withdrawal', '$media_org_id', '$media_release_id', '$media_schedule_id', 'WITHDRAWN', '$media_withdrawal_digest', '$media_assignment_id', '$media_user_id', 'Compose schedule', 'NORMAL', '$media_schedule_starts_at', '$media_schedule_ends_at', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP);
 INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screenId", "liveScreenId", "liveScreenOrganizationId")
 VALUES ('$media_org_id', 'compose-media-withdrawal', '$media_screen_id', '$media_screen_id', '$media_org_id');
 SQL

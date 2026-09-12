@@ -6,6 +6,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Recompute immutable published-release and latest-assignment digests from their
+  complete frozen snapshots before manifest selection or private media
+  authorization. Drift now fails closed without re-signing the altered state or
+  creating attacker-amplifiable audit events on every read.
+
 - Treat an accepted signed withdrawal as a Player rollback tombstone: remove the
   previous manifest atomically, repair legacy tombstone state on reboot, and
   reject rollback across withdrawn, corrupt, or expired playback/asset state.
