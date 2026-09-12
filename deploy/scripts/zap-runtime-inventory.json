@@ -77,6 +77,30 @@
           "seedPath": "/api/v1/screens/dast-probe/device-credential/revoke"
         },
         {
+          "label": "device-enrollment-create",
+          "method": "POST",
+          "template": "/api/v1/screens/:id/device-enrollment",
+          "seedPath": "/api/v1/screens/dast-probe/device-enrollment"
+        },
+        {
+          "label": "device-enrollment-item",
+          "method": "GET",
+          "template": "/api/v1/screens/:id/device-enrollment/:grantId",
+          "seedPath": "/api/v1/screens/dast-probe/device-enrollment/dast-grant"
+        },
+        {
+          "label": "device-enrollment-activate",
+          "method": "POST",
+          "template": "/api/v1/screens/:id/device-enrollment/:grantId/candidates/:candidateId/activate",
+          "seedPath": "/api/v1/screens/dast-probe/device-enrollment/dast-grant/candidates/dast-candidate/activate"
+        },
+        {
+          "label": "device-enrollment-delete",
+          "method": "DELETE",
+          "template": "/api/v1/screens/:id/device-enrollment/:grantId",
+          "seedPath": "/api/v1/screens/dast-probe/device-enrollment/dast-grant"
+        },
+        {
           "label": "device-reenrollment-create",
           "method": "POST",
           "template": "/api/v1/screens/:id/device-reenrollment",

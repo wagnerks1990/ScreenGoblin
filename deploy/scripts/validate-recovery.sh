@@ -102,7 +102,29 @@ docker build --pull --target build --file "$ROLLBACK_DOCKERFILE" \
 docker run --rm --pull never --network "$network" \
   --env DATABASE_URL="$DATABASE_URL" \
   screengoblin/recovery-migrate:test \
+  sh -c 'mv apps/api/prisma/migrations/20260912162000_targeted_initial_enrollment /tmp/targeted-initial-enrollment && npm run prisma:migrate -w @screengoblin/api'
+docker exec -i "$pg_container" psql -U screengoblin -d screengoblin \
+  -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
+BEGIN;
+INSERT INTO "Organization" ("id", "name", "slug", "createdAt", "updatedAt")
+VALUES ('upgrade-enrollment-org', 'Upgrade enrollment fixture', 'upgrade-enrollment-fixture', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "PairingCode" ("id", "organizationId", "codeHash", "status", "expiresAt", "claimedAt", "createdAt")
+VALUES
+  ('upgrade-pending-grant', 'upgrade-enrollment-org', repeat('7', 64), 'PENDING', CURRENT_TIMESTAMP + INTERVAL '5 minutes', NULL, CURRENT_TIMESTAMP),
+  ('upgrade-claimed-grant', 'upgrade-enrollment-org', repeat('8', 64), 'CLAIMED', CURRENT_TIMESTAMP + INTERVAL '5 minutes', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "PairingAttempt" ("id", "organizationId", "pairingCodeId", "keyId", "publicKeySpki", "algorithm", "securityLevel", "challengeHashSha256", "transcriptDigestSha256", "expiresAt", "createdAt")
+VALUES (repeat('u', 43), 'upgrade-enrollment-org', 'upgrade-pending-grant', repeat('v', 43), decode(repeat('cd', 91), 'hex'), 'ES256', 'software', repeat('3', 64), repeat('4', 64), CURRENT_TIMESTAMP + INTERVAL '30 seconds', CURRENT_TIMESTAMP);
+COMMIT;
+SQL
+docker run --rm --pull never --network "$network" \
+  --env DATABASE_URL="$DATABASE_URL" \
+  screengoblin/recovery-migrate:test \
   npm run prisma:migrate -w @screengoblin/api
+upgrade_authority_result="$(
+  docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
+    "SELECT pending.status::text || '|' || (attempt.\"cancelledAt\" IS NOT NULL)::text || '|' || claimed.status::text FROM \"PairingCode\" pending JOIN \"PairingAttempt\" attempt ON attempt.\"pairingCodeId\" = pending.id CROSS JOIN \"PairingCode\" claimed WHERE pending.id = 'upgrade-pending-grant' AND claimed.id = 'upgrade-claimed-grant'"
+)"
+[[ "$upgrade_authority_result" == "REVOKED|true|CLAIMED" ]]
 migration_duration_ms="$(elapsed_ms "$migration_started_ns")"
 applied_migration_count="$(
   docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
@@ -129,6 +151,10 @@ INSERT INTO "Location" ("id", "organizationId", "name", "createdAt", "updatedAt"
 VALUES ('recovery-location', 'recovery-org', 'Recovery location', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Screen" ("id", "organizationId", "name", "location", "locationId", "status", "orientation", "resolution", "tags", "createdAt", "updatedAt")
 VALUES ('recovery-screen', 'recovery-org', 'Recovery display', 'CI fixture', 'recovery-location', 'OFFLINE', 'LANDSCAPE', '1920x1080', ARRAY['recovery'], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "PairingCode" ("id", "organizationId", "purpose", "targetScreenId", "targetScreenReferenceId", "targetOrganizationId", "expectedGeneration", "authorizedByUserId", "authorizedByMembershipId", "authorizedByAuthenticationEpoch", "authorizedByAuthorizationEpoch", "requestReason", "codeHash", "status", "expiresAt", "createdAt")
+VALUES ('recovery-enrollment-grant', 'recovery-org', 'NEW_SCREEN', 'recovery-screen', 'recovery-screen', 'recovery-org', 0, 'recovery-user', 'recovery-membership', 0, 0, 'Recovery-safe enrollment fixture', repeat('f', 64), 'PENDING', '2099-01-01T00:00:00Z', CURRENT_TIMESTAMP);
+INSERT INTO "PairingAttempt" ("id", "organizationId", "pairingCodeId", "keyId", "publicKeySpki", "algorithm", "securityLevel", "challengeHashSha256", "transcriptDigestSha256", "expiresAt", "createdAt")
+VALUES (repeat('a', 43), 'recovery-org', 'recovery-enrollment-grant', repeat('k', 43), decode(repeat('ab', 91), 'hex'), 'ES256', 'software', repeat('1', 64), repeat('2', 64), CURRENT_TIMESTAMP + INTERVAL '30 seconds', CURRENT_TIMESTAMP);
 INSERT INTO "MediaAsset" ("id", "organizationId", "storageKey", "name", "kind", "mimeType", "url", "checksumSha256", "sizeBytes", "durationSeconds", "createdAt", "updatedAt")
 VALUES ('recovery-media', 'recovery-org', 'organizations/recovery-org/assets/recovery-media/' || :'object_sha256', 'Recovery media', 'IMAGE', 'image/png', 'https://media.example.test/recovery/object.txt', :'object_sha256', :'object_size'::bigint, 15, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Playlist" ("id", "organizationId", "name", "description", "createdAt", "updatedAt")
@@ -217,6 +243,8 @@ JOIN \"User\" u ON u.id = m.\"userId\"
 JOIN \"UserSession\" us ON us.\"organizationId\" = m.\"organizationId\" AND us.\"userId\" = m.\"userId\" AND us.\"authenticationEpoch\" = u.\"authenticationEpoch\" AND us.\"authorizationEpoch\" = m.\"authorizationEpoch\"
 JOIN \"Location\" l ON l.\"organizationId\" = o.id
 JOIN \"Screen\" s ON s.\"organizationId\" = o.id
+JOIN \"PairingCode\" pc ON pc.\"organizationId\" = o.id AND pc.\"targetScreenId\" = s.id AND pc.\"authorizedByUserId\" = u.id AND pc.\"authorizedByMembershipId\" = m.id AND pc.\"authorizedByAuthenticationEpoch\" = u.\"authenticationEpoch\" AND pc.\"authorizedByAuthorizationEpoch\" = m.\"authorizationEpoch\"
+JOIN \"PairingAttempt\" pa ON pa.\"organizationId\" = o.id AND pa.\"pairingCodeId\" = pc.id
 JOIN \"ScheduleTarget\" st ON st.\"screenId\" = s.id AND st.\"organizationId\" = o.id
 JOIN \"Schedule\" sc ON sc.id = st.\"scheduleId\" AND sc.\"organizationId\" = o.id
 JOIN \"Playlist\" p ON p.id = sc.\"playlistId\" AND p.\"organizationId\" = o.id
@@ -232,6 +260,9 @@ WHERE o.id = 'recovery-org'
   AND us.\"tokenHash\" = repeat('c', 64)
   AND s.\"locationId\" = l.id
   AND l.name = 'Recovery location'
+  AND pc.\"codeHash\" = repeat('f', 64)
+  AND pc.status = 'PENDING'
+  AND pa.\"keyId\" = repeat('k', 43)
   AND ae.action = 'release.published'
   AND ir.operation = 'SCHEDULE_PUBLISH'
   AND ir.\"keyHash\" = repeat('d', 64);"

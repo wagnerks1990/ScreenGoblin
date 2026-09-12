@@ -250,6 +250,329 @@ describe("pairing store invariants", () => {
       }),
     });
   });
+
+  it("opportunistically prunes only the tenant's expired enrollment authority", async () => {
+    const store = authorizePairing(new MemoryStore());
+    const expiredAt = new Date(
+      Date.now() - 31 * 24 * 60 * 60_000,
+    ).toISOString();
+    store.pairings.push(
+      {
+        id: "expired-own-grant",
+        organizationId: "org-a",
+        codeHash: "expired-own-code",
+        expiresAt: expiredAt,
+        status: "PENDING",
+      },
+      {
+        id: "expired-foreign-grant",
+        organizationId: "org-b",
+        codeHash: "expired-foreign-code",
+        expiresAt: expiredAt,
+        status: "PENDING",
+      },
+    );
+    store.pairingAttempts.push({
+      id: "expired-own-attempt",
+      organizationId: "org-a",
+      pairingCodeId: "expired-own-grant",
+      keyId: "k".repeat(43),
+      publicKeySpki: "unused",
+      algorithm: "ES256",
+      securityLevel: "software",
+      challengeHashSha256: "a".repeat(64),
+      transcriptDigestSha256: "b".repeat(64),
+      expiresAt: expiredAt,
+      createdAt: expiredAt,
+    });
+    store.screenEnrollmentIdempotencyRecords.push(
+      {
+        operation: "create",
+        organizationId: "org-a",
+        keyHash: "c".repeat(64),
+        actorUserId: "user-a",
+        requestDigestSha256: "d".repeat(64),
+        expiresAt: expiredAt,
+        response: {},
+      },
+      {
+        operation: "create",
+        organizationId: "org-b",
+        keyHash: "e".repeat(64),
+        actorUserId: "user-b",
+        requestDigestSha256: "f".repeat(64),
+        expiresAt: expiredAt,
+        response: {},
+      },
+    );
+    const screen = await store.createScreen("org-a", {
+      name: "Retention target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+
+    await expect(
+      store.requestScreenEnrollmentAndAudit(
+        "org-a",
+        screen.id,
+        new Date(Date.now() + 60_000).toISOString(),
+        "Exercise bounded retention",
+        { actorUserId: "user-a" },
+        {
+          keyHash: "1".repeat(64),
+          requestDigestSha256: "2".repeat(64),
+          codeCandidates: [{ counter: 0, codeHash: "fresh-code" }],
+        },
+      ),
+    ).resolves.toMatchObject({ created: true });
+    expect(store.pairings.map(({ id }) => id)).not.toContain(
+      "expired-own-grant",
+    );
+    expect(store.pairingAttempts).toEqual([]);
+    expect(store.pairings.map(({ id }) => id)).toContain(
+      "expired-foreign-grant",
+    );
+    expect(store.screenEnrollmentIdempotencyRecords).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ organizationId: "org-b" }),
+      ]),
+    );
+    expect(
+      store.screenEnrollmentIdempotencyRecords.find(
+        ({ keyHash }) => keyHash === "c".repeat(64),
+      )?.response,
+    ).toBeUndefined();
+  });
+
+  it("retains an expired replay tombstone for the presented enrollment key", async () => {
+    const store = authorizePairing(new MemoryStore());
+    const keyHash = "7".repeat(64);
+    store.screenEnrollmentIdempotencyRecords.push({
+      operation: "create",
+      organizationId: "org-a",
+      keyHash,
+      actorUserId: "user-a",
+      requestDigestSha256: "8".repeat(64),
+      expiresAt: new Date(0).toISOString(),
+      response: { grantId: "removed", codeCounter: 0 },
+    });
+
+    await expect(
+      store.requestScreenEnrollmentAndAudit(
+        "org-a",
+        "screen-does-not-matter",
+        new Date(Date.now() + 60_000).toISOString(),
+        "Expired replay test",
+        { actorUserId: "user-a" },
+        {
+          keyHash,
+          requestDigestSha256: "8".repeat(64),
+          codeCandidates: [{ counter: 0, codeHash: "unused" }],
+        },
+      ),
+    ).resolves.toEqual({
+      created: false,
+      reason: "IDEMPOTENCY_KEY_EXPIRED",
+    });
+    expect(store.screenEnrollmentIdempotencyRecords).toHaveLength(1);
+  });
+
+  it("bounds each enrollment authority maintenance class per write", async () => {
+    const store = authorizePairing(new MemoryStore());
+    const expiredAt = new Date(
+      Date.now() - 31 * 24 * 60 * 60_000,
+    ).toISOString();
+    store.pairings.push(
+      ...Array.from(
+        { length: DATABASE_MAINTENANCE_BATCH_SIZE + 5 },
+        (_, index) => ({
+          id: `bounded-grant-${index.toString().padStart(3, "0")}`,
+          organizationId: "org-a",
+          codeHash: `bounded-code-${index}`,
+          expiresAt: expiredAt,
+          status: "EXPIRED" as const,
+        }),
+      ),
+    );
+    store.screenEnrollmentIdempotencyRecords.push(
+      ...Array.from(
+        { length: DATABASE_MAINTENANCE_BATCH_SIZE + 5 },
+        (_, index) => ({
+          operation: "create" as const,
+          organizationId: "org-a",
+          keyHash: index.toString(16).padStart(64, "0"),
+          actorUserId: "user-a",
+          requestDigestSha256: "d".repeat(64),
+          expiresAt: expiredAt,
+          response: {},
+        }),
+      ),
+    );
+    const screen = await store.createScreen("org-a", {
+      name: "Bounded cleanup target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+
+    await expect(
+      store.requestScreenEnrollmentAndAudit(
+        "org-a",
+        screen.id,
+        new Date(Date.now() + 60_000).toISOString(),
+        "Exercise bounded maintenance",
+        { actorUserId: "user-a" },
+        {
+          keyHash: "f".repeat(64),
+          requestDigestSha256: "e".repeat(64),
+          codeCandidates: [{ counter: 0, codeHash: "bounded-fresh-code" }],
+        },
+      ),
+    ).resolves.toMatchObject({ created: true });
+    expect(
+      store.pairings.filter(({ id }) => id.startsWith("bounded-grant-")),
+    ).toHaveLength(5);
+    const maintained = store.screenEnrollmentIdempotencyRecords.filter(
+      ({ keyHash }) => keyHash !== "f".repeat(64),
+    );
+    expect(maintained).toHaveLength(DATABASE_MAINTENANCE_BATCH_SIZE + 5);
+    expect(
+      maintained.filter(({ response }) => response !== undefined),
+    ).toHaveLength(5);
+  });
+
+  it("does not maintain unrelated enrollment authority on rejection or audit failure", async () => {
+    class RejectingAuditStore extends MemoryStore {
+      protected override buildAuditRecord(): never {
+        throw new Error("audit unavailable");
+      }
+    }
+    const expiredAt = new Date(0).toISOString();
+    const seedSentinel = (store: MemoryStore) =>
+      store.screenEnrollmentIdempotencyRecords.push({
+        operation: "create",
+        organizationId: "org-a",
+        keyHash: "9".repeat(64),
+        actorUserId: "user-a",
+        requestDigestSha256: "8".repeat(64),
+        expiresAt: expiredAt,
+        response: { sentinel: true },
+      });
+
+    const rejected = authorizePairing(new MemoryStore());
+    seedSentinel(rejected);
+    await expect(
+      rejected.requestScreenEnrollmentAndAudit(
+        "org-a",
+        "missing-screen",
+        new Date(Date.now() + 60_000).toISOString(),
+        "Rejected request",
+        { actorUserId: "user-a" },
+        {
+          keyHash: "1".repeat(64),
+          requestDigestSha256: "2".repeat(64),
+          codeCandidates: [{ counter: 0, codeHash: "unused-code" }],
+        },
+      ),
+    ).resolves.toEqual({ created: false, reason: "NOT_FOUND" });
+    expect(rejected.screenEnrollmentIdempotencyRecords[0]?.response).toEqual({
+      sentinel: true,
+    });
+
+    const failed = authorizePairing(new RejectingAuditStore());
+    seedSentinel(failed);
+    const screen = await failed.createScreen("org-a", {
+      name: "Audit failure target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    await expect(
+      failed.requestScreenEnrollmentAndAudit(
+        "org-a",
+        screen.id,
+        new Date(Date.now() + 60_000).toISOString(),
+        "Audit failure",
+        { actorUserId: "user-a" },
+        {
+          keyHash: "3".repeat(64),
+          requestDigestSha256: "4".repeat(64),
+          codeCandidates: [{ counter: 0, codeHash: "fresh-code" }],
+        },
+      ),
+    ).rejects.toThrow("audit unavailable");
+    expect(failed.screenEnrollmentIdempotencyRecords[0]?.response).toEqual({
+      sentinel: true,
+    });
+    expect(failed.pairings).toEqual([]);
+
+    const activationFailed = authorizePairing(new RejectingAuditStore());
+    seedSentinel(activationFailed);
+    const activationScreen = await activationFailed.createScreen("org-a", {
+      name: "Activation audit failure target",
+      location: "Lab",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const now = new Date().toISOString();
+    activationFailed.pairings.push({
+      id: "activation-grant",
+      organizationId: "org-a",
+      codeHash: "activation-code",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: "PENDING",
+      purpose: "NEW_SCREEN",
+      targetScreenId: activationScreen.id,
+      targetScreenReferenceId: activationScreen.id,
+      expectedGeneration: 0,
+      authorizedByUserId: "user-a",
+      authorizedByMembershipId: "org-a:user-a",
+      authorizedByAuthenticationEpoch: 0,
+      authorizedByAuthorizationEpoch: 0,
+      createdAt: now,
+    });
+    activationFailed.pairingAttempts.push({
+      id: "activation-attempt",
+      organizationId: "org-a",
+      pairingCodeId: "activation-grant",
+      keyId: "k".repeat(43),
+      publicKeySpki: "unused",
+      algorithm: "ES256",
+      securityLevel: "software",
+      challengeHashSha256: "5".repeat(64),
+      transcriptDigestSha256: "6".repeat(64),
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      provedAt: now,
+      createdAt: now,
+    });
+    await expect(
+      activationFailed.activateScreenEnrollmentCandidateAndAudit(
+        "org-a",
+        activationScreen.id,
+        "activation-grant",
+        "activation-attempt",
+        "k".repeat(43),
+        { actorUserId: "user-a" },
+        {
+          keyHash: "7".repeat(64),
+          requestDigestSha256: "6".repeat(64),
+        },
+      ),
+    ).rejects.toThrow("audit unavailable");
+    expect(
+      activationFailed.screenEnrollmentIdempotencyRecords[0]?.response,
+    ).toEqual({ sentinel: true });
+    expect(activationFailed.pairings[0]?.status).toBe("PENDING");
+    expect(
+      activationFailed.pairingAttempts[0]?.boundCredentialId,
+    ).toBeUndefined();
+    expect(activationFailed.deviceCredentials).toEqual([]);
+  });
 });
 
 describe("store serialization invariants", () => {

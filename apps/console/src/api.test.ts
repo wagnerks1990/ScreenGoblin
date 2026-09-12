@@ -60,7 +60,13 @@ describe("authenticated live data boundary", () => {
       ),
     );
 
-    await expect(api.createPairingCode()).rejects.toThrow("Unauthorized");
+    await expect(
+      api.createScreenEnrollment(
+        "screen-a",
+        "Initial enrollment",
+        "00000000-0000-4000-8000-000000000001",
+      ),
+    ).rejects.toThrow("Unauthorized");
     expect(api.hasLiveSession()).toBe(false);
     expect(api.demoAllowed()).toBe(false);
     expect(api.currentUser()).toBeUndefined();
@@ -103,7 +109,7 @@ describe("authenticated live data boundary", () => {
     ).toBeNull();
   });
 
-  it("does not label a bodyless mutation as JSON", async () => {
+  it("sends targeted enrollment intent and its stable idempotency key", async () => {
     window.sessionStorage.setItem("sg_access_token", "live-token");
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
@@ -116,7 +122,13 @@ describe("authenticated live data boundary", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(api.createPairingCode()).resolves.toMatchObject({
+    await expect(
+      api.createScreenEnrollment(
+        "screen-a",
+        "Initial enrollment",
+        "00000000-0000-4000-8000-000000000001",
+      ),
+    ).resolves.toMatchObject({
       expiresAt: "2030-01-01T00:00:00.000Z",
     });
 
@@ -124,8 +136,9 @@ describe("authenticated live data boundary", () => {
     expect(headers).toMatchObject({
       Accept: "application/json",
       Authorization: "Bearer live-token",
+      "Content-Type": "application/json",
+      "Idempotency-Key": "00000000-0000-4000-8000-000000000001",
     });
-    expect(headers).not.toHaveProperty("Content-Type");
   });
 
   it("stores a successful live login for the active browser tab", async () => {

@@ -23,6 +23,10 @@ import type {
   PairingAttemptRecord,
   PairingProofVerifier,
   ReenrollmentActivationResult,
+  ScreenEnrollmentActivationIdempotencyInput,
+  ScreenEnrollmentActivationResult,
+  ScreenEnrollmentIdempotencyInput,
+  ScreenEnrollmentRequestResult,
   PlaylistRecord,
   PublishedReleaseRecord,
   ReleaseAssignmentRecord,
@@ -48,6 +52,7 @@ import {
   SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS,
   DATABASE_MAINTENANCE_BATCH_SIZE,
   DEVICE_AUTH_CHALLENGE_RETENTION_MS,
+  DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
   LOGIN_FAILURE_RETENTION_MS,
 } from "../domain/types.js";
@@ -84,6 +89,15 @@ export class MemoryStore implements DataStore {
   releases: PublishedReleaseRecord[] = [];
   releaseAssignments: ReleaseAssignmentRecord[] = [];
   idempotencyRecords: SchedulePublicationIdempotencyRecord[] = [];
+  screenEnrollmentIdempotencyRecords: Array<{
+    operation: "create" | "activate";
+    organizationId: string;
+    keyHash: string;
+    actorUserId: string;
+    requestDigestSha256: string;
+    expiresAt: string;
+    response?: Record<string, unknown>;
+  }> = [];
   emergencies: EmergencyRecord[] = [];
   private readonly auditRecords: AuditRecord[] = [];
   pairings: PairingRecord[] = [];
@@ -120,6 +134,81 @@ export class MemoryStore implements DataStore {
       .filter(
         (candidate) =>
           candidate.response !== undefined && candidate.expiresAt <= timestamp,
+      )
+      .sort(
+        (a, b) =>
+          a.expiresAt.localeCompare(b.expiresAt) ||
+          a.keyHash.localeCompare(b.keyHash),
+      )
+      .slice(0, DATABASE_MAINTENANCE_BATCH_SIZE))
+      delete record.response;
+  }
+  private revokePendingIssuerGrants(
+    userId: string,
+    organizationIds: readonly string[],
+    timestamp: string,
+  ) {
+    for (const grant of this.pairings)
+      if (
+        organizationIds.includes(grant.organizationId) &&
+        grant.authorizedByUserId === userId &&
+        grant.status === "PENDING"
+      ) {
+        grant.status = "REVOKED";
+        for (const attempt of this.pairingAttempts)
+          if (attempt.pairingCodeId === grant.id && !attempt.boundCredentialId)
+            attempt.cancelledAt ??= timestamp;
+      }
+  }
+  private pruneDeviceEnrollmentAuthority(
+    organizationId: string,
+    timestamp: string,
+    preserveIdempotencyKeyHash?: string,
+  ) {
+    for (const grant of this.pairings
+      .filter(
+        (candidate) =>
+          candidate.organizationId === organizationId &&
+          candidate.status === "PENDING" &&
+          candidate.expiresAt <= timestamp,
+      )
+      .sort(
+        (a, b) =>
+          a.expiresAt.localeCompare(b.expiresAt) || a.id.localeCompare(b.id),
+      )
+      .slice(0, DATABASE_MAINTENANCE_BATCH_SIZE))
+      grant.status = "EXPIRED";
+    const cutoff = new Date(
+      new Date(timestamp).getTime() - DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
+    ).toISOString();
+    const removedGrantIds = new Set(
+      this.pairings
+        .filter(
+          (grant) =>
+            grant.organizationId === organizationId &&
+            grant.status !== "PENDING" &&
+            grant.expiresAt <= cutoff,
+        )
+        .sort(
+          (a, b) =>
+            a.expiresAt.localeCompare(b.expiresAt) || a.id.localeCompare(b.id),
+        )
+        .slice(0, DATABASE_MAINTENANCE_BATCH_SIZE)
+        .map((grant) => grant.id),
+    );
+    this.pairings = this.pairings.filter(
+      (grant) => !removedGrantIds.has(grant.id),
+    );
+    this.pairingAttempts = this.pairingAttempts.filter(
+      (attempt) => !removedGrantIds.has(attempt.pairingCodeId),
+    );
+    for (const record of this.screenEnrollmentIdempotencyRecords
+      .filter(
+        (record) =>
+          record.organizationId === organizationId &&
+          record.keyHash !== preserveIdempotencyKeyHash &&
+          record.response !== undefined &&
+          record.expiresAt <= timestamp,
       )
       .sort(
         (a, b) =>
@@ -355,6 +444,7 @@ export class MemoryStore implements DataStore {
         audit,
       ),
     );
+    this.revokePendingIssuerGrants(userId, organizationIds, timestamp);
     this.users = this.users.map((user) =>
       user.id === userId
         ? { ...user, passwordHash, authenticationEpoch }
@@ -403,6 +493,7 @@ export class MemoryStore implements DataStore {
         audit,
       ),
     );
+    this.revokePendingIssuerGrants(userId, organizationIds, timestamp);
     this.users = this.users.map((user) =>
       user.id === userId
         ? {
@@ -450,6 +541,7 @@ export class MemoryStore implements DataStore {
       audit,
       { previousRole: membership.role, role },
     );
+    this.revokePendingIssuerGrants(userId, [organizationId], timestamp);
     this.users = this.users.map((user) =>
       user.id === userId && user.organizationId === organizationId
         ? {
@@ -497,6 +589,7 @@ export class MemoryStore implements DataStore {
       audit,
       { previousRole: membership.role },
     );
+    this.revokePendingIssuerGrants(userId, [organizationId], timestamp);
     this.userSessions = this.userSessions.map((session) =>
       session.userId === userId &&
       session.organizationId === organizationId &&
@@ -972,7 +1065,12 @@ export class MemoryStore implements DataStore {
       targetScreenReferenceId: screenId,
       expectedGeneration: generation,
       authorizedByUserId: audit.actorUserId,
+      authorizedByMembershipId:
+        actor.membershipId ?? `${actor.organizationId}:${actor.id}`,
+      authorizedByAuthenticationEpoch: actor.authenticationEpoch,
+      authorizedByAuthorizationEpoch: actor.authorizationEpoch,
       requestReason: reason,
+      createdAt: timestamp,
       ...(priorCredential ? { priorCredentialId: priorCredential.id } : {}),
     };
     const auditRecord = this.buildAuditRecord({
@@ -990,6 +1088,7 @@ export class MemoryStore implements DataStore {
         reason,
       },
     });
+    this.pruneDeviceEnrollmentAuthority(org, timestamp);
     for (const p of this.pairings) {
       if (p.targetScreenId === screenId && p.status === "PENDING") {
         p.status = "REVOKED";
@@ -1029,11 +1128,145 @@ export class MemoryStore implements DataStore {
     this.auditRecords.push(auditRecord);
     return { created: true as const, pairing };
   }
+  async requestScreenEnrollmentAndAudit(
+    org: string,
+    screenId: string,
+    _expiresAt: string,
+    reason: string,
+    audit: PairingCreateAuditContext,
+    idempotency: ScreenEnrollmentIdempotencyInput,
+  ): Promise<ScreenEnrollmentRequestResult> {
+    const actor = this.users.find(
+      (u) =>
+        u.id === audit.actorUserId && u.organizationId === org && !u.disabledAt,
+    );
+    if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+      return { created: false, reason: "FORBIDDEN" };
+    const timestamp = now();
+    const existing = this.screenEnrollmentIdempotencyRecords.find(
+      (record) =>
+        record.operation === "create" &&
+        record.organizationId === org &&
+        record.keyHash === idempotency.keyHash,
+    );
+    if (existing) {
+      if (
+        existing.actorUserId !== audit.actorUserId ||
+        existing.requestDigestSha256 !== idempotency.requestDigestSha256
+      )
+        return { created: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+      if (existing.expiresAt <= timestamp)
+        return { created: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
+      if (!existing.response)
+        return { created: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
+      const pairing = this.pairings.find(
+        (candidate) => candidate.id === existing.response!.grantId,
+      );
+      if (!pairing)
+        return { created: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
+      this.pruneDeviceEnrollmentAuthority(org, timestamp, idempotency.keyHash);
+      return {
+        created: true,
+        pairing: { ...pairing },
+        codeCounter: Number(existing.response.codeCounter),
+        replayed: true,
+      };
+    }
+    const target = this.screens.find(
+      (candidate) =>
+        candidate.id === screenId && candidate.organizationId === org,
+    );
+    if (!target) return { created: false, reason: "NOT_FOUND" };
+    if (
+      (target.credentialGeneration ?? 0) !== 0 ||
+      target.installationId ||
+      target.deviceTokenHash ||
+      this.deviceCredentials.some(
+        (credential) =>
+          credential.organizationId === org && credential.screenId === screenId,
+      )
+    )
+      return { created: false, reason: "SCREEN_NOT_ELIGIBLE" };
+    const selected = idempotency.codeCandidates.find(
+      ({ codeHash }) =>
+        !this.pairings.some(
+          (pairing) =>
+            pairing.codeHash === codeHash &&
+            pairing.status === "PENDING" &&
+            pairing.expiresAt > timestamp,
+        ),
+    );
+    if (!selected) return { created: false, reason: "CODE_COLLISION" };
+    const pairing: PairingRecord = {
+      id: id(),
+      organizationId: org,
+      codeHash: selected.codeHash,
+      expiresAt: new Date(
+        new Date(timestamp).getTime() + 10 * 60_000,
+      ).toISOString(),
+      status: "PENDING",
+      purpose: "NEW_SCREEN",
+      targetScreenId: screenId,
+      targetScreenReferenceId: screenId,
+      expectedGeneration: 0,
+      authorizedByUserId: actor.id,
+      authorizedByMembershipId:
+        actor.membershipId ?? `${actor.organizationId}:${actor.id}`,
+      authorizedByAuthenticationEpoch: actor.authenticationEpoch,
+      authorizedByAuthorizationEpoch: actor.authorizationEpoch,
+      requestReason: reason,
+      createdAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: actor.id,
+      actorType: "user",
+      action: "device.enrollment.requested",
+      entityType: "screen",
+      entityId: screenId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { grantId: pairing.id, expectedGeneration: 0, reason },
+    });
+    this.pruneDeviceEnrollmentAuthority(org, timestamp, idempotency.keyHash);
+    for (const prior of this.pairings)
+      if (
+        prior.organizationId === org &&
+        prior.targetScreenId === screenId &&
+        prior.purpose === "NEW_SCREEN" &&
+        prior.status === "PENDING"
+      ) {
+        prior.status = "REVOKED";
+        for (const attempt of this.pairingAttempts)
+          if (attempt.pairingCodeId === prior.id && !attempt.boundCredentialId)
+            attempt.cancelledAt ??= timestamp;
+      }
+    this.pairings.push(pairing);
+    this.auditRecords.push(auditRecord);
+    this.screenEnrollmentIdempotencyRecords.push({
+      operation: "create",
+      organizationId: org,
+      keyHash: idempotency.keyHash,
+      actorUserId: actor.id,
+      requestDigestSha256: idempotency.requestDigestSha256,
+      expiresAt: new Date(
+        new Date(timestamp).getTime() +
+          DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
+      ).toISOString(),
+      response: { grantId: pairing.id, codeCounter: selected.counter },
+    });
+    return {
+      created: true,
+      pairing: { ...pairing },
+      codeCounter: selected.counter,
+    };
+  }
   async getReenrollmentStatus(
     org: string,
     screenId: string,
     grantId: string,
     actorUserId: string,
+    purpose: "NEW_SCREEN" | "REENROLL" = "REENROLL",
   ) {
     const actor = this.users.find(
       (u) => u.id === actorUserId && u.organizationId === org && !u.disabledAt,
@@ -1044,7 +1277,7 @@ export class MemoryStore implements DataStore {
         p.id === grantId &&
         p.organizationId === org &&
         p.targetScreenId === screenId &&
-        p.purpose === "REENROLL",
+        p.purpose === purpose,
     );
     if (!grant) return null;
     const candidates = this.pairingAttempts
@@ -1105,7 +1338,15 @@ export class MemoryStore implements DataStore {
         u.organizationId === org &&
         !u.disabledAt,
     );
-    if (grant && issuer?.role !== "OWNER" && issuer?.role !== "ADMIN")
+    if (
+      grant &&
+      (!issuer ||
+        (issuer.role !== "OWNER" && issuer.role !== "ADMIN") ||
+        (issuer.membershipId ?? `${org}:${issuer.id}`) !==
+          grant.authorizedByMembershipId ||
+        issuer.authenticationEpoch !== grant.authorizedByAuthenticationEpoch ||
+        issuer.authorizationEpoch !== grant.authorizedByAuthorizationEpoch)
+    )
       return { activated: false, reason: "STALE" };
     if (
       (attempt?.consumedAt || attempt?.activatedAt) &&
@@ -1210,11 +1451,200 @@ export class MemoryStore implements DataStore {
     this.auditRecords.push(auditRecord);
     return { activated: true, screen: this.publicScreen(screen), credential };
   }
+  async activateScreenEnrollmentCandidateAndAudit(
+    org: string,
+    screenId: string,
+    grantId: string,
+    candidateId: string,
+    fingerprint: string,
+    audit: PairingCreateAuditContext,
+    idempotency: ScreenEnrollmentActivationIdempotencyInput,
+  ): Promise<ScreenEnrollmentActivationResult> {
+    const actor = this.users.find(
+      (user) =>
+        user.id === audit.actorUserId &&
+        user.organizationId === org &&
+        !user.disabledAt,
+    );
+    if (actor?.role !== "OWNER" && actor?.role !== "ADMIN")
+      return { activated: false, reason: "FORBIDDEN" };
+    const timestamp = now();
+    const existing = this.screenEnrollmentIdempotencyRecords.find(
+      (record) =>
+        record.operation === "activate" &&
+        record.organizationId === org &&
+        record.keyHash === idempotency.keyHash,
+    );
+    if (existing) {
+      if (
+        existing.actorUserId !== actor.id ||
+        existing.requestDigestSha256 !== idempotency.requestDigestSha256
+      )
+        return { activated: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+      if (existing.expiresAt <= timestamp)
+        return { activated: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
+      if (!existing.response)
+        return { activated: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
+      const credential = this.deviceCredentials.find(
+        (value) => value.id === existing.response!.credentialId,
+      );
+      const target = this.screens.find(
+        (value) => value.id === screenId && value.organizationId === org,
+      );
+      if (!credential || !target) return { activated: false, reason: "STALE" };
+      const screen = this.publicScreen(target);
+      this.pruneDeviceEnrollmentAuthority(org, timestamp, idempotency.keyHash);
+      return {
+        activated: true,
+        credential: { ...credential },
+        screen,
+        replayed: true,
+      };
+    }
+    const target = this.screens.find(
+      (value) => value.id === screenId && value.organizationId === org,
+    );
+    const grant = this.pairings.find(
+      (value) =>
+        value.id === grantId &&
+        value.organizationId === org &&
+        value.targetScreenId === screenId &&
+        value.purpose === "NEW_SCREEN",
+    );
+    const attempt = this.pairingAttempts.find(
+      (value) =>
+        value.id === candidateId &&
+        value.organizationId === org &&
+        value.pairingCodeId === grantId,
+    );
+    if (!target || !grant || !attempt)
+      return { activated: false, reason: "NOT_FOUND" };
+    if (attempt.keyId !== fingerprint)
+      return { activated: false, reason: "FINGERPRINT_MISMATCH" };
+    const issuer = this.users.find(
+      (user) =>
+        user.id === grant.authorizedByUserId &&
+        user.organizationId === org &&
+        !user.disabledAt,
+    );
+    if (
+      !issuer ||
+      (issuer.role !== "OWNER" && issuer.role !== "ADMIN") ||
+      (issuer.membershipId ?? `${org}:${issuer.id}`) !==
+        grant.authorizedByMembershipId ||
+      issuer.authenticationEpoch !== grant.authorizedByAuthenticationEpoch ||
+      issuer.authorizationEpoch !== grant.authorizedByAuthorizationEpoch ||
+      grant.status !== "PENDING" ||
+      grant.expiresAt <= timestamp ||
+      !attempt.provedAt ||
+      attempt.cancelledAt ||
+      attempt.activatedAt ||
+      (target.credentialGeneration ?? 0) !== grant.expectedGeneration ||
+      grant.expectedGeneration !== 0 ||
+      target.installationId ||
+      target.deviceTokenHash ||
+      this.deviceCredentials.some(
+        (credential) =>
+          credential.organizationId === org && credential.screenId === screenId,
+      ) ||
+      this.usedDeviceKeyIds.has(attempt.keyId)
+    )
+      return { activated: false, reason: "STALE" };
+    const credential: DeviceCredentialRecord = {
+      id: id(),
+      organizationId: org,
+      screenId,
+      detached: false,
+      keyId: attempt.keyId,
+      publicKeySpki: attempt.publicKeySpki,
+      algorithm: "ES256",
+      securityLevel: attempt.securityLevel,
+      ...(attempt.credentialExpiresAt
+        ? { expiresAt: attempt.credentialExpiresAt }
+        : {}),
+      createdAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: actor.id,
+      actorType: "user",
+      action: "device.enrollment.activated",
+      entityType: "screen",
+      entityId: screenId,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        grantId,
+        candidateId,
+        credentialId: credential.id,
+        keyId: credential.keyId,
+        reason: grant.requestReason,
+      },
+    });
+    this.pruneDeviceEnrollmentAuthority(org, timestamp, idempotency.keyHash);
+    Object.assign(target, {
+      installationId: attempt.installationId,
+      model: attempt.model,
+      osVersion: attempt.osVersion,
+      playerVersion: attempt.playerVersion,
+      credentialRevokedAt: undefined,
+      deviceTokenHash: undefined,
+      credentialGeneration: 1,
+      status: "offline",
+      updatedAt: timestamp,
+    });
+    delete target.lastSeenAt;
+    delete target.manifestVersion;
+    delete target.nowPlayingAssetId;
+    delete target.uptimeSeconds;
+    delete target.freeStorageBytes;
+    delete target.networkType;
+    this.deviceCredentials.push(credential);
+    this.usedDeviceKeyIds.add(credential.keyId);
+    attempt.activatedAt = timestamp;
+    attempt.boundCredentialId = credential.id;
+    grant.status = "CLAIMED";
+    grant.claimedAt = timestamp;
+    grant.screenId = screenId;
+    for (const candidate of this.pairingAttempts)
+      if (candidate.pairingCodeId === grantId && candidate.id !== candidateId)
+        candidate.cancelledAt ??= timestamp;
+    for (const competitor of this.pairings)
+      if (
+        competitor.id !== grantId &&
+        competitor.organizationId === org &&
+        competitor.targetScreenId === screenId &&
+        competitor.status === "PENDING"
+      ) {
+        competitor.status = "REVOKED";
+        for (const candidate of this.pairingAttempts)
+          if (
+            candidate.pairingCodeId === competitor.id &&
+            !candidate.boundCredentialId
+          )
+            candidate.cancelledAt ??= timestamp;
+      }
+    this.auditRecords.push(auditRecord);
+    this.screenEnrollmentIdempotencyRecords.push({
+      operation: "activate",
+      organizationId: org,
+      keyHash: idempotency.keyHash,
+      actorUserId: actor.id,
+      requestDigestSha256: idempotency.requestDigestSha256,
+      expiresAt: new Date(
+        new Date(timestamp).getTime() +
+          DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
+      ).toISOString(),
+      response: { credentialId: credential.id },
+    });
+    return { activated: true, screen: this.publicScreen(target), credential };
+  }
   async cancelScreenReenrollmentAndAudit(
     org: string,
     screenId: string,
     grantId: string,
     audit: PairingCreateAuditContext,
+    purpose: "NEW_SCREEN" | "REENROLL" = "REENROLL",
   ) {
     const actor = this.users.find(
       (u) =>
@@ -1227,6 +1657,7 @@ export class MemoryStore implements DataStore {
         p.id === grantId &&
         p.organizationId === org &&
         p.targetScreenId === screenId &&
+        p.purpose === purpose &&
         p.status === "PENDING",
     );
     if (!grant)
@@ -1235,7 +1666,10 @@ export class MemoryStore implements DataStore {
       organizationId: org,
       actorUserId: audit.actorUserId,
       actorType: "user",
-      action: "device.reenrollment.cancelled",
+      action:
+        purpose === "REENROLL"
+          ? "device.reenrollment.cancelled"
+          : "device.enrollment.cancelled",
       entityType: "screen",
       entityId: screenId,
       metadata: { grantId: grant.id },
@@ -1287,6 +1721,8 @@ export class MemoryStore implements DataStore {
       (x) =>
         x.codeHash === codeHash &&
         (x.purpose ?? "NEW_SCREEN") === "NEW_SCREEN" &&
+        !x.targetScreenId &&
+        !x.authorizedByUserId &&
         x.status === "PENDING" &&
         x.expiresAt > now(),
     );
@@ -1355,10 +1791,31 @@ export class MemoryStore implements DataStore {
         candidate.expiresAt > now(),
     );
     const createdAt = now();
+    const issuer = pairing?.authorizedByUserId
+      ? this.users.find(
+          (user) =>
+            user.id === pairing.authorizedByUserId &&
+            user.organizationId === pairing.organizationId &&
+            !user.disabledAt,
+        )
+      : undefined;
+    const issuerIsCurrent = pairing?.authorizedByUserId
+      ? issuer &&
+        (issuer.role === "OWNER" || issuer.role === "ADMIN") &&
+        (!pairing.authorizedByMembershipId ||
+          (issuer.membershipId ?? `${issuer.organizationId}:${issuer.id}`) ===
+            pairing.authorizedByMembershipId) &&
+        (pairing.authorizedByAuthenticationEpoch === undefined ||
+          issuer.authenticationEpoch ===
+            pairing.authorizedByAuthenticationEpoch) &&
+        (pairing.authorizedByAuthorizationEpoch === undefined ||
+          issuer.authorizationEpoch === pairing.authorizedByAuthorizationEpoch)
+      : !pairing?.targetScreenId;
     const lifetime =
       new Date(input.expiresAt).getTime() - new Date(createdAt).getTime();
     if (
       !pairing ||
+      !issuerIsCurrent ||
       lifetime <= 0 ||
       lifetime > 45_000 ||
       !/^[A-Za-z0-9_-]{43}$/.test(input.credential.keyId) ||
@@ -1469,7 +1926,7 @@ export class MemoryStore implements DataStore {
         : { paired: false as const, reason: "INVALID" as const };
     }
     if (
-      pairing.purpose === "REENROLL" &&
+      (pairing.purpose === "REENROLL" || pairing.purpose === "NEW_SCREEN") &&
       attempt.provedAt &&
       !attempt.cancelledAt &&
       pairing.status === "PENDING" &&
@@ -1493,7 +1950,7 @@ export class MemoryStore implements DataStore {
       )
     )
       return { paired: false as const, reason: "INVALID" as const };
-    if (pairing.purpose === "REENROLL") {
+    if (pairing.purpose === "REENROLL" || pairing.purpose === "NEW_SCREEN") {
       const issuer = this.users.find(
         (user) =>
           user.id === pairing.authorizedByUserId &&
@@ -1503,6 +1960,13 @@ export class MemoryStore implements DataStore {
       if (
         !pairing.targetScreenId ||
         (issuer?.role !== "OWNER" && issuer?.role !== "ADMIN") ||
+        (pairing.authorizedByMembershipId !== undefined &&
+          ((issuer.membershipId ?? `${issuer.organizationId}:${issuer.id}`) !==
+            pairing.authorizedByMembershipId ||
+            issuer.authenticationEpoch !==
+              pairing.authorizedByAuthenticationEpoch ||
+            issuer.authorizationEpoch !==
+              pairing.authorizedByAuthorizationEpoch)) ||
         this.pairingAttempts.filter(
           (candidate) =>
             candidate.pairingCodeId === pairing.id &&
@@ -1515,7 +1979,10 @@ export class MemoryStore implements DataStore {
       const auditRecord = this.buildAuditRecord({
         organizationId: pairing.organizationId,
         actorType: "device",
-        action: "device.reenrollment.candidate_proved",
+        action:
+          pairing.purpose === "REENROLL"
+            ? "device.reenrollment.candidate_proved"
+            : "device.enrollment.candidate_proved",
         entityType: "screen",
         entityId: pairing.targetScreenId,
         ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),

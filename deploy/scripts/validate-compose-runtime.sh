@@ -484,6 +484,7 @@ done
 readonly media_body="ScreenGoblin private media runtime smoke"
 readonly media_org_id="compose-media-org"
 readonly media_screen_id="compose-media-screen"
+readonly enrollment_screen_id="compose-enrollment-screen"
 readonly media_credential_id="compose-media-credential"
 readonly media_user_id="compose-media-user"
 readonly media_membership_id="compose-media-membership"
@@ -502,6 +503,12 @@ readonly media_storage_key="organizations/$media_org_id/assets/$media_asset_id/$
 readonly media_snapshot_timestamp="2026-09-12T00:00:00.000Z"
 readonly media_schedule_starts_at="2020-01-01T00:00:00.000Z"
 readonly media_schedule_ends_at="2099-01-01T00:00:00.000Z"
+
+media_password_hash="$("${compose[@]}" exec -T api node --input-type=module -e '
+  import bcrypt from "bcryptjs";
+  process.stdout.write(await bcrypt.hash(process.argv[1], 12));
+' "$SEED_ADMIN_PASSWORD")"
+readonly media_password_hash
 
 mapfile -t media_snapshot_digests < <(
   "${compose[@]}" run --rm --no-deps --entrypoint node api --input-type=module -e '
@@ -599,9 +606,17 @@ INSERT INTO "DeviceCredential" (
   'software', CURRENT_TIMESTAMP
 );
 INSERT INTO "User" ("id", "email", "name", "passwordHash", "createdAt", "updatedAt")
-VALUES ('$media_user_id', 'compose-media@example.test', 'Compose media operator', 'fixture-not-a-credential', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+VALUES ('$media_user_id', 'compose-media@example.test', 'Compose media operator', '$media_password_hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
 VALUES ('$media_membership_id', '$media_org_id', '$media_user_id', 'OWNER');
+INSERT INTO "Screen" (
+  "id", "organizationId", "name", "status", "orientation", "resolution",
+  "tags", "credentialGeneration", "createdAt", "updatedAt"
+) VALUES (
+  '$enrollment_screen_id', '$media_org_id', 'Compose enrollment target',
+  'OFFLINE', 'LANDSCAPE', '1920x1080', ARRAY[]::TEXT[], 0,
+  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+);
 INSERT INTO "MediaAsset" ("id", "organizationId", "storageKey", "name", "kind", "mimeType", "url", "checksumSha256", "sizeBytes", "durationSeconds", "createdAt", "updatedAt")
 VALUES ('$media_asset_id', '$media_org_id', '$media_storage_key', 'Compose media', 'IMAGE', 'image/png', 'https://signage.example.test/media/compose.png', '$media_checksum', '$media_size'::bigint, 15, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Playlist" ("id", "organizationId", "name", "description", "createdAt", "updatedAt")
@@ -621,6 +636,86 @@ VALUES ('$media_assignment_id', '$media_org_id', '$media_release_id', '$media_sc
 INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screenId", "liveScreenId", "liveScreenOrganizationId")
 VALUES ('$media_org_id', '$media_assignment_id', '$media_screen_id', '$media_screen_id', '$media_org_id');
 SQL
+
+login_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --request POST --header "Content-Type: application/json" \
+  --data "{\"email\":\"compose-media@example.test\",\"password\":\"$SEED_ADMIN_PASSWORD\"}" \
+  --output "$work_dir/enrollment-login.json" --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/auth/login")"
+[[ "$login_status" == 200 ]] || {
+  echo "Enrollment fixture login returned HTTP $login_status" >&2
+  exit 1
+}
+management_token="$("${compose[@]}" exec -T api node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const value = JSON.parse(readFileSync(0, "utf8")).accessToken;
+  if (typeof value !== "string" || value.length < 20) process.exit(2);
+  process.stdout.write(value);
+' < "$work_dir/enrollment-login.json")"
+readonly management_token
+untargeted_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --request POST --header "Authorization: Bearer $management_token" \
+  --output "$work_dir/untargeted-enrollment.body" --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/pairing-codes")"
+[[ "$untargeted_status" == 410 ]] || {
+  echo "Unbound proof-v1 enrollment returned HTTP $untargeted_status; expected 410" >&2
+  exit 1
+}
+readonly enrollment_idempotency_key="11111111-1111-4111-8111-111111111111"
+for replay in first replay; do
+  enrollment_status="$($CURL_BIN --silent --show-error --insecure \
+    --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+    --request POST --header "Authorization: Bearer $management_token" \
+    --header "Idempotency-Key: $enrollment_idempotency_key" \
+    --header "Content-Type: application/json" \
+    --data '{"reason":"Compose targeted enrollment boundary"}' \
+    --output "$work_dir/enrollment-$replay.json" --write-out '%{http_code}' \
+    "https://$SCREEN_GOBLIN_HOST/api/v1/screens/$enrollment_screen_id/device-enrollment")"
+  [[ "$enrollment_status" == 201 ]] || {
+    echo "Targeted enrollment $replay returned HTTP $enrollment_status; expected 201" >&2
+    exit 1
+  }
+done
+cmp "$work_dir/enrollment-first.json" "$work_dir/enrollment-replay.json"
+enrollment_secret="$("${compose[@]}" exec -T api node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const value = JSON.parse(readFileSync(0, "utf8")).code;
+  if (!/^[0-9]{6}$/.test(value)) process.exit(2);
+  process.stdout.write(value);
+' < "$work_dir/enrollment-first.json")"
+enrollment_authority_count="$(
+  "${compose[@]}" exec -T postgres psql \
+    --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -At \
+    --set enrollment_secret="$enrollment_secret" \
+    --set enrollment_key="$enrollment_idempotency_key" \
+    --set enrollment_org="$media_org_id" \
+    --set enrollment_screen="$enrollment_screen_id" \
+    --file=- <<'SQL'
+SELECT count(*) FROM "PairingCode" pairing_grant
+JOIN "Membership" membership
+  ON membership."id" = pairing_grant."authorizedByMembershipId"
+JOIN "User" issuer ON issuer."id" = pairing_grant."authorizedByUserId"
+JOIN "IdempotencyRecord" replay
+  ON replay."organizationId" = pairing_grant."organizationId"
+ AND replay.operation = 'SCREEN_ENROLLMENT_CREATE'
+WHERE pairing_grant."organizationId" = :'enrollment_org'
+  AND pairing_grant."targetScreenId" = :'enrollment_screen'
+  AND pairing_grant."targetScreenReferenceId" = :'enrollment_screen'
+  AND pairing_grant."targetOrganizationId" = :'enrollment_org'
+  AND pairing_grant."authorizedByAuthenticationEpoch" = issuer."authenticationEpoch"
+  AND pairing_grant."authorizedByAuthorizationEpoch" = membership."authorizationEpoch"
+  AND pairing_grant."codeHash" <> :'enrollment_secret'
+  AND replay."keyHash" <> :'enrollment_key'
+  AND replay."responseBody"::text NOT LIKE '%' || :'enrollment_secret' || '%'
+  AND pairing_grant."expiresAt" <= CURRENT_TIMESTAMP + INTERVAL '11 minutes';
+SQL
+)"
+[[ "$enrollment_authority_count" == 1 ]] || {
+  echo "Targeted enrollment authority was not exactly tenant/issuer/idempotency bound" >&2
+  exit 1
+}
 
 anonymous_status="$("${compose[@]}" exec -T minio curl --silent \
   --output /dev/null --write-out '%{http_code}' \
@@ -720,6 +815,7 @@ readonly dast_result
 cat >"$EVIDENCE_DIR/result.txt" <<EOF
 Compose production-mode startup and health: passed
 Caddy API, readiness isolation, Console, Player, headers, and legacy media denial: passed
+Proof-v1 unbound enrollment denial and targeted issuer/idempotency binding: passed
 Private MinIO denial and valid/withdrawn/tampered/expired API capability delivery: passed
 Published-port and internal-backend-network assertions: passed
 Unauthenticated public-surface method, CORS, error-reflection, and pinned ZAP checks: $dast_result

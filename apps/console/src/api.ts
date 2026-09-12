@@ -1,5 +1,8 @@
 import type {
   FleetSummary,
+  DeviceEnrollmentActivation,
+  DeviceEnrollmentGrant,
+  DeviceEnrollmentStatus,
   ManagementListResponse,
   ManagementPlaylist,
   ManagementSchedule,
@@ -23,13 +26,7 @@ export interface LogoutResult {
   revocationConfirmed: boolean;
 }
 
-export interface DeviceReenrollmentGrant {
-  grantId: string;
-  screenId: string;
-  code: string;
-  expiresAt: string;
-  generation: number;
-}
+export type DeviceReenrollmentGrant = DeviceEnrollmentGrant;
 
 export interface DeviceReenrollmentCandidate {
   id: string;
@@ -48,22 +45,13 @@ export interface DeviceReenrollmentCandidate {
   provedAt: string;
 }
 
-export interface DeviceReenrollmentStatus {
-  grantId: string;
-  screenId: string;
-  status: string;
-  expiresAt: string;
-  candidates: DeviceReenrollmentCandidate[];
-}
+export type DeviceReenrollmentStatus = Omit<
+  DeviceEnrollmentStatus,
+  "candidates"
+> & { candidates: DeviceReenrollmentCandidate[] };
 
-export interface DeviceReenrollmentActivation {
-  grantId?: string;
+export interface DeviceReenrollmentActivation extends Partial<DeviceEnrollmentActivation> {
   screenId: string;
-  candidateId?: string;
-  credentialId?: string;
-  keyId?: string;
-  activatedAt?: string;
-  status?: string;
 }
 
 const baseUrl =
@@ -195,10 +183,44 @@ export const api = {
     }
     return { revocationConfirmed };
   },
-  createPairingCode: () =>
-    mutate<{ code: string; expiresAt: string }>("/pairing-codes", {
-      method: "POST",
-    }),
+  createScreenEnrollment: (
+    screenId: string,
+    reason: string,
+    idempotencyKey: string,
+  ) =>
+    mutate<DeviceReenrollmentGrant>(
+      `/screens/${encodeURIComponent(screenId)}/device-enrollment`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({ reason }),
+      },
+    ),
+  screenEnrollmentStatus: (screenId: string, grantId: string) =>
+    mutate<DeviceReenrollmentStatus>(
+      `/screens/${encodeURIComponent(screenId)}/device-enrollment/${encodeURIComponent(grantId)}`,
+      { method: "GET" },
+    ),
+  activateScreenEnrollmentCandidate: (
+    screenId: string,
+    grantId: string,
+    candidateId: string,
+    fingerprint: string,
+    idempotencyKey: string,
+  ) =>
+    mutate<DeviceReenrollmentActivation>(
+      `/screens/${encodeURIComponent(screenId)}/device-enrollment/${encodeURIComponent(grantId)}/candidates/${encodeURIComponent(candidateId)}/activate`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({ fingerprint }),
+      },
+    ),
+  cancelScreenEnrollment: (screenId: string, grantId: string) =>
+    mutate<void>(
+      `/screens/${encodeURIComponent(screenId)}/device-enrollment/${encodeURIComponent(grantId)}`,
+      { method: "DELETE" },
+    ),
   createDeviceReenrollment: (screenId: string, reason: string) =>
     mutate<DeviceReenrollmentGrant>(
       `/screens/${encodeURIComponent(screenId)}/device-reenrollment`,

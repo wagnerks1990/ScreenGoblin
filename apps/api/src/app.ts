@@ -103,6 +103,7 @@ export async function buildApp(
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
     origin: options.corsOrigins ?? ["http://localhost:5173"],
+    methods: ["GET", "HEAD", "POST", "DELETE", "OPTIONS"],
     credentials: true,
   });
   await app.register(rateLimit, {

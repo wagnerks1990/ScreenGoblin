@@ -30,7 +30,8 @@ Offline-first signage runtime for Android TV, HDMI dongles, Chromium kiosks, and
   is explicitly enabled.
 - Web media is disabled in the metadata-only pilot.
 
-The current API/player integration supports admin-created pairing codes,
+The current API/player integration supports codes bound to a precreated tenant
+screen and the current issuing administrator's identity epochs,
 authenticated heartbeats, and signed schedule manifests. The Android wrapper now
 creates a non-exportable P-256 identity key in Android Keystore and exposes only
 its public key and challenge-signing operation to the WebView. The server enrolls
@@ -115,10 +116,13 @@ signed playback deadlines. They do not provide a trusted time source, prove
 behavior across device sleep/firmware combinations, or close the physical-device
 clock-drift gate.
 
-Manual targeted re-enrollment requires an explicit local action before the
+Initial enrollment and manual targeted re-enrollment both stage the proved key
+for current OWNER/ADMIN exact-fingerprint activation before it can authenticate.
+Initial activation attaches the key to the precreated Screen and leaves it
+offline until its first authenticated heartbeat. Manual targeted re-enrollment requires an explicit local action before the
 Player replaces its prior Keystore identity with a fresh P-256 key. Fresh-key
 proof returns a pending candidate and fingerprint; the key cannot authenticate
-until a separate current OWNER/ADMIN confirms that exact fingerprint and
+until a later current OWNER/ADMIN action confirms that exact fingerprint and
 activates it for the existing screen. Pairing failures and ordinary enrollment
 must never silently rotate the native identity. This zero-overlap recovery path
 does not implement automatic rotation, attestation, offline recall, or verified

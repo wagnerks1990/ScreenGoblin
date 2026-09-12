@@ -311,6 +311,66 @@ describe("identity lifecycle session boundaries", () => {
     ).resolves.toMatchObject({ organizationId: "org-b" });
   });
 
+  it("revokes pending initial and replacement grants on every issuer authority loss", async () => {
+    const mutations = [
+      (store: MemoryStore) =>
+        store.rotateUserPasswordAndAudit("user-a", approvedPasswordHash, {
+          reason: "Credential reset",
+        }),
+      (store: MemoryStore) =>
+        store.disableUserAndAudit("user-a", { reason: "Disable issuer" }),
+      (store: MemoryStore) =>
+        store.changeMembershipRoleAndAudit("org-a", "user-a", "VIEWER", {
+          reason: "Demote issuer",
+        }),
+      (store: MemoryStore) =>
+        store.removeMembershipAndAudit("org-a", "user-a", {
+          reason: "Remove issuer",
+        }),
+    ];
+    for (const mutate of mutations) {
+      const store = new MemoryStore();
+      store.users.push(
+        sessionUser("user-a", "owner@example.test", "org-a"),
+        sessionUser("backup", "backup@example.test", "org-a"),
+      );
+      for (const purpose of ["NEW_SCREEN", "REENROLL"] as const) {
+        const grantId = `grant-${purpose}`;
+        store.pairings.push({
+          id: grantId,
+          organizationId: "org-a",
+          codeHash: `hash-${purpose}`,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          status: "PENDING",
+          purpose,
+          authorizedByUserId: "user-a",
+        });
+        store.pairingAttempts.push({
+          id: `attempt-${purpose}`,
+          organizationId: "org-a",
+          pairingCodeId: grantId,
+          keyId: `${purpose}-key`,
+          publicKeySpki: "unused",
+          algorithm: "ES256",
+          securityLevel: "software",
+          challengeHashSha256: `${purpose}-challenge`,
+          transcriptDigestSha256: `${purpose}-transcript`,
+          expiresAt: new Date(Date.now() + 30_000).toISOString(),
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      await expect(mutate(store)).resolves.toMatchObject({ updated: true });
+      expect(store.pairings.map(({ status }) => status)).toEqual([
+        "REVOKED",
+        "REVOKED",
+      ]);
+      expect(
+        store.pairingAttempts.every((attempt) => Boolean(attempt.cancelledAt)),
+      ).toBe(true);
+    }
+  });
+
   it("does not mutate identity state when audit construction fails", async () => {
     class RejectingIdentityAuditStore extends MemoryStore {
       protected override buildAuditRecord(): never {
@@ -323,15 +383,26 @@ describe("identity lifecycle session boundaries", () => {
       user,
       sessionUser("user-b", "backup@example.test", "org-a"),
     );
+    store.pairings.push({
+      id: "audit-atomic-grant",
+      organizationId: "org-a",
+      codeHash: "audit-atomic-code",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: "PENDING",
+      purpose: "NEW_SCREEN",
+      authorizedByUserId: user.id,
+    });
     addSession(store, user, "a".repeat(64));
     const beforeUsers = structuredClone(store.users);
     const beforeSessions = structuredClone(store.userSessions);
+    const beforePairings = structuredClone(store.pairings);
 
     await expect(
       store.disableUserAndAudit("user-a", { reason: "Offboarding" }),
     ).rejects.toThrow("audit unavailable");
     expect(store.users).toEqual(beforeUsers);
     expect(store.userSessions).toEqual(beforeSessions);
+    expect(store.pairings).toEqual(beforePairings);
     expect(store.audits).toEqual([]);
   });
 
