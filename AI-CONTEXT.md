@@ -28,6 +28,10 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   targets and schedule windows in an immutable release assignment. Manifest
   selection must use only those snapshots; withdrawal is append-only and must
   retain release history.
+- Ordinary release publication and withdrawal require exact typed capabilities
+  and revalidate the actor's current organization membership in the store. The
+  current role-to-capability map is only a compatibility adapter; do not treat it
+  as scoped authorization or an approval workflow.
 - Tenant-owned database relationships must carry and enforce the same organization ID at the foreign-key boundary; migrations must abort for investigation rather than silently relabel cross-tenant legacy rows.
 - Production media must match an explicit canonical HTTPS origin. Direct player delivery still requires controlled DNS and egress because hostname allowlisting alone cannot prevent rebinding to private addresses.
 - Remote shell is not a default capability. Any future implementation needs explicit authorization, consent, scope, expiry, strong audit, and product-level review.
