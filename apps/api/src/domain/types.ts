@@ -77,9 +77,115 @@ export interface ScheduleRecord {
   dailyEndMinutes?: number | undefined;
   enabled: boolean;
   screenIds: string[];
+  releaseId?: string | undefined;
+  assignmentId?: string | undefined;
   createdAt: string;
   updatedAt: string;
 }
+
+export interface FrozenReleaseAsset {
+  id: string;
+  name: string;
+  kind: MediaKind;
+  mimeType: string;
+  url: string;
+  checksumSha256: string;
+  sizeBytes: number;
+  createdAt: string;
+  expiresAt?: string | undefined;
+}
+
+export interface FrozenReleaseItem {
+  id: string;
+  asset: FrozenReleaseAsset;
+  position: number;
+  durationSeconds: number;
+}
+
+export interface PublishedReleaseRecord {
+  id: string;
+  organizationId: string;
+  sourcePlaylistId: string;
+  sourcePlaylistUpdatedAt: string;
+  playlistName: string;
+  playlistDescription: string;
+  digestSha256: string;
+  items: FrozenReleaseItem[];
+  createdById: string;
+  createdAt: string;
+}
+
+export interface ReleaseAssignmentRecord {
+  id: string;
+  organizationId: string;
+  releaseId: string;
+  scheduleId: string;
+  screenIds: string[];
+  state: "ASSIGNED" | "WITHDRAWN";
+  schedule: FrozenScheduleSnapshot;
+  digestSha256: string;
+  previousAssignmentId?: string | undefined;
+  createdById: string;
+  createdAt: string;
+}
+
+export interface FrozenScheduleSnapshot {
+  name: string;
+  priority: Priority;
+  startsAt: string;
+  endsAt?: string | undefined;
+  timezone: string;
+  daysOfWeek: number[];
+  dailyStartMinutes?: number | undefined;
+  dailyEndMinutes?: number | undefined;
+  enabled: boolean;
+}
+
+export interface ActiveOrdinaryRelease {
+  release: PublishedReleaseRecord;
+  assignment: ReleaseAssignmentRecord;
+}
+
+export interface ReleasePublicationPolicy {
+  mediaAllowedOrigins: string[];
+}
+
+export interface ReleaseAuditContext {
+  actorUserId: string;
+  ipAddress?: string | undefined;
+  requestId?: string | undefined;
+}
+
+export type SchedulePublicationInput = Omit<
+  ScheduleRecord,
+  | "id"
+  | "organizationId"
+  | "releaseId"
+  | "assignmentId"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+export type SchedulePublicationResult =
+  | {
+      published: true;
+      schedule: ScheduleRecord;
+      release: PublishedReleaseRecord;
+      assignment: ReleaseAssignmentRecord;
+    }
+  | {
+      published: false;
+      reason:
+        | "PLAYLIST_NOT_FOUND"
+        | "SCREEN_NOT_FOUND"
+        | "ASSET_NOT_FOUND"
+        | "ASSET_NOT_ALLOWED"
+        | "NO_PLAYABLE_ITEMS";
+    };
+
+export type ScheduleWithdrawalResult =
+  | { withdrawn: true; assignment: ReleaseAssignmentRecord }
+  | { withdrawn: false; reason: "NOT_FOUND" | "ALREADY_WITHDRAWN" };
 export interface EmergencyRecord {
   id: string;
   organizationId: string;
@@ -130,6 +236,8 @@ export interface PairingCreateAuditContext {
   ipAddress?: string | undefined;
   requestId?: string | undefined;
 }
+
+export type DeleteResult = "DELETED" | "NOT_FOUND" | "IN_USE";
 
 export interface DataStore {
   ping(): Promise<void>;
@@ -210,14 +318,14 @@ export interface DataStore {
     >,
   ): Promise<MediaRecord>;
   getMedia(orgId: string, id: string): Promise<MediaRecord | null>;
-  deleteMedia(orgId: string, id: string): Promise<boolean>;
+  deleteMedia(orgId: string, id: string): Promise<DeleteResult>;
   listPlaylists(orgId: string): Promise<PlaylistRecord[]>;
   createPlaylist(
     orgId: string,
     data: Pick<PlaylistRecord, "name" | "description" | "items">,
   ): Promise<PlaylistRecord>;
   getPlaylist(orgId: string, id: string): Promise<PlaylistRecord | null>;
-  deletePlaylist(orgId: string, id: string): Promise<boolean>;
+  deletePlaylist(orgId: string, id: string): Promise<DeleteResult>;
   listSchedules(orgId: string): Promise<ScheduleRecord[]>;
   createSchedule(
     orgId: string,
@@ -227,6 +335,22 @@ export interface DataStore {
     >,
   ): Promise<ScheduleRecord>;
   deleteSchedule(orgId: string, id: string): Promise<boolean>;
+  publishScheduleAndAudit(
+    orgId: string,
+    data: SchedulePublicationInput,
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+  ): Promise<SchedulePublicationResult>;
+  withdrawScheduleAndAudit(
+    orgId: string,
+    scheduleId: string,
+    audit: ReleaseAuditContext,
+  ): Promise<ScheduleWithdrawalResult>;
+  activeOrdinaryReleases(
+    orgId: string,
+    screenId: string,
+    at: string,
+  ): Promise<ActiveOrdinaryRelease[]>;
   activeSchedules(
     orgId: string,
     screenId: string,
