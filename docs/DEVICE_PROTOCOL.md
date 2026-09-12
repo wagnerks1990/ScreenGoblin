@@ -177,6 +177,13 @@ pre-production gates.
 
 Routine polls may refresh `generatedAt`, `validUntil`, and the signature without changing `version`; the version changes only when the semantic release changes. Ordinary items, target IDs, priority, schedule windows, and optional asset expiries come from immutable snapshots created by the atomic publication operation, never from subsequently mutable playlist or schedule rows. `validUntil` is the signed-envelope lease, while `playbackEndsAt` and the earliest signed asset expiry are hard authorization boundaries enforced locally during an outage. An immutable withdrawal event removes the assignment from active selection without deleting its history. The API revalidates each selected frozen release as one unit at manifest time. If any item fails its URL-origin, credential, media, expiry, checksum, size, or aggregate policy, the API emits a signed withdrawal with no items instead of changing the approved playlist by omitting only that item. It does the same when no assignment applies, so previously active content cannot continue past its authorization window.
 
+When a Player accepts that signed withdrawal, it persists the blank marker and
+removes its previous-manifest rollback slot atomically. Rollback also refuses an
+expired signed playback or asset boundary. These local controls prevent content
+the Player has withdrawn from being revived after a later playback failure;
+they do not recall verified bytes from an offline Player that never received
+the withdrawal.
+
 Daily times use local wall-clock semantics in the configured IANA time zone. A boundary that does not exist during a spring-forward gap advances to the first valid instant after the gap. During a fall-back repeat, starts use the later occurrence and ends use the earlier occurrence. This prevents early activation and prevents ended content from reactivating when the clock repeats.
 
 Emergency overrides are distinct, expire explicitly, and never erase the baseline schedule. Production configuration rejects emergency publishing while separate approval, MFA, player acknowledgement, partial-delivery handling, recovery, and tabletop gates remain incomplete. Non-production fixture coverage does not authorize operational use.

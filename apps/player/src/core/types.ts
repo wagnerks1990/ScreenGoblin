@@ -114,8 +114,10 @@ export interface PlayerStore {
   getActiveManifest(): Promise<SignedPlayerManifest | undefined>;
   getPreviousManifest(): Promise<SignedPlayerManifest | undefined>;
   activateManifest(value: SignedPlayerManifest): Promise<void>;
+  clearPreviousManifest(expectedActiveVersion?: string): Promise<void>;
   rollback(
     expectedActiveVersion?: string,
+    eligibleUntilMs?: number,
   ): Promise<SignedPlayerManifest | undefined>;
   clearManifests(): Promise<void>;
   clear(): Promise<void>;

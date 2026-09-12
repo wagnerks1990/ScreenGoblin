@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Treat an accepted signed withdrawal as a Player rollback tombstone: remove the
+  previous manifest atomically, repair legacy tombstone state on reboot, and
+  reject rollback across withdrawn, corrupt, or expired playback/asset state.
+  This prevents a later playback failure from reviving content the Player has
+  already withdrawn without claiming recall of bytes on disconnected Players.
+
 - Cap private media delivery at the earliest manifest lease, frozen schedule
   playback boundary, or frozen asset expiry. Bind capabilities to the immutable
   assignment ID/digest and recheck the tenant/screen-specific latest assignment

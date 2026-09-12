@@ -21,9 +21,9 @@
     "android:check": "cd android && ./gradlew lintDebug testDebugUnitTest"
   },
   "dependencies": {
-    "@screengoblin/contracts": "*",
     "@capacitor/android": "^7.4.3",
     "@capacitor/core": "^7.4.3",
+    "@screengoblin/contracts": "*",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
@@ -40,6 +40,7 @@
     "eslint": "^10.10.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.6",
+    "fake-indexeddb": "^6.2.5",
     "globals": "^17.12.0",
     "jsdom": "^26.1.0",
     "typescript": "^5.9.2",

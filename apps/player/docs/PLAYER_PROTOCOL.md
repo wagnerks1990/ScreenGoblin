@@ -113,7 +113,13 @@ signature, and a normalized playback view in one record. Boot recovery and
 rollback reverify those exact bytes against the currently pinned key and screen,
 then require the normalized view to match. Pre-upgrade unsigned records and
 altered records are removed and produce a blank screen until a fresh signed
-manifest arrives. A missing active marker never revives the previous slot.
+manifest arrives. A missing active marker never revives the previous slot. A
+valid signed withdrawal is persisted as the active tombstone and deletes the
+previous-manifest slot in the same transaction. Reboot recovery repeats that
+cleanup for legacy state, and rollback validates both slots before changing the
+active marker. It cannot cross a withdrawal or an expired signed playback or
+asset boundary. This local tombstone does not recall bytes from a player that
+has not received the withdrawal.
 
 On Android, binary cache misses are streamed to app-private staging files while
 their byte count and SHA-256 are computed. The native layer accepts the file
@@ -160,11 +166,12 @@ remains where safe.
 Manifest staging is serialized through pre-prune, bounded two-worker fail-stop
 prefetch, state activation, and post-prune. Deprovisioning cancels the staging
 generation before secure clearing so queued work cannot recreate deleted media.
-Both active and previous manifests are retained during the
-pre-prune, and recovery queues its cleanup behind staging so it cannot delete an
-uncommitted prefetched file. Recovery and explicit rollback remain independent
-of a stalled download. An `INSUFFICIENT_STORAGE` prefetch failure therefore
-rejects the candidate without replacing the last-known-good release.
+Both locally eligible active and previous manifests are retained during the
+pre-prune. A withdrawal removes the prior generation from rollback retention,
+and recovery queues cleanup behind staging so it cannot delete an uncommitted
+prefetched file. Recovery and explicit rollback remain independent of a stalled
+download. An `INSUFFICIENT_STORAGE` prefetch failure therefore rejects the
+candidate without replacing the last-known-good release.
 
 Browser/PWA development continues to use the WebView path: at most 128 MiB per
 asset and 512 MiB per manifest, two concurrent downloads, exact size/SHA-256

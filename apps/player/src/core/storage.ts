@@ -100,11 +100,12 @@ export class IndexedDbPlayerStore implements PlayerStore {
         // cannot mistake an intentional blank screen for missing state.
         state.put(value, "active-manifest");
 
-        // Emergency content is an overlay, never part of the normal rollback
-        // chain. Blank releases also preserve, rather than replace, the last
-        // playable baseline. Reissued envelopes for one semantic release may
-        // refresh validity metadata without rotating rollback history.
-        if (
+        // A signed withdrawal is an authorization tombstone. Removing the
+        // rollback slot in this same transaction prevents a later release from
+        // inheriting and reviving content that the player already withdrew.
+        if (value.manifest.withdrawn) {
+          state.delete("previous-manifest");
+        } else if (
           !sameRelease &&
           active &&
           active.manifest &&
@@ -120,8 +121,29 @@ export class IndexedDbPlayerStore implements PlayerStore {
     });
   }
 
+  async clearPreviousManifest(expectedActiveVersion?: string): Promise<void> {
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const state = tx.objectStore(STORE);
+      const activeRequest = state.get("active-manifest");
+      activeRequest.onsuccess = () => {
+        const active = activeRequest.result as SignedPlayerManifest | undefined;
+        if (
+          expectedActiveVersion === undefined ||
+          active?.manifest?.version === expectedActiveVersion
+        )
+          state.delete("previous-manifest");
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+
   async rollback(
     expectedActiveVersion?: string,
+    eligibleUntilMs?: number,
   ): Promise<SignedPlayerManifest | undefined> {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
@@ -139,6 +161,13 @@ export class IndexedDbPlayerStore implements PlayerStore {
         ) {
           // An older error/expiry callback lost a race with a successful sync.
           resultingActive = active;
+          return;
+        }
+        if (eligibleUntilMs !== undefined && eligibleUntilMs <= Date.now()) {
+          // The manager derives this only from signed playback/asset metadata.
+          // Checking inside this transaction closes the validation/swap race.
+          state.delete("previous-manifest");
+          resultingActive = undefined;
           return;
         }
         const previous = previousRequest.result as

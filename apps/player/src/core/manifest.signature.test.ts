@@ -63,7 +63,18 @@ class SignedMemoryStore implements PlayerStore {
   async activateManifest(value: SignedPlayerManifest) {
     this.active = value;
   }
-  async rollback() {
+  async clearPreviousManifest(expectedActiveVersion?: string) {
+    if (
+      expectedActiveVersion === undefined ||
+      this.active?.manifest.version === expectedActiveVersion
+    )
+      this.previous = undefined;
+  }
+  async rollback(_expectedActiveVersion?: string, eligibleUntilMs?: number) {
+    if (eligibleUntilMs !== undefined && eligibleUntilMs <= Date.now()) {
+      this.previous = undefined;
+      return undefined;
+    }
     this.active = this.previous;
     return this.active;
   }
