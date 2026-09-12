@@ -16,6 +16,7 @@ import {
 } from "./core/device";
 import { ManifestManager, manifestPlaybackEndsAt } from "./core/manifest";
 import { watchSignedDeadline } from "./core/signed-deadline";
+import { createMonotonicUptime } from "./core/uptime";
 import { SingleFlight } from "./core/single-flight";
 import { IndexedDbPlayerStore } from "./core/storage";
 import type {
@@ -28,7 +29,7 @@ import type {
 const store = new IndexedDbPlayerStore();
 const assetRepository = createAssetRepository();
 const manager = new ManifestManager(store, assetRepository);
-const startedAt = Date.now();
+const uptimeSeconds = createMonotonicUptime();
 
 export default function App() {
   const [installationId, setInstallationId] = useState("");
@@ -276,7 +277,7 @@ export default function App() {
         const heartbeat: Heartbeat = {
           installationId: credentials.installationId,
           playerVersion: __APP_VERSION__,
-          uptimeSeconds: Math.floor((Date.now() - startedAt) / 1_000),
+          uptimeSeconds: uptimeSeconds(),
           freeStorageBytes: await freeStorageBytes(),
           networkType: networkType(),
           occurredAt: new Date().toISOString(),
