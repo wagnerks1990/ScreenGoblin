@@ -35,6 +35,25 @@ describe("production configuration", () => {
     );
   });
 
+  it("refuses to enable the incomplete emergency workflow in production", () => {
+    expect(() =>
+      loadConfig({ ...base, EMERGENCY_FEATURE_ENABLED: "true" }),
+    ).toThrow(/EMERGENCY_FEATURE_ENABLED/);
+    expect(
+      loadConfig({ ...base, EMERGENCY_FEATURE_ENABLED: "false" }),
+    ).toMatchObject({ EMERGENCY_FEATURE_ENABLED: false });
+  });
+
+  it("retains the explicit emergency fixture path outside production", () => {
+    expect(
+      loadConfig({
+        ...base,
+        NODE_ENV: "test",
+        EMERGENCY_FEATURE_ENABLED: "true",
+      }).EMERGENCY_FEATURE_ENABLED,
+    ).toBe(true);
+  });
+
   it("requires proof-v1 device authentication in production", () => {
     expect(() =>
       loadConfig({ ...base, DEVICE_AUTH_MODE: "development-bearer" }),

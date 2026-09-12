@@ -66,6 +66,11 @@ Immutable ordinary release snapshots exist, but multi-party approval and
 promotion workflows remain incomplete. Do not create UI or documentation that
 implies otherwise.
 
+Production configuration must reject `EMERGENCY_FEATURE_ENABLED=true` until the
+full emergency acceptance checklist is implemented and evidenced. The
+non-production flag exists only for isolated automated fixtures and must not be
+treated as an operational escape hatch.
+
 ## AI boundaries
 
 AI may draft copy, suggest templates/tags/schedules, summarize device health, and assist diagnosis. A human must approve publishing and device actions. AI may never autonomously publish, operate devices, activate/clear/extend an emergency, make destructive fleet decisions, or perform camera-based demographic inference.

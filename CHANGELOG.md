@@ -6,6 +6,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Fail production startup when `EMERGENCY_FEATURE_ENABLED=true`; the incomplete
+  emergency path remains available only to isolated non-production fixtures and
+  cannot be enabled by a production environment override.
 - Enroll canonical Android Keystore P-256 public keys through a two-stage,
   transcript-bound pairing challenge; derive installation identity from the
   SPKI fingerprint and require strict domain-separated `ES256-DER` proof before

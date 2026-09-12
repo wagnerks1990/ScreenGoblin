@@ -105,6 +105,13 @@ const schema = z
       });
     }
     if (value.NODE_ENV !== "production") return;
+    if (value.EMERGENCY_FEATURE_ENABLED)
+      context.addIssue({
+        code: "custom",
+        path: ["EMERGENCY_FEATURE_ENABLED"],
+        message:
+          "must remain false in production until the emergency safety gates are implemented",
+      });
     if (value.DEVICE_AUTH_MODE !== "proof-v1")
       context.addIssue({
         code: "custom",
