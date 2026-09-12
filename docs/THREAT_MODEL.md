@@ -43,8 +43,30 @@ ScreenGoblin is not currently a certified emergency-notification or life-safety 
 The repository supply-chain gate now uses the checksum-verified Trivy binary
 for blocking secret and infrastructure/configuration scans and enforces an
 exact lockfile-license allowlist with narrow, expiring exceptions. These are
-static repository and build-input controls; they do not perform DAST or monitor
-production runtime configuration.
+static repository and build-input controls; they do not monitor production
+runtime configuration.
+
+The production-mode Compose CI exercise adds bounded unauthenticated DAST for
+the public Caddy Console/API and Player origins. A digest-pinned ZAP active
+scanner runs without capabilities or an external network route, and explicit
+probes cover unsafe method handling, hostile CORS reflection, malformed-request
+error leakage, executable reflection, and host-specific CSP without wildcard or
+scheme-wide sources or inline styles. The Player's only additional connection
+source is the exact configured Console/API origin used for its signed
+private-media requests. Fastify route-registration drift, missing pre-scan ZAP
+API seeds, wrong/empty report sites, and scanner tmpfs/file-budget exhaustion
+also fail closed. Scanner errors and every Low, Medium, or High JSON report
+alert fail closed independently of the packaged wrapper's status. All
+Informational observations, including rule IDs the wrapper excludes, remain in
+the checksum-bound sanitized summary and are counted separately rather than
+suppressed. Wrapper finding statuses 1/2 defer only after that report and exact
+post-scan coverage validate; operational status 3, timeout/signal statuses,
+unexpected statuses, and malformed evidence block. The scanner does not receive
+user, device, or media capabilities, so broken authorization, tenant isolation,
+authenticated state transitions, and private-media delivery still require
+targeted automated and manual tests. Runner-local certificates and networking
+also do not evidence production DNS, TLS, firewall, WAF, rate-limit, or
+monitoring behavior.
 
 User access tokens expire after one hour and carry a random per-login
 session identity whose SHA-256 hash is stored. Every authenticated user request

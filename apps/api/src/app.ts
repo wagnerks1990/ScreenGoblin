@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type RouteOptions } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import jwt from "@fastify/jwt";
@@ -47,6 +47,7 @@ export interface BuildOptions {
   rateLimitBudget?: RateLimitBudget;
   requireRedis?: boolean;
   closeRedisOnClose?: boolean;
+  onRoute?: (route: RouteOptions) => void;
 }
 export async function buildApp(
   options: BuildOptions,
@@ -73,6 +74,7 @@ export async function buildApp(
     requestIdHeader: false,
     genReqId: () => randomUUID(),
   });
+  if (options.onRoute) app.addHook("onRoute", options.onRoute);
   app.decorate("store", options.store ?? new PrismaStore());
   app.decorate("mediaObjectStore", options.mediaObjectStore);
   app.decorate(

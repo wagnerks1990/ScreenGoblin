@@ -57,6 +57,32 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   checksum-locked Gradle 8.11.1 wrapper paired with Android Gradle Plugin 8.10.1;
   a Gradle 9 migration remains a separate Android toolchain change.
 
+- Add a blocking unauthenticated runtime-security gate to the production-mode
+  Compose exercise. A digest-pinned ZAP 2.17.0 container runs active scans from
+  an internal network connected only to Caddy, while explicit probes reject
+  unsafe TRACE handling, untrusted CORS reflection, error-detail leakage, and
+  executable payload reflection. Retained evidence is sanitized,
+  deterministically ordered, checksum-bound, and immediately verified. This
+  does not cover authenticated workflows, capability-authorized private media,
+  production TLS/network controls, or manual penetration testing.
+  Host-specific Caddy policies restrict Console connections to the same origin
+  and Player connections to the exact configured API origin; scheme-wide,
+  wildcard, localhost-port, inline-style, and frame sources are rejected by
+  runtime probes. Dynamic dashboard and emergency-template presentation now
+  use CSP-compatible SVG attributes instead of inline styles.
+  Seed the full registered public API method/template inventory into ZAP before
+  the recursive active scan and fail on route/inventory or observed-coverage
+  drift. Scanner state is hard-limited to a 256 MiB non-root tmpfs. Retained
+  finding locations use only fixed route labels or SHA-256 path digests, never
+  raw URI paths.
+  Retain every alert in ZAP's complete JSON report, including IDs the packaged
+  wrapper excludes from its own exit-status calculation, and independently
+  block every Low, Medium, or High alert. Informational scanner observations
+  remain explicit evidence instead of rule-ID suppressions. Treat wrapper
+  finding exits 1/2 as advisory only after exact report/coverage validation;
+  operational exits, timeouts, signals, unexpected statuses, and malformed
+  evidence remain blocking.
+
 - Replace anonymous object-storage delivery with short-lived API capabilities bound to the active device, tenant, immutable asset identity, server-derived storage key, digest, size, method, and manifest lease. The API streams only from its fixed private S3 endpoint; direct Caddy/MinIO media access is removed. Populated legacy media upgrades now abort before mutation unless operators first complete an explicit object copy and checksum/size verification runbook; management DTOs do not expose private storage keys.
 
 - Upgrade the ESLint toolchain to ESLint 10 with matching core, React Hooks,

@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "surfaces": {
+    "console-api": {
+      "origin": "https://signage.example.test",
+      "routes": [
+        {
+          "label": "console-root",
+          "method": "GET",
+          "template": "/",
+          "seedPath": "/"
+        },
+        {
+          "label": "health-live",
+          "method": "GET",
+          "template": "/health/live",
+          "seedPath": "/health/live"
+        },
+        {
+          "label": "auth-login",
+          "method": "POST",
+          "template": "/api/v1/auth/login",
+          "seedPath": "/api/v1/auth/login"
+        },
+        {
+          "label": "auth-me",
+          "method": "GET",
+          "template": "/api/v1/auth/me",
+          "seedPath": "/api/v1/auth/me"
+        },
+        {
+          "label": "auth-logout",
+          "method": "POST",
+          "template": "/api/v1/auth/logout",
+          "seedPath": "/api/v1/auth/logout"
+        },
+        {
+          "label": "audit-events",
+          "method": "GET",
+          "template": "/api/v1/audit-events",
+          "seedPath": "/api/v1/audit-events"
+        },
+        {
+          "label": "screens-list",
+          "method": "GET",
+          "template": "/api/v1/screens",
+          "seedPath": "/api/v1/screens"
+        },
+        {
+          "label": "screens-create",
+          "method": "POST",
+          "template": "/api/v1/screens",
+          "seedPath": "/api/v1/screens"
+        },
+        {
+          "label": "screens-item",
+          "method": "GET",
+          "template": "/api/v1/screens/:id",
+          "seedPath": "/api/v1/screens/dast-probe"
+        },
+        {
+          "label": "screens-update",
+          "method": "PATCH",
+          "template": "/api/v1/screens/:id",
+          "seedPath": "/api/v1/screens/dast-probe"
+        },
+        {
+          "label": "screens-delete",
+          "method": "DELETE",
+          "template": "/api/v1/screens/:id",
+          "seedPath": "/api/v1/screens/dast-probe"
+        },
+        {
+          "label": "device-credential-revoke",
+          "method": "POST",
+          "template": "/api/v1/screens/:id/device-credential/revoke",
+          "seedPath": "/api/v1/screens/dast-probe/device-credential/revoke"
+        },
+        {
+          "label": "device-reenrollment-create",
+          "method": "POST",
+          "template": "/api/v1/screens/:id/device-reenrollment",
+          "seedPath": "/api/v1/screens/dast-probe/device-reenrollment"
+        },
+        {
+          "label": "device-reenrollment-item",
+          "method": "GET",
+          "template": "/api/v1/screens/:id/device-reenrollment/:grantId",
+          "seedPath": "/api/v1/screens/dast-probe/device-reenrollment/dast-grant"
+        },
+        {
+          "label": "device-reenrollment-activate",
+          "method": "POST",
+          "template": "/api/v1/screens/:id/device-reenrollment/:grantId/candidates/:candidateId/activate",
+          "seedPath": "/api/v1/screens/dast-probe/device-reenrollment/dast-grant/candidates/dast-candidate/activate"
+        },
+        {
+          "label": "device-reenrollment-delete",
+          "method": "DELETE",
+          "template": "/api/v1/screens/:id/device-reenrollment/:grantId",
+          "seedPath": "/api/v1/screens/dast-probe/device-reenrollment/dast-grant"
+        },
+        {
+          "label": "media-list",
+          "method": "GET",
+          "template": "/api/v1/media",
+          "seedPath": "/api/v1/media"
+        },
+        {
+          "label": "media-create",
+          "method": "POST",
+          "template": "/api/v1/media",
+          "seedPath": "/api/v1/media"
+        },
+        {
+          "label": "media-delete",
+          "method": "DELETE",
+          "template": "/api/v1/media/:id",
+          "seedPath": "/api/v1/media/dast-probe"
+        },
+        {
+          "label": "playlists-list",
+          "method": "GET",
+          "template": "/api/v1/playlists",
+          "seedPath": "/api/v1/playlists"
+        },
+        {
+          "label": "playlists-create",
+          "method": "POST",
+          "template": "/api/v1/playlists",
+          "seedPath": "/api/v1/playlists"
+        },
+        {
+          "label": "playlists-item",
+          "method": "GET",
+          "template": "/api/v1/playlists/:id",
+          "seedPath": "/api/v1/playlists/dast-probe"
+        },
+        {
+          "label": "playlists-delete",
+          "method": "DELETE",
+          "template": "/api/v1/playlists/:id",
+          "seedPath": "/api/v1/playlists/dast-probe"
+        },
+        {
+          "label": "schedules-list",
+          "method": "GET",
+          "template": "/api/v1/schedules",
+          "seedPath": "/api/v1/schedules"
+        },
+        {
+          "label": "schedules-create",
+          "method": "POST",
+          "template": "/api/v1/schedules",
+          "seedPath": "/api/v1/schedules"
+        },
+        {
+          "label": "schedules-delete",
+          "method": "DELETE",
+          "template": "/api/v1/schedules/:id",
+          "seedPath": "/api/v1/schedules/dast-probe"
+        },
+        {
+          "label": "locations-list",
+          "method": "GET",
+          "template": "/api/v1/locations",
+          "seedPath": "/api/v1/locations"
+        },
+        {
+          "label": "locations-create",
+          "method": "POST",
+          "template": "/api/v1/locations",
+          "seedPath": "/api/v1/locations"
+        },
+        {
+          "label": "locations-update",
+          "method": "PATCH",
+          "template": "/api/v1/locations/:id",
+          "seedPath": "/api/v1/locations/dast-probe"
+        },
+        {
+          "label": "locations-delete",
+          "method": "DELETE",
+          "template": "/api/v1/locations/:id",
+          "seedPath": "/api/v1/locations/dast-probe"
+        },
+        {
+          "label": "emergencies-create",
+          "method": "POST",
+          "template": "/api/v1/emergencies",
+          "seedPath": "/api/v1/emergencies"
+        },
+        {
+          "label": "emergencies-clear",
+          "method": "POST",
+          "template": "/api/v1/emergencies/:id/clear",
+          "seedPath": "/api/v1/emergencies/dast-probe/clear"
+        },
+        {
+          "label": "pairing-codes-create",
+          "method": "POST",
+          "template": "/api/v1/pairing-codes",
+          "seedPath": "/api/v1/pairing-codes"
+        },
+        {
+          "label": "device-pair-challenge",
+          "method": "POST",
+          "template": "/api/v1/device/pair/challenge",
+          "seedPath": "/api/v1/device/pair/challenge"
+        },
+        {
+          "label": "device-challenges",
+          "method": "POST",
+          "template": "/api/v1/device/challenges",
+          "seedPath": "/api/v1/device/challenges"
+        },
+        {
+          "label": "device-pair",
+          "method": "POST",
+          "template": "/api/v1/device/pair",
+          "seedPath": "/api/v1/device/pair"
+        },
+        {
+          "label": "device-heartbeat",
+          "method": "POST",
+          "template": "/api/v1/device/heartbeat",
+          "seedPath": "/api/v1/device/heartbeat"
+        },
+        {
+          "label": "device-manifest",
+          "method": "GET",
+          "template": "/api/v1/device/manifest",
+          "seedPath": "/api/v1/device/manifest"
+        },
+        {
+          "label": "device-media",
+          "method": "GET",
+          "template": "/api/v1/device/media/:assetId",
+          "seedPath": "/api/v1/device/media/dast-probe"
+        }
+      ]
+    },
+    "player": {
+      "origin": "https://player.example.test",
+      "routes": [
+        {
+          "label": "player-root",
+          "method": "GET",
+          "template": "/",
+          "seedPath": "/"
+        }
+      ]
+    }
+  }
+}

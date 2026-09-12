@@ -35,8 +35,18 @@ An unchecked item is a known gap, not an implicit approval.
 - [ ] Dependency, CodeQL, container, DAST, and secret scans are clean or exceptions accepted.
       CI now blocks repository secrets, IaC/configuration misconfigurations, and
       unapproved lockfile licenses with narrow expiring exceptions and retained
-      checksum-bound static evidence. This is not DAST or production-runtime
-      coverage, so the combined gate remains unchecked.
+      checksum-bound static evidence. CI also performs blocking unauthenticated
+      active scans and explicit method, CORS, error-leakage, and reflection
+      probes against the disposable production-mode Caddy surfaces, including
+      host-specific CSP checks that reject wildcard, scheme-wide, and inline
+      style sources. Low/Medium/High alerts block independently of the scanner
+      wrapper; all Informational alerts remain retained and separately counted
+      without rule-ID suppression. Wrapper finding exits 1/2 defer only to a
+      valid complete report and coverage summary; operational exits, timeouts,
+      signals, and malformed evidence block. Fastify route/inventory drift and incomplete ZAP seed
+      coverage fail closed, and scanner state has a 256 MiB tmpfs limit. This does not cover authenticated routes,
+      capability-authorized private media, production TLS/network
+      configuration, or manual review, so the combined gate remains unchecked.
 - [ ] Screenshot collection/retention has privacy approval.
 - [ ] Independent penetration test findings are closed or accepted.
 

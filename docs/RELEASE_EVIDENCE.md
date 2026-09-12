@@ -52,6 +52,52 @@ seven days, and the cleanup trap removes the disposable volumes on every exit.
 This runner smoke is integration evidence, not proof of production DNS, public
 TLS, firewall rules, capacity, backup quality, or device behavior.
 
+When `COMPOSE_DAST_IMAGE` is set by CI, the same disposable stack gains an
+internal scan network attached only to Caddy. The workflow pulls ZAP 2.17.0 by
+its reviewed multi-platform SHA-256 manifest digest, verifies the resolved
+digest, then runs the image with no capabilities, no-new-privileges, a read-only
+root filesystem, bounded memory/CPU/PIDs/time, and no external network route.
+Blocking active scans cover the unauthenticated Console/API and Player public
+origins. A checked-in method/template inventory is compared to Fastify's real
+route registration, excluding only automatic HEAD/OPTIONS and the Caddy-denied
+readiness endpoint. A scan hook sends every inventory seed through ZAP before
+the recursive active scan and verifies that all fixed labels remain in ZAP's
+site tree after it completes. Separate probes reject enabled TRACE behavior, hostile-origin CORS
+reflection, internal markers in malformed-login errors, and executable payload
+reflection. Scanner failures and every Low, Medium, or High report alert block
+the job. The packaged wrapper has a fixed internal ignored-rule set, so its
+status alone is not authoritative: the sanitizer independently classifies the
+complete JSON report from strict numeric risk/confidence fields. Every alert,
+including Informational observations and wrapper-excluded IDs, remains retained
+and counted; no rule-ID suppression is applied. Wrapper finding statuses 1 and
+2 are accepted only after the complete report and post-scan coverage validate
+and the sanitizer finds no security-severity alert. Operational status 3,
+timeouts, signals, unexpected statuses, and malformed evidence always block.
+Runtime assertions also require host-specific CSP: Console connections
+remain same-origin, Player may connect only to its own origin and the exact
+configured ScreenGoblin API origin, and neither public surface permits
+scheme-wide, wildcard, localhost-port, inline-style, or frame sources. Private
+media uses that same API origin and blob/data rendering remains explicitly
+bounded.
+
+ZAP work/state is hard-limited to a 256 MiB, mode-0700 tmpfs owned by the
+non-root runner identity; individual output files also have a 256 MiB limit.
+Only the raw report and fixed-label coverage file are bind-mounted separately,
+each under that inherited 256 MiB file limit, so they survive long enough for
+validation before the disposable work directory is removed. Retained JSON
+maps the pinned traditional-report schema's numeric risk and confidence codes
+to fixed labels and contains only rule identity, risk/confidence, method,
+strictly validated parameter and route labels, and SHA-256 digests for unknown
+paths. Unsafe alert names are SHA-256 digested and unsafe parameter names are
+replaced with a fixed marker. It omits raw URI paths, response evidence, attack strings,
+response bodies, hostnames, URL credentials, query values, fragments, and
+capabilities. A sorted `SHA256SUMS` binds the
+sanitized scan summaries and Compose evidence and is verified before upload.
+This is narrow runner DAST, not production monitoring or a penetration test. It
+does not authenticate, exercise authorization/tenant boundaries, scan
+capability-authorized private media, validate production DNS/TLS/firewalls,
+execute a browser DOM scanner, or cover operator/device/hardware workflows.
+
 Gradle verifies the pinned 8.11.1 distribution ZIP against the checksum
 published for that exact distribution. The Android build also uses strict
 SHA-256 verification metadata for Maven, plugin, module-metadata, and transitive

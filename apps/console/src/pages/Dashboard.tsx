@@ -50,6 +50,9 @@ export function Dashboard() {
 
   const hasCurrentData = loadState === "live" || loadState === "demo";
   const fleet = summarizeFleet(screens);
+  const fleetOnlinePercent = fleet.total
+    ? Math.round((fleet.online / fleet.total) * 100)
+    : 0;
   const alerts = screens.filter((screen) => screen.status !== "online");
   const attentionDetail = summarizeAttention(fleet, hasCurrentData);
   const sourceLabel =
@@ -200,14 +203,18 @@ export function Dashboard() {
             <Activity size={19} className="muted" />
           </div>
           <div className="donut-row">
-            <div
-              className="donut"
-              style={
-                {
-                  "--percent": `${fleet.total ? Math.round((fleet.online / fleet.total) * 100) * 3.6 : 0}deg`,
-                } as React.CSSProperties
-              }
-            >
+            <div className="donut">
+              <svg viewBox="0 0 36 36" aria-hidden="true">
+                <circle className="donut-track" cx="18" cy="18" r="15.915" />
+                <circle
+                  className="donut-value"
+                  cx="18"
+                  cy="18"
+                  r="15.915"
+                  strokeDasharray={`${fleetOnlinePercent} 100`}
+                  transform="rotate(-90 18 18)"
+                />
+              </svg>
               <span>
                 <b>{hasCurrentData ? fleet.online : "—"}</b>
                 <small>of {hasCurrentData ? fleet.total : "—"}</small>
