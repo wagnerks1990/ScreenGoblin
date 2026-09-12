@@ -50,6 +50,9 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - Pairing-code issuance revalidates current active `OWNER`/`ADMIN` membership
   inside the code-and-audit transaction before any collision expiry or create;
   authorization loss must return `FORBIDDEN` without retrying or changing state.
+- A selected frozen release is emitted only as a complete playlist. If any item
+  fails manifest-time policy, sign a withdrawal with no items; never omit the
+  failing item and revive the remaining sequence as an unapproved subset.
 - Screen creation/update and media/playlist creation/deletion revalidate the
   actor's active organization role and commit the resource mutation with its
   audit event in one transaction. Authorization, reference conflicts, and audit

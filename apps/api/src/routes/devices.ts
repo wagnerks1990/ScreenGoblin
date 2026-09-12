@@ -732,7 +732,10 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         );
         const selected = releases[0];
         if (selected) {
-          const eligibleItems = selected.release.items.filter((item) => {
+          const releaseAssets = selected.release.items.map(
+            (item) => item.asset,
+          );
+          const everyUrlAllowed = selected.release.items.every((item) => {
             try {
               const url = new URL(item.asset.url);
               return (
@@ -741,22 +744,18 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                 mediaUrlMatchesAllowedOrigin(
                   item.asset.url,
                   app.config.mediaAllowedOrigins,
-                ) &&
-                mediaPublicationFailure([item.asset], generatedDate) ===
-                  undefined
+                )
               );
             } catch {
               return false;
             }
           });
-          const releaseTooLarge =
-            mediaPublicationFailure(
-              eligibleItems.map((item) => item.asset),
-              generatedDate,
-            ) === "RELEASE_TOO_LARGE";
-          items = releaseTooLarge
-            ? []
-            : eligibleItems.map((item) => ({
+          const entireReleasePlayable =
+            selected.release.items.length > 0 &&
+            everyUrlAllowed &&
+            mediaPublicationFailure(releaseAssets, generatedDate) === undefined;
+          items = entireReleasePlayable
+            ? selected.release.items.map((item) => ({
                 id: item.id,
                 asset: {
                   id: item.asset.id,
@@ -773,7 +772,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                 },
                 position: item.position,
                 durationSeconds: item.durationSeconds,
-              }));
+              }))
+            : [];
           // An applicable schedule without a playable item must clear playback.
           // Publishing an empty non-withdrawn release would be rejected by the
           // player and could leave stale content on screen indefinitely.

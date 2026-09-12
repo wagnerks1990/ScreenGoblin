@@ -6,6 +6,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Emit a signed whole-release withdrawal when any frozen playlist item fails
+  manifest-time URL, origin, credential, media, expiry, checksum, size, or
+  aggregate policy, rather than signing an unapproved partial playlist.
 - Fail production startup when JWT or pairing secrets reuse documented
   placeholders or checked-in test fixtures, or when manifest signing uses the
   public all-zero test seed. Non-production fixtures remain available only

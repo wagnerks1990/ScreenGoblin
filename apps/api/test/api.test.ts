@@ -4,6 +4,7 @@ import { buildApp } from "../src/app.js";
 import { MemoryStore } from "../src/store/memory.js";
 import type { FastifyInstance } from "fastify";
 import { MemoryRateLimitBudget } from "../src/utils/rate-limit.js";
+import { MEDIA_MAX_ASSET_BYTES } from "@screengoblin/contracts";
 
 const secret = "test-secret-that-is-longer-than-thirty-two-characters";
 const signingKey = Buffer.alloc(32, 7).toString("base64url");
@@ -1107,6 +1108,96 @@ describe("device lifecycle", () => {
       })
     ).json();
     expect(credentialedUrlManifest).toMatchObject({
+      priority: "normal",
+      withdrawn: true,
+      items: [],
+    });
+  });
+
+  it("withdraws an entire frozen release when any item becomes ineligible", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-14T13:30:00.000Z"));
+    const device = await pairDevice("whole-release-policy-device");
+    const assets = await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        store.createMedia("org-a", {
+          name: `Frozen ${index}`,
+          kind: "image",
+          mimeType: "image/png",
+          url: `https://media.example.test/frozen-${index}.png`,
+          checksumSha256: index.toString(16).repeat(64),
+          sizeBytes: 1,
+        }),
+      ),
+    );
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Whole frozen release",
+      description: "",
+      items: assets.map((asset, position) => ({
+        id: "ignored",
+        assetId: asset.id,
+        position,
+        durationSeconds: 10 + position,
+      })),
+    });
+    const publication = await store.publishScheduleAndAudit(
+      "org-a",
+      {
+        playlistId: playlist.id,
+        name: "Whole release schedule",
+        priority: "normal",
+        startsAt: "2026-09-14T00:00:00.000Z",
+        endsAt: "2026-09-15T00:00:00.000Z",
+        timezone: "America/New_York",
+        daysOfWeek: [1],
+        dailyStartMinutes: 9 * 60,
+        dailyEndMinutes: 17 * 60,
+        enabled: true,
+        screenIds: [device.screenId],
+      },
+      { actorUserId: store.users[0]!.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+    );
+    expect(publication.published).toBe(true);
+
+    const readManifest = async () =>
+      (
+        await app.inject({
+          url: "/api/v1/device/manifest",
+          headers: device.headers,
+        })
+      ).json();
+    const initial = await readManifest();
+    expect(initial).toMatchObject({ withdrawn: false });
+    expect(
+      initial.items.map((item: { asset: { name: string } }) => item.asset.name),
+    ).toEqual(assets.map((asset) => asset.name));
+
+    const original = { ...store.releases[0]!.items[1]!.asset };
+    const corruptions = [
+      { expiresAt: "2026-09-14T13:29:59.000Z" },
+      { url: "https://other.example.test/frozen-1.png" },
+      { url: "https://user:secret@media.example.test/frozen-1.png" },
+      { url: "not-a-url" },
+      { kind: "web" as const, mimeType: "text/html" },
+      { checksumSha256: "invalid" },
+      { sizeBytes: 0 },
+    ];
+    for (const corruption of corruptions) {
+      store.releases[0]!.items[1]!.asset = {
+        ...original,
+        ...corruption,
+      };
+      expect(await readManifest()).toMatchObject({
+        priority: "normal",
+        withdrawn: true,
+        items: [],
+      });
+    }
+
+    for (const item of store.releases[0]!.items)
+      item.asset.sizeBytes = MEDIA_MAX_ASSET_BYTES;
+    expect(await readManifest()).toMatchObject({
       priority: "normal",
       withdrawn: true,
       items: [],
