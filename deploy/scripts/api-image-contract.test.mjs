@@ -27,6 +27,6 @@ test("the API image installs and verifies nested workspace dependencies", () => 
 
   assert.match(
     dockerfile,
-    /RUN cd apps\/api[\s\S]+await Promise\.all\(\[import\('@prisma\/client'\), import\('fastify'\), import\('@screengoblin\/contracts'\)\]\)[\s\S]+test -f node_modules\/\.prisma\/client\/schema\.prisma/,
+    /WORKDIR \/app\/apps\/api[\s\S]+await Promise\.all\(\[import\('@prisma\/client'\), import\('fastify'\), import\('@screengoblin\/contracts'\)\]\)[\s\S]+test -f node_modules\/\.prisma\/client\/schema\.prisma/,
   );
 });

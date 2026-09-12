@@ -44,7 +44,9 @@ test("release evidence archive is deterministic", async () => {
     assert.deepEqual(firstBytes, secondBytes);
 
     const checksum = `${firstArchive}.sha256`;
-    await execFileAsync("sha256sum", ["--check", "--strict", checksum]);
+    await execFileAsync("sha256sum", ["--check", "--strict", checksum], {
+      cwd: root,
+    });
     await assert.rejects(
       execFileAsync(script, [first, firstArchive]),
       /Refusing to overwrite/,

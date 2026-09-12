@@ -45,6 +45,8 @@ jobs:
           cache: npm
       - run: npm run validate:container-inputs
       - run: npm ci
+      - name: Test repository policy and deployment scripts
+        run: npm run test:repository
       - run: npm run prisma:generate -w @screengoblin/api
       - run: npm run prisma:migrate -w @screengoblin/api
       - run: npm run format:check
