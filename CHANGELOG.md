@@ -6,6 +6,14 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Stream Android binary assets directly into app-private staging files, verify
+  exact signed size and SHA-256 incrementally, and atomically publish only
+  complete matches. Expose native available-storage telemetry, prune
+  unreferenced and orphan files around active/rollback generations, and
+  permit only exact-size/hash-verified legacy CacheStorage fallback on an
+  explicit native `CACHE_MISS`. Native prefetch/storage failures preserve the
+  last-known-good release; physical full-disk and power-loss evidence remains a
+  release gate.
 - Make screen creation/update and media/playlist creation/deletion atomic with
   their required audit events. Revalidate the actor's active organization role
   inside the same transaction so demotion, disablement, cross-tenant IDs, and

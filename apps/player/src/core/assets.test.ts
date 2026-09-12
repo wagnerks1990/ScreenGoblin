@@ -1,5 +1,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CacheAssetRepository } from "./assets";
+
+const native = vi.hoisted(() => ({
+  platform: "web",
+  prefetch: vi.fn(),
+  resolve: vi.fn(),
+  prune: vi.fn(),
+  removeAll: vi.fn(),
+  storageStats: vi.fn(),
+  convertFileSrc: vi.fn((path: string) => `capacitor://${path}`),
+}));
+
+vi.mock("@capacitor/core", () => ({
+  Capacitor: {
+    getPlatform: () => native.platform,
+    convertFileSrc: native.convertFileSrc,
+  },
+  registerPlugin: () => ({
+    prefetch: native.prefetch,
+    resolve: native.resolve,
+    prune: native.prune,
+    removeAll: native.removeAll,
+    storageStats: native.storageStats,
+  }),
+}));
+
+import {
+  CacheAssetRepository,
+  createAssetRepository,
+  nativeAvailableStorageBytes,
+  NativeAssetRepository,
+} from "./assets";
 import type { PlayerAsset } from "./types";
 
 const ABC_SHA256 =
@@ -37,6 +67,15 @@ describe("cache asset staging", () => {
   };
 
   beforeEach(() => {
+    native.platform = "web";
+    native.prefetch.mockReset().mockResolvedValue({ path: "file:///cached" });
+    native.resolve.mockReset().mockResolvedValue({ path: "file:///cached" });
+    native.prune.mockReset().mockResolvedValue(undefined);
+    native.removeAll.mockReset().mockResolvedValue(undefined);
+    native.storageStats.mockReset().mockResolvedValue({
+      availableBytes: 1_000_000,
+    });
+    native.convertFileSrc.mockClear();
     cache.match.mockReset().mockResolvedValue(undefined);
     cache.put.mockReset().mockResolvedValue(undefined);
     cache.delete.mockReset().mockResolvedValue(true);
@@ -366,5 +405,168 @@ describe("cache asset staging", () => {
 
     expect(cache.delete).toHaveBeenCalledOnce();
     expect(cache.delete).toHaveBeenCalledWith(staleKey);
+  });
+});
+
+describe("native asset staging", () => {
+  const legacy = {
+    prefetch: vi.fn(),
+    resolve: vi.fn(),
+    prune: vi.fn(),
+    removeAll: vi.fn(),
+  };
+
+  beforeEach(() => {
+    native.platform = "android";
+    native.prefetch.mockReset().mockResolvedValue({ path: "file:///cached" });
+    native.resolve.mockReset().mockResolvedValue({ path: "file:///cached" });
+    native.prune.mockReset().mockResolvedValue(undefined);
+    native.removeAll.mockReset().mockResolvedValue(undefined);
+    native.storageStats.mockReset().mockResolvedValue({ availableBytes: 456 });
+    native.convertFileSrc
+      .mockReset()
+      .mockImplementation((path: string) => `capacitor://${path}`);
+    legacy.prefetch.mockReset().mockResolvedValue(undefined);
+    legacy.resolve.mockReset().mockResolvedValue("blob:legacy-verified");
+    legacy.prune.mockReset().mockResolvedValue(undefined);
+    legacy.removeAll.mockReset().mockResolvedValue(undefined);
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("selects the native repository only on Android", () => {
+    expect(createAssetRepository()).toBeInstanceOf(NativeAssetRepository);
+    native.platform = "web";
+    expect(createAssetRepository()).toBeInstanceOf(CacheAssetRepository);
+  });
+
+  it("passes exact signed metadata to native staging and resolution", async () => {
+    const repository = new NativeAssetRepository(legacy);
+    await repository.prefetch(asset());
+    await expect(repository.resolve(asset())).resolves.toBe(
+      "capacitor://file:///cached",
+    );
+    expect(native.prefetch).toHaveBeenCalledWith({
+      assetId: "asset-1",
+      url: "https://cdn.example.test/asset.png",
+      mimeType: "image/png",
+      checksumSha256: ABC_SHA256,
+      sizeBytes: 3,
+    });
+    expect(native.resolve).toHaveBeenCalledWith({
+      assetId: "asset-1",
+      mimeType: "image/png",
+      checksumSha256: ABC_SHA256,
+      sizeBytes: 3,
+    });
+    expect(native.convertFileSrc).toHaveBeenCalledWith("file:///cached");
+    expect(legacy.prefetch).not.toHaveBeenCalled();
+  });
+
+  it("uses only the verified legacy resolve path when native content is absent", async () => {
+    native.resolve.mockRejectedValueOnce(
+      Object.assign(new Error("not found"), { code: "CACHE_MISS" }),
+    );
+    const repository = new NativeAssetRepository(legacy);
+
+    await expect(repository.resolve(asset())).resolves.toBe(
+      "blob:legacy-verified",
+    );
+    expect(legacy.resolve).toHaveBeenCalledWith(asset());
+    expect(legacy.prefetch).not.toHaveBeenCalled();
+  });
+
+  it("does not mask native bridge or integrity failures with legacy content", async () => {
+    native.resolve.mockRejectedValueOnce(
+      Object.assign(new Error("native verification failed"), {
+        code: "INTEGRITY_FAILURE",
+      }),
+    );
+
+    await expect(
+      new NativeAssetRepository(legacy).resolve(asset()),
+    ).rejects.toThrow("native verification failed");
+    expect(legacy.resolve).not.toHaveBeenCalled();
+  });
+
+  it("keeps signed data-URL emergency templates in the verified legacy cache", async () => {
+    const emergency = asset({
+      id: "emergency-1",
+      kind: "template",
+      mimeType: "application/vnd.screengoblin.emergency+json",
+      url: "data:application/json;base64,e30=",
+      checksumSha256:
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      sizeBytes: 2,
+    });
+    const repository = new NativeAssetRepository(legacy);
+
+    await repository.prefetch(emergency);
+    await expect(repository.resolve(emergency)).resolves.toBe(
+      "blob:legacy-verified",
+    );
+    expect(legacy.prefetch).toHaveBeenCalledWith(emergency);
+    expect(legacy.resolve).toHaveBeenCalledWith(emergency);
+    expect(native.prefetch).not.toHaveBeenCalled();
+    expect(native.resolve).not.toHaveBeenCalled();
+
+    await repository.prune([emergency]);
+    expect(native.prune).toHaveBeenCalledWith({ retainedAssets: [] });
+    expect(legacy.prune).toHaveBeenCalledWith([emergency]);
+  });
+
+  it("fails closed on a corrupt native success without falling back", async () => {
+    native.resolve.mockResolvedValueOnce({ path: "https://cdn.test/asset" });
+
+    await expect(
+      new NativeAssetRepository(legacy).resolve(asset()),
+    ).rejects.toThrow("invalid cached path");
+    expect(legacy.resolve).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed native staging result", async () => {
+    native.prefetch.mockResolvedValueOnce({ path: "" });
+
+    await expect(
+      new NativeAssetRepository(legacy).prefetch(asset()),
+    ).rejects.toThrow("invalid cached path");
+    expect(legacy.prefetch).not.toHaveBeenCalled();
+  });
+
+  it("prunes native and legacy stores even when one cleanup fails", async () => {
+    native.prune.mockRejectedValueOnce(new Error("native prune failed"));
+    const retained = asset();
+
+    await expect(
+      new NativeAssetRepository(legacy).prune([retained]),
+    ).rejects.toThrow("Failed to prune all asset caches");
+    expect(native.prune).toHaveBeenCalledWith({
+      retainedAssets: [
+        {
+          assetId: "asset-1",
+          mimeType: "image/png",
+          checksumSha256: ABC_SHA256,
+        },
+      ],
+    });
+    expect(legacy.prune).toHaveBeenCalledWith([retained]);
+  });
+
+  it("clears both native and legacy stores even when one cleanup fails", async () => {
+    legacy.removeAll.mockRejectedValueOnce(new Error("legacy clear failed"));
+
+    await expect(new NativeAssetRepository(legacy).removeAll()).rejects.toThrow(
+      "Failed to remove all asset caches",
+    );
+    expect(native.removeAll).toHaveBeenCalledOnce();
+    expect(legacy.removeAll).toHaveBeenCalledOnce();
+  });
+
+  it("accepts only safe native free-storage telemetry", async () => {
+    await expect(nativeAvailableStorageBytes()).resolves.toBe(456);
+    native.storageStats.mockResolvedValueOnce({ availableBytes: -1 });
+    await expect(nativeAvailableStorageBytes()).rejects.toThrow(
+      "invalid asset storage statistics",
+    );
   });
 });

@@ -15,7 +15,17 @@ Offline-first signage runtime for Android TV, HDMI dongles, Chromium kiosks, and
   a missing or corrupt active marker never promotes it implicitly.
 - Existing content continues when the API is unavailable. Connectivity status stays unobtrusive in the lower corner.
 - Signed withdrawals and signed schedule boundaries blank content without reviving an older schedule; stale poll and rollback callbacks cannot overwrite a newer version.
-- Cache-miss verification is limited to 128 MiB per asset and 512 MiB per manifest, with two concurrent downloads and active/rollback generation pruning. Larger media requires the planned native incremental hash/stream-to-disk path.
+- Android streams binary cache misses into app-private staging files, verifies
+  the signed byte length and SHA-256 while writing, then atomically publishes
+  the completed file. Partial or mismatched files are removed and cannot become
+  playable. Native available-storage telemetry is exposed to the WebView, and
+  pruning retains only assets referenced by active and rollback generations.
+- Browser/PWA development keeps the bounded CacheStorage implementation. During
+  Android upgrade, an explicit native `CACHE_MISS` may resolve a retained legacy CacheStorage
+  entry only after rechecking its exact size and SHA-256; ordinary new
+  prefetches always use the native cache. The data-URL emergency fixture stays
+  on the legacy verifier only in non-production builds where emergency support
+  is explicitly enabled.
 - Web media is disabled in the metadata-only pilot.
 
 The current API/player integration supports admin-created pairing codes,
@@ -38,7 +48,7 @@ npm test
 npm run build
 ```
 
-The API must expose the contract documented in [docs/PLAYER_PROTOCOL.md](docs/PLAYER_PROTOCOL.md). Serve asset URLs with CORS enabled. Asset `sizeBytes` and `checksumSha256` must describe the exact response bytes (after any server-side content encoding is decoded by Fetch). Cache-miss assets above 128 MiB and manifests above 512 MiB are rejected until native streaming verification exists.
+The API must expose the contract documented in [docs/PLAYER_PROTOCOL.md](docs/PLAYER_PROTOCOL.md). Serve asset URLs with CORS enabled. Asset `sizeBytes` and `checksumSha256` must describe the exact response bytes delivered to the native downloader. Publication, Android native download, and browser/PWA cache misses currently retain the 128 MiB per-asset ceiling; manifests retain the 512 MiB aggregate ceiling. Native `availableBytes` telemetry additionally reflects the device's safe writable capacity after reservations.
 
 ## Android
 
@@ -60,6 +70,12 @@ the public key to the screen, verifies fresh server challenges, and supports
 transactional OWNER/ADMIN revocation. Server-verified attestation, automatic
 overlapping credential/key rotation, offline recall, verified local erasure,
 and representative physical-device validation remain release gates.
+
+The native cache implementation does not by itself close the release gate for
+representative low-space/full-disk operation, process death or power loss during
+download and rename, storage accounting across supported Android versions, or
+verified media erasure after revocation. Capture that evidence on production
+hardware before fleet rollout.
 
 Manual targeted re-enrollment requires an explicit local action before the
 Player replaces its prior Keystore identity with a fresh P-256 key. Fresh-key

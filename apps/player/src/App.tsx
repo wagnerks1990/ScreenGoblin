@@ -6,7 +6,7 @@ import {
   PlayerApi,
   PlayerApiFailure,
 } from "./core/api";
-import { CacheAssetRepository } from "./core/assets";
+import { createAssetRepository } from "./core/assets";
 import {
   freeStorageBytes,
   finalizeDeviceIdentityRotation,
@@ -25,7 +25,7 @@ import type {
 } from "./core/types";
 
 const store = new IndexedDbPlayerStore();
-const assetRepository = new CacheAssetRepository();
+const assetRepository = createAssetRepository();
 const manager = new ManifestManager(store, assetRepository);
 const startedAt = Date.now();
 const MAX_BOUNDARY_TIMER_MS = 24 * 60 * 60_000;
@@ -109,6 +109,7 @@ export default function App() {
             (savedCredentials && !validCredentials) ||
             (!savedCredentials && (savedActive || savedPrevious))
           ) {
+            manager.cancelPendingStages();
             await Promise.all([
               resumable ? store.clearProvisionedState() : store.clear(),
               assetRepository.removeAll(),
@@ -145,6 +146,7 @@ export default function App() {
     if (!deprovisionRef.current) {
       credentialEpochRef.current += 1;
       deprovisionRef.current = (async () => {
+        manager.cancelPendingStages();
         playingRef.current = undefined;
         setCredentials(undefined);
         setManifest(undefined);
@@ -182,6 +184,7 @@ export default function App() {
         );
         if (credentialEpoch !== credentialEpochRef.current) {
           try {
+            manager.cancelPendingStages();
             await Promise.all([store.clear(), assetRepository.removeAll()]);
           } catch {
             setFatal("Revoked device data could not be securely cleared");
@@ -287,20 +290,20 @@ export default function App() {
     if (!api || !credentials) return;
     const send = async () => {
       if (!navigator.onLine) return;
-      const heartbeat: Heartbeat = {
-        installationId: credentials.installationId,
-        playerVersion: __APP_VERSION__,
-        uptimeSeconds: Math.floor((Date.now() - startedAt) / 1_000),
-        freeStorageBytes: await freeStorageBytes(),
-        networkType: networkType(),
-        occurredAt: new Date().toISOString(),
-        state: manifest ? (fallback ? "fallback" : "playing") : "pairing",
-        ...(manifest ? { manifestVersion: manifest.version } : {}),
-        ...(playingRef.current
-          ? { nowPlayingAssetId: playingRef.current }
-          : {}),
-      };
       try {
+        const heartbeat: Heartbeat = {
+          installationId: credentials.installationId,
+          playerVersion: __APP_VERSION__,
+          uptimeSeconds: Math.floor((Date.now() - startedAt) / 1_000),
+          freeStorageBytes: await freeStorageBytes(),
+          networkType: networkType(),
+          occurredAt: new Date().toISOString(),
+          state: manifest ? (fallback ? "fallback" : "playing") : "pairing",
+          ...(manifest ? { manifestVersion: manifest.version } : {}),
+          ...(playingRef.current
+            ? { nowPlayingAssetId: playingRef.current }
+            : {}),
+        };
         await api.heartbeat(heartbeat);
       } catch (reason) {
         if (reason instanceof PlayerApiFailure && reason.status === 401)

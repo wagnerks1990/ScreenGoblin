@@ -18,8 +18,10 @@ const mocks = vi.hoisted(() => ({
   recover: vi.fn(),
   rollback: vi.fn(),
   stageAndActivate: vi.fn(),
+  cancelPendingStages: vi.fn(),
   manifest: vi.fn(),
   heartbeat: vi.fn(),
+  freeStorageBytes: vi.fn(),
   hasNativeDeviceIdentity: vi.fn(),
   finalizeDeviceIdentityRotation: vi.fn(),
   pairingProps: undefined as Record<string, unknown> | undefined,
@@ -41,9 +43,7 @@ vi.mock("./core/storage", () => ({
 }));
 
 vi.mock("./core/assets", () => ({
-  CacheAssetRepository: class {
-    removeAll = mocks.removeAll;
-  },
+  createAssetRepository: () => ({ removeAll: mocks.removeAll }),
 }));
 
 vi.mock("./core/manifest", () => ({
@@ -60,6 +60,7 @@ vi.mock("./core/manifest", () => ({
     recover = mocks.recover;
     rollback = mocks.rollback;
     stageAndActivate = mocks.stageAndActivate;
+    cancelPendingStages = mocks.cancelPendingStages;
   },
 }));
 
@@ -76,7 +77,7 @@ vi.mock("./core/api", async (importOriginal) => {
 });
 
 vi.mock("./core/device", () => ({
-  freeStorageBytes: () => Promise.resolve(1_000_000),
+  freeStorageBytes: mocks.freeStorageBytes,
   finalizeDeviceIdentityRotation: mocks.finalizeDeviceIdentityRotation,
   hasNativeDeviceIdentity: mocks.hasNativeDeviceIdentity,
   installationId: () => Promise.resolve("installation-123"),
@@ -131,8 +132,10 @@ beforeEach(() => {
   mocks.recover.mockReset().mockResolvedValue(manifest);
   mocks.rollback.mockReset().mockResolvedValue(undefined);
   mocks.stageAndActivate.mockReset().mockResolvedValue(manifest);
+  mocks.cancelPendingStages.mockReset();
   mocks.manifest.mockReset().mockResolvedValue(manifest);
   mocks.heartbeat.mockReset().mockResolvedValue(undefined);
+  mocks.freeStorageBytes.mockReset().mockResolvedValue(1_000_000);
   mocks.hasNativeDeviceIdentity.mockReset().mockReturnValue(false);
   mocks.finalizeDeviceIdentityRotation.mockReset().mockResolvedValue(undefined);
   mocks.pairingProps = undefined;
@@ -146,6 +149,18 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("device revocation", () => {
+  it("does not send fabricated telemetry when storage stats fail", async () => {
+    mocks.freeStorageBytes.mockRejectedValue(
+      new Error("invalid native storage stats"),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.freeStorageBytes).toHaveBeenCalled());
+    expect(mocks.heartbeat).not.toHaveBeenCalled();
+  });
+
   it("deprovisions instead of recovering cached content after a manifest 401", async () => {
     mocks.manifest.mockRejectedValue(
       new PlayerApiFailure("revoked", "http", false, 401),
@@ -156,6 +171,13 @@ describe("device revocation", () => {
     expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
     expect(mocks.clear).toHaveBeenCalledTimes(1);
     expect(mocks.removeAll).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelPendingStages).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelPendingStages.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.clear.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.cancelPendingStages.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.removeAll.mock.invocationCallOrder[0]!,
+    );
     expect(mocks.recover).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Playing content")).not.toBeInTheDocument();
   });
@@ -171,6 +193,7 @@ describe("device revocation", () => {
     expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
     expect(mocks.clear).toHaveBeenCalledTimes(1);
     expect(mocks.removeAll).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelPendingStages).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Playing content")).not.toBeInTheDocument();
   });
 
@@ -192,6 +215,7 @@ describe("device revocation", () => {
 
     await waitFor(() => expect(mocks.clear).toHaveBeenCalledTimes(2));
     expect(mocks.removeAll).toHaveBeenCalledTimes(2);
+    expect(mocks.cancelPendingStages).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("Playing content")).not.toBeInTheDocument();
   });
 

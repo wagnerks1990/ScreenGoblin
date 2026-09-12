@@ -136,6 +136,7 @@ class MemoryStore implements PlayerStore {
 class MemoryAssets implements AssetRepository {
   prefetched: string[] = [];
   pruned: string[] = [];
+  pruneCalls: string[][] = [];
   fail = false;
   async prefetch(asset: { id: string }) {
     if (this.fail) throw new Error("bad hash");
@@ -146,6 +147,7 @@ class MemoryAssets implements AssetRepository {
   }
   async prune(assets: Array<{ id: string }>) {
     this.pruned = assets.map((asset) => asset.id);
+    this.pruneCalls.push(this.pruned);
   }
   async removeAll() {
     this.prefetched = [];
@@ -226,6 +228,179 @@ describe("manifest transaction", () => {
     expect(store.active).toEqual(valid);
   });
 
+  it("prunes crash-orphaned assets after recovery while retaining active and rollback releases", async () => {
+    const store = new MemoryStore();
+    const assets = new MemoryAssets();
+    store.active = {
+      ...valid,
+      version: "current",
+      items: [{ ...valid.items[0]!, id: "active-asset" }],
+    };
+    store.previous = {
+      ...valid,
+      version: "rollback",
+      items: [{ ...valid.items[0]!, id: "rollback-asset" }],
+    };
+
+    await expect(
+      new ManifestManager(store, assets).recover(trust),
+    ).resolves.toMatchObject({ version: "current" });
+
+    await vi.waitFor(() => expect(assets.pruneCalls).toHaveLength(1));
+    expect(assets.pruneCalls).toEqual([["active-asset", "rollback-asset"]]);
+  });
+
+  it("prunes orphaned files before prefetch reserves cache space", async () => {
+    const store = new MemoryStore();
+    store.active = {
+      ...valid,
+      version: "v1",
+      items: [{ ...valid.items[0]!, id: "active-asset" }],
+    };
+    class CapacityAssets extends MemoryAssets {
+      private collected = false;
+      override async prune(assets: Array<{ id: string }>) {
+        await super.prune(assets);
+        this.collected = true;
+      }
+      override async prefetch(asset: { id: string }) {
+        if (!this.collected) {
+          const error = new Error("No space left on device");
+          Object.assign(error, { code: "ENOSPC" });
+          throw error;
+        }
+        await super.prefetch(asset);
+      }
+    }
+    const assets = new CapacityAssets();
+    const candidate = {
+      ...valid,
+      items: [{ ...valid.items[0]!, id: "candidate-asset" }],
+    };
+
+    await expect(
+      new ManifestManager(store, assets).stageAndActivate(
+        signed(candidate),
+        trust,
+      ),
+    ).resolves.toEqual(candidate);
+    expect(assets.pruneCalls[0]).toEqual(["active-asset"]);
+    expect(assets.prefetched).toEqual(["candidate-asset"]);
+  });
+
+  it("bounds native prefetch concurrency to two assets", async () => {
+    const store = new MemoryStore();
+    let concurrent = 0;
+    let maximumConcurrent = 0;
+    class ConcurrencyAssets extends MemoryAssets {
+      override async prefetch(asset: { id: string }) {
+        this.prefetched.push(asset.id);
+        concurrent += 1;
+        maximumConcurrent = Math.max(maximumConcurrent, concurrent);
+        await Promise.resolve();
+        concurrent -= 1;
+      }
+    }
+    const assets = new ConcurrencyAssets();
+    const items = Array.from({ length: 7 }, (_, index) => ({
+      ...valid.items[0]!,
+      id: `asset-${index}`,
+    }));
+
+    await new ManifestManager(store, assets).stageAndActivate(
+      signed({ ...valid, items }),
+      trust,
+    );
+
+    expect(assets.prefetched).toHaveLength(items.length);
+    expect(maximumConcurrent).toBe(2);
+  });
+
+  it("stops claiming queued assets after the first prefetch failure and preserves LKG", async () => {
+    const store = new MemoryStore();
+    const lastKnownGood = { ...valid, version: "v1" };
+    store.active = lastKnownGood;
+    let finishSecond!: () => void;
+    class FailStopAssets extends MemoryAssets {
+      override async prefetch(asset: { id: string }) {
+        this.prefetched.push(asset.id);
+        if (asset.id === "asset-0") throw new Error("native write failed");
+        if (asset.id === "asset-1")
+          await new Promise<void>((resolve) => {
+            finishSecond = resolve;
+          });
+      }
+    }
+    const assets = new FailStopAssets();
+    const items = Array.from({ length: 7 }, (_, index) => ({
+      ...valid.items[0]!,
+      id: `asset-${index}`,
+    }));
+
+    const activation = new ManifestManager(store, assets).stageAndActivate(
+      signed({ ...valid, items }),
+      trust,
+    );
+    await vi.waitFor(() => expect(finishSecond).toBeTypeOf("function"));
+    finishSecond();
+
+    await expect(activation).rejects.toThrow("native write failed");
+    expect(assets.prefetched).toEqual(["asset-0", "asset-1"]);
+    expect(store.active).toEqual(lastKnownGood);
+    expect(store.previous).toBeUndefined();
+  });
+
+  it("cancels in-flight staging before cache erasure and permits a fresh stage", async () => {
+    const store = new MemoryStore();
+    const lastKnownGood = { ...valid, version: "v1" };
+    store.active = lastKnownGood;
+    const finishDownloads: Array<() => void> = [];
+    let stall = true;
+    class CancellableAssets extends MemoryAssets {
+      override async prefetch(asset: { id: string }) {
+        this.prefetched.push(asset.id);
+        if (stall)
+          await new Promise<void>((resolve) => {
+            finishDownloads.push(resolve);
+          });
+      }
+    }
+    const assets = new CancellableAssets();
+    const manager = new ManifestManager(store, assets);
+    const items = Array.from({ length: 6 }, (_, index) => ({
+      ...valid.items[0]!,
+      id: `cancel-asset-${index}`,
+    }));
+
+    const cancelledStage = manager.stageAndActivate(
+      signed({ ...valid, version: "cancelled", items }),
+      trust,
+    );
+    await vi.waitFor(() => expect(finishDownloads).toHaveLength(2));
+
+    manager.cancelPendingStages();
+    stall = false;
+    for (const finish of finishDownloads) finish();
+
+    await expect(cancelledStage).rejects.toThrow(
+      "Manifest staging was cancelled",
+    );
+    expect(assets.prefetched).toEqual(["cancel-asset-0", "cancel-asset-1"]);
+    expect(store.active).toEqual(lastKnownGood);
+    expect(store.previous).toBeUndefined();
+
+    const fresh = {
+      ...valid,
+      version: "fresh",
+      items: [{ ...valid.items[0]!, id: "fresh-asset" }],
+    };
+    await expect(
+      manager.stageAndActivate(signed(fresh), trust),
+    ).resolves.toEqual(fresh);
+    expect(store.active).toEqual(fresh);
+    expect(store.previous).toEqual(lastKnownGood);
+  });
+
   it("does not trust a tampered active hint when deciding whether to prefetch", async () => {
     const store = new MemoryStore();
     const assets = new MemoryAssets();
@@ -277,6 +452,104 @@ describe("manifest transaction", () => {
     });
   });
 
+  it("serializes staging so concurrent releases cannot prune each other's uncommitted files", async () => {
+    const store = new MemoryStore();
+    let finishFirstPrefetch!: () => void;
+    class TrackingAssets extends MemoryAssets {
+      cached = new Set<string>();
+      override async prefetch(asset: { id: string }) {
+        this.cached.add(asset.id);
+        this.prefetched.push(asset.id);
+        if (asset.id === "first-asset")
+          await new Promise<void>((resolve) => {
+            finishFirstPrefetch = resolve;
+          });
+      }
+      override async prune(assets: Array<{ id: string }>) {
+        await super.prune(assets);
+        const retained = new Set(assets.map((asset) => asset.id));
+        for (const id of this.cached) {
+          if (!retained.has(id)) this.cached.delete(id);
+        }
+      }
+    }
+    const assets = new TrackingAssets();
+    const manager = new ManifestManager(store, assets);
+    const first = {
+      ...valid,
+      version: "first",
+      items: [{ ...valid.items[0]!, id: "first-asset" }],
+    };
+    const second = {
+      ...valid,
+      version: "second",
+      items: [{ ...valid.items[0]!, id: "second-asset" }],
+    };
+
+    const firstActivation = manager.stageAndActivate(signed(first), trust);
+    await vi.waitFor(() => expect(finishFirstPrefetch).toBeTypeOf("function"));
+    const secondActivation = manager.stageAndActivate(signed(second), trust);
+
+    await Promise.resolve();
+    expect(assets.prefetched).toEqual(["first-asset"]);
+    expect(assets.cached.has("first-asset")).toBe(true);
+
+    finishFirstPrefetch();
+    await expect(firstActivation).resolves.toEqual(first);
+    await expect(secondActivation).resolves.toEqual(second);
+    expect(assets.cached).toEqual(new Set(["first-asset", "second-asset"]));
+    expect(store.active).toEqual(second);
+    expect(store.previous).toEqual(first);
+  });
+
+  it("defers recovery pruning behind an in-progress stage without blocking recovery", async () => {
+    const store = new MemoryStore();
+    store.active = { ...valid, version: "baseline" };
+    let finishPrefetch!: () => void;
+    class StalledTrackingAssets extends MemoryAssets {
+      cached = new Set<string>();
+      override async prefetch(asset: { id: string }) {
+        this.cached.add(asset.id);
+        await new Promise<void>((resolve) => {
+          finishPrefetch = resolve;
+        });
+      }
+      override async prune(assets: Array<{ id: string }>) {
+        await super.prune(assets);
+        const retained = new Set(assets.map((asset) => asset.id));
+        for (const id of this.cached) {
+          if (!retained.has(id)) this.cached.delete(id);
+        }
+      }
+    }
+    const assets = new StalledTrackingAssets();
+    const manager = new ManifestManager(store, assets);
+    const candidate = {
+      ...valid,
+      version: "candidate",
+      items: [{ ...valid.items[0]!, id: "staged-asset" }],
+    };
+
+    const activation = manager.stageAndActivate(signed(candidate), trust);
+    await vi.waitFor(() => expect(finishPrefetch).toBeTypeOf("function"));
+    const pruneCountBeforeRecovery = assets.pruneCalls.length;
+
+    await expect(manager.recover(trust)).resolves.toMatchObject({
+      version: "baseline",
+    });
+    expect(assets.pruneCalls).toHaveLength(pruneCountBeforeRecovery);
+    expect(assets.cached.has("staged-asset")).toBe(true);
+
+    finishPrefetch();
+    await expect(activation).resolves.toEqual(candidate);
+    await vi.waitFor(() =>
+      expect(assets.pruneCalls.length).toBeGreaterThan(
+        pruneCountBeforeRecovery,
+      ),
+    );
+    expect(assets.cached.has("staged-asset")).toBe(true);
+  });
+
   it("serializes a fresh activation after stale recovery cleanup", async () => {
     const store = new MemoryStore();
     const manager = new ManifestManager(store, new MemoryAssets());
@@ -309,6 +582,28 @@ describe("manifest transaction", () => {
       new ManifestManager(store, assets).stageAndActivate(signed(valid), trust),
     ).rejects.toThrow("bad hash");
     expect(store.active.version).toBe("v1");
+  });
+
+  it("preserves the last-known-good manifest on a native ENOSPC rejection", async () => {
+    const store = new MemoryStore();
+    const lastKnownGood = { ...valid, version: "v1" };
+    store.active = lastKnownGood;
+    class FullNativeCache extends MemoryAssets {
+      override async prefetch(): Promise<void> {
+        const error = new Error("No space left on device");
+        Object.assign(error, { code: "ENOSPC" });
+        throw error;
+      }
+    }
+
+    const activation = new ManifestManager(
+      store,
+      new FullNativeCache(),
+    ).stageAndActivate(signed(valid), trust);
+
+    await expect(activation).rejects.toMatchObject({ code: "ENOSPC" });
+    expect(store.active).toEqual(lastKnownGood);
+    expect(store.previous).toBeUndefined();
   });
 
   it("retains and restores the previous release", async () => {

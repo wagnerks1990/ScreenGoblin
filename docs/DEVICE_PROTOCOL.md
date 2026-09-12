@@ -91,7 +91,7 @@ are one-use.
 
 ## Heartbeat
 
-The normal heartbeat contains installation ID, player and OS versions, uptime, free storage, network type, active manifest version, and current asset ID. The server returns the next interval. Command delivery and jittered scheduling are required before fleet rollout but are not enabled in this prototype.
+The normal heartbeat contains installation ID, player and OS versions, uptime, free storage, network type, active manifest version, and current asset ID. On Android, free storage comes from the native cache's safe `availableBytes` value after filesystem reserve and in-flight reservations, rather than the WebView quota estimate. The server returns the next interval. Command delivery and jittered scheduling are required before fleet rollout but are not enabled in this prototype.
 
 The UI derives online/warning/offline state from server receipt time, never from a device-supplied clock alone.
 
@@ -107,7 +107,48 @@ A manifest contains:
 - minimum compatible player version where needed;
 - a signature over a canonical representation.
 
-The player downloads into a staging cache, validates size and SHA-256, then atomically marks the new manifest active. Persistent cache hits are size-checked and rehashed before reuse and playback. The WebView path bounds content to 128 MiB per asset and 512 MiB per release, limits concurrency to two downloads, and prunes outside active/rollback generations; the API enforces the same byte ceilings when publishing. The metadata-only pilot boundary permits JPEG, PNG, MP4, and JSON templates and disables web assets. Native stream-to-disk verification remains a release gate for larger content. The player retains at least one prior complete normal manifest, and emergency overlays never replace that rollback baseline. The API signs manifests with Ed25519. During pairing the player pins that deployment's public verification key and verifies the exact signed envelope plus its expected screen ID before staging. The exact signing bytes and signature persist with both manifest slots and are reverified on boot and rollback; legacy unsigned or altered records blank and are removed, and a missing active marker cannot revive the prior slot. Signing-key rotation with overlap/key IDs remains a pre-production gate. A failed signature, download, clock check, or activation preserves an already verified last-known-good manifest where safe.
+On Android, the player streams each binary cache miss into an app-private staging
+file, incrementally computes byte length and SHA-256, syncs it, and atomically
+publishes the file only after both values exactly match the signed asset.
+Redirected, failed, interrupted, oversized, undersized, or mismatched downloads
+remove their staging files and cannot become playable. Existing completed files
+are preserved until a replacement succeeds. Native available-storage telemetry
+is exposed to the WebView. The current native path retains the signed 128 MiB
+per-asset ceiling and a filesystem safety reserve. Pruning retains assets referenced by active and
+rollback generations and removes unreferenced completed orphan files; startup
+separately cleans abandoned staging files.
+
+During upgrade, only an explicit native `CACHE_MISS` may resolve a retained
+legacy CacheStorage entry, and only after that entry is reverified for exact
+size and SHA-256. Ordinary new Android prefetches always target the native
+cache, except for the explicitly non-production data-URL emergency fixture;
+prune and secure-clear operations
+cover both stores. A malformed native success or any other native error cannot
+fall back to a raw or unchecked URL. Browser/PWA development still uses the
+bounded CacheStorage path: 128 MiB per asset, 512 MiB per release, two
+concurrent downloads, exact
+size/SHA-256 revalidation, and active/rollback pruning. The API enforces the same
+signed byte ceilings when publishing. The metadata-only pilot boundary permits
+JPEG, PNG, MP4, and JSON templates and disables web assets. The player retains
+at least one prior complete normal manifest, and emergency overlays never
+replace that rollback baseline. The API signs manifests with Ed25519. During
+pairing the player pins that deployment's public verification key and verifies
+the exact signed envelope plus its expected screen ID before staging. The exact
+signing bytes and signature persist with both manifest slots and are reverified
+on boot and rollback; legacy unsigned or altered records blank and are removed,
+and a missing active marker cannot revive the prior slot. Signing-key rotation
+with overlap/key IDs remains a pre-production gate. A failed signature,
+download, clock check, storage operation, or activation preserves an already
+verified last-known-good manifest where safe. Representative full-disk,
+process-death, and power-loss evidence on production Android hardware remains a
+pre-production gate.
+
+Manifest staging serializes pre-prune, prefetch, state activation, and
+post-prune while retaining active and rollback assets until the state commit.
+Recovery schedules cleanup behind staging but does not wait for a stalled
+download, and explicit rollback uses the independent state path. A native
+capacity or I/O error rejects the candidate release rather than replacing the
+last-known-good manifest.
 
 Playback telemetry identifies content only after the active image loads, video
 enters playing, or a validated template commits. Web playback is disabled. The item

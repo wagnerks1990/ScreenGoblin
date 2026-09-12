@@ -63,7 +63,26 @@ Object storage needs a matching versioned backup and integrity inventory; the Po
 
 Application rollback is safe only when the old application supports the migrated schema. Prefer forward-compatible, expand/migrate/contract database changes. Redeploy the prior image tag, verify readiness, and document the incident. Do not automatically reverse a destructive migration; restore the verified backup when required.
 
-Players retain a last-known-good manifest and prune persistent web cache to the active and rollback generations. Signed withdrawals and `playbackEndsAt` boundaries intentionally blank expired schedules; an ordinary manifest lease expiry does not erase offline last-known-good playback. Players should be released in rings: development, lab, pilot site, then broad fleet. Stop rollout when crash rate, fallback state, storage pressure, or heartbeat loss exceeds the agreed threshold. Native stream-to-disk verification and representative full-disk testing remain required before fleet use.
+Players retain a last-known-good manifest and prune the Android app-private
+native cache, or browser development CacheStorage, to assets referenced by the
+active and rollback generations. Signed withdrawals and `playbackEndsAt`
+boundaries intentionally blank expired schedules; an ordinary manifest lease
+expiry does not erase offline last-known-good playback. Monitor native available
+storage, download verification failures, staging cleanup failures, prune
+failures, fallback state, and device free storage. Repeated hash/size mismatches
+should stop the release and trigger origin/object integrity investigation;
+repeated write/rename failures should stop the affected device ring and trigger
+storage and filesystem diagnosis. Never clear a cache merely to hide pressure
+before preserving diagnostics.
+
+Players should be released in rings: development, lab, pilot site, then broad
+fleet. Stop rollout when crash rate, fallback state, storage pressure, native
+cache errors, or heartbeat loss exceeds the agreed threshold. Before fleet use,
+capture representative physical-device evidence for low-space/full-disk
+behavior, process death and power loss during streaming and atomic publication,
+reboot recovery, completed-orphan pruning, abandoned-staging cleanup, and
+telemetry accuracy. Host tests and a successful APK build do not close these
+gates.
 
 The release-evidence workflow retains checksum-bound local Docker archives for tags/manual runs, but those artifacts are explicitly unsigned and are not production releases. A production rollback must use an approved, signed, immutable registry digest whose schema compatibility and retention have been verified. See `docs/RELEASE_EVIDENCE.md`.
 
