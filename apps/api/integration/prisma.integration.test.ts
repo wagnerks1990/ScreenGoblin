@@ -1616,8 +1616,12 @@ describe("PrismaStore PostgreSQL integration", () => {
       tags: [],
     });
     const heartbeat = await store.heartbeat(screen.id, {
+      playerVersion: "bigint-test",
+      manifestVersion: null,
+      nowPlayingAssetId: null,
       uptimeSeconds: sizeBytes,
       freeStorageBytes: sizeBytes - 1,
+      networkType: "integration",
     });
 
     expect(media.sizeBytes).toBe(sizeBytes);
