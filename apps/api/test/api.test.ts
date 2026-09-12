@@ -15,6 +15,10 @@ import { verifyMediaCapability } from "../src/media/delivery.js";
 
 const secret = "test-secret-that-is-longer-than-thirty-two-characters";
 const signingKey = Buffer.alloc(32, 7).toString("base64url");
+const storeIdempotency = () => ({
+  keyHash: sha256(randomToken()),
+  requestDigestSha256: sha256(randomToken()),
+});
 const capabilityClaims = (url: string) => {
   const capability = new URL(url).searchParams.get("capability");
   if (!capability) throw new Error("Manifest item has no media capability");
@@ -164,6 +168,7 @@ const scheduledPlaylist = async (
     },
     { actorUserId: store.users[0]!.id },
     { mediaAllowedOrigins: ["https://media.example.test"] },
+    storeIdempotency(),
   );
   if (!result.published)
     throw new Error(`Schedule fixture failed: ${result.reason}`);
@@ -864,6 +869,13 @@ describe("authentication and organization RBAC", () => {
 });
 
 describe("immutable ordinary release publication", () => {
+  const scheduleHeaders = (
+    bearer = token,
+    idempotencyKey = crypto.randomUUID(),
+  ) => ({
+    authorization: `Bearer ${bearer}`,
+    "idempotency-key": idempotencyKey,
+  });
   const schedulePayload = (playlistId: string, screenId: string) => ({
     playlistId,
     name: "School day",
@@ -909,7 +921,7 @@ describe("immutable ordinary release publication", () => {
       const publication = await app.inject({
         method: "POST",
         url: "/api/v1/schedules",
-        headers: { authorization: `Bearer ${roleToken}` },
+        headers: scheduleHeaders(roleToken),
         payload: {
           ...schedulePayload(playlist.id, screen.id),
           name: `${role} publication`,
@@ -930,7 +942,7 @@ describe("immutable ordinary release publication", () => {
     const denied = await app.inject({
       method: "POST",
       url: "/api/v1/schedules",
-      headers: { authorization: `Bearer ${viewerToken}` },
+      headers: scheduleHeaders(viewerToken),
       payload: {
         ...schedulePayload(playlist.id, screen.id),
         name: "Viewer publication",
@@ -980,7 +992,7 @@ describe("immutable ordinary release publication", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/schedules",
-      headers: { authorization: `Bearer ${token}` },
+      headers: scheduleHeaders(),
       payload: schedulePayload(playlist.id, screen.id),
     });
     expect(response.statusCode).toBe(201);
@@ -1029,11 +1041,12 @@ describe("immutable ordinary release publication", () => {
         { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
       ],
     });
+    const key = crypto.randomUUID();
     const request = () =>
       app.inject({
         method: "POST",
         url: "/api/v1/schedules",
-        headers: { authorization: `Bearer ${token}` },
+        headers: scheduleHeaders(token, key),
         payload: schedulePayload(playlist.id, screen.id),
       });
 
@@ -1050,6 +1063,215 @@ describe("immutable ordinary release publication", () => {
     expect(store.schedules).toHaveLength(1);
     expect(store.releases).toHaveLength(1);
     expect(store.releaseAssignments).toHaveLength(1);
+    expect(store.audits).toHaveLength(1);
+  });
+
+  it("replays a lost publication response after withdrawal without reactivation", async () => {
+    const [firstScreen, secondScreen] = await Promise.all([
+      store.createScreen("org-a", {
+        name: "First lobby",
+        location: "",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      }),
+      store.createScreen("org-a", {
+        name: "Second lobby",
+        location: "",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      }),
+    ]);
+    const asset = await store.createMedia("org-a", {
+      name: "Idempotent welcome",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/idempotent.png",
+      checksumSha256: "d".repeat(64),
+      sizeBytes: 3,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Idempotent playlist",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    const key = crypto.randomUUID();
+    const payload = {
+      ...schedulePayload(playlist.id, firstScreen.id),
+      daysOfWeek: [5, 1],
+      screenIds: [secondScreen.id, firstScreen.id],
+    };
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: scheduleHeaders(token, key),
+      payload,
+    });
+    expect(first.statusCode).toBe(201);
+    const withdrawal = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/schedules/${first.json().id}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(withdrawal.statusCode).toBe(204);
+
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: scheduleHeaders(token, key),
+      payload: {
+        ...payload,
+        daysOfWeek: [1, 5, 1],
+        screenIds: [firstScreen.id, secondScreen.id, firstScreen.id],
+      },
+    });
+    expect(replay.statusCode).toBe(201);
+    expect(replay.json()).toEqual(first.json());
+    expect(store.schedules).toHaveLength(1);
+    expect(store.releaseAssignments.map((item) => item.state)).toEqual([
+      "ASSIGNED",
+      "WITHDRAWN",
+    ]);
+    expect(store.audits.map((item) => item.action)).toEqual([
+      "release.published",
+      "release.withdrawn",
+    ]);
+    expect(store.idempotencyRecords[0]!.keyHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(store.idempotencyRecords)).not.toContain(key);
+    await expect(
+      store.activeOrdinaryReleases(
+        "org-a",
+        firstScreen.id,
+        "2026-09-14T13:00:00.000Z",
+      ),
+    ).resolves.toEqual([]);
+
+    const intentional = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: scheduleHeaders(),
+      payload,
+    });
+    expect(intentional.statusCode).toBe(201);
+    expect(intentional.json().id).not.toBe(first.json().id);
+    expect(store.releaseAssignments).toHaveLength(3);
+  });
+
+  it("rejects missing, malformed, payload-reused, and actor-reused keys generically", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Key validation",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const asset = await store.createMedia("org-a", {
+      name: "Key validation",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/key-validation.png",
+      checksumSha256: "e".repeat(64),
+      sizeBytes: 3,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Key validation",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    const payload = schedulePayload(playlist.id, screen.id);
+    for (const key of [undefined, "NOT-A-CANONICAL-UUID"] as const) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/schedules",
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(key ? { "idempotency-key": key } : {}),
+        },
+        payload,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("VALIDATION_ERROR");
+    }
+
+    const key = crypto.randomUUID();
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: scheduleHeaders(token, key),
+      payload,
+    });
+    expect(first.statusCode).toBe(201);
+    const changed = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: scheduleHeaders(token, key),
+      payload: { ...payload, name: "Changed intent" },
+    });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json().error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+
+    store.users[1]!.role = "PUBLISHER";
+    const otherActor = issueTestToken(store.users[1]!);
+    const actorReuse = await app.inject({
+      method: "POST",
+      url: "/api/v1/schedules",
+      headers: scheduleHeaders(otherActor, key),
+      payload,
+    });
+    expect(actorReuse.statusCode).toBe(409);
+    expect(actorReuse.json().error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(store.schedules).toHaveLength(1);
+    expect(store.audits).toHaveLength(1);
+  });
+
+  it("revalidates authority and retains an expired key tombstone", async () => {
+    const screen = await store.createScreen("org-a", {
+      name: "Replay authority",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const asset = await store.createMedia("org-a", {
+      name: "Replay authority",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/replay-authority.png",
+      checksumSha256: "f".repeat(64),
+      sizeBytes: 3,
+    });
+    const playlist = await store.createPlaylist("org-a", {
+      name: "Replay authority",
+      description: "",
+      items: [
+        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
+      ],
+    });
+    const key = crypto.randomUUID();
+    const request = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/schedules",
+        headers: scheduleHeaders(token, key),
+        payload: schedulePayload(playlist.id, screen.id),
+      });
+    expect((await request()).statusCode).toBe(201);
+    store.users[0]!.role = "VIEWER";
+    expect((await request()).statusCode).toBe(401);
+    store.users[0]!.role = "OWNER";
+    store.idempotencyRecords[0]!.expiresAt = "2020-01-01T00:00:00.000Z";
+    const expired = await request();
+    expect(expired.statusCode).toBe(409);
+    expect(expired.json().error.code).toBe("IDEMPOTENCY_KEY_EXPIRED");
+    expect(store.idempotencyRecords).toHaveLength(1);
+    expect(store.idempotencyRecords[0]!.response).toBeUndefined();
+    expect((await request()).json().error.code).toBe("IDEMPOTENCY_KEY_EXPIRED");
+    expect(store.schedules).toHaveLength(1);
     expect(store.audits).toHaveLength(1);
   });
 
@@ -1079,7 +1301,7 @@ describe("immutable ordinary release publication", () => {
     const publication = await app.inject({
       method: "POST",
       url: "/api/v1/schedules",
-      headers: { authorization: `Bearer ${token}` },
+      headers: scheduleHeaders(),
       payload: schedulePayload(playlist.id, screen.id),
     });
     expect(publication.statusCode).toBe(201);
@@ -1103,7 +1325,7 @@ describe("immutable ordinary release publication", () => {
     const screenDeletion = await app.inject({
       method: "DELETE",
       url: `/api/v1/screens/${screen.id}`,
-      headers: { authorization: `Bearer ${token}` },
+      headers: scheduleHeaders(),
     });
     expect(screenDeletion.statusCode).toBe(204);
     expect(await store.getScreen("org-a", screen.id)).toBeNull();
@@ -1126,7 +1348,7 @@ describe("immutable ordinary release publication", () => {
     const emptyResponse = await app.inject({
       method: "POST",
       url: "/api/v1/schedules",
-      headers: { authorization: `Bearer ${token}` },
+      headers: scheduleHeaders(),
       payload: schedulePayload(empty.id, screen.id),
     });
     expect(emptyResponse.statusCode).toBe(422);
@@ -1150,7 +1372,7 @@ describe("immutable ordinary release publication", () => {
     const policyResponse = await app.inject({
       method: "POST",
       url: "/api/v1/schedules",
-      headers: { authorization: `Bearer ${token}` },
+      headers: scheduleHeaders(),
       payload: schedulePayload(offPolicy.id, screen.id),
     });
     expect(policyResponse.statusCode).toBe(422);
@@ -1173,7 +1395,7 @@ describe("immutable ordinary release publication", () => {
       app.inject({
         method: "POST",
         url: "/api/v1/schedules",
-        headers: { authorization: `Bearer ${token}` },
+        headers: scheduleHeaders(),
         payload: schedulePayload(playlistId, screen.id),
       });
     const createSingleAssetPlaylist = async (
@@ -1651,6 +1873,7 @@ describe("device lifecycle", () => {
       },
       { actorUserId: store.users[0]!.id },
       { mediaAllowedOrigins: ["https://media.example.test"] },
+      storeIdempotency(),
     );
     expect(publication.published).toBe(true);
 
@@ -1864,6 +2087,7 @@ describe("device lifecycle", () => {
       },
       { actorUserId: store.users[0]!.id },
       { mediaAllowedOrigins: ["https://media.example.test"] },
+      storeIdempotency(),
     );
     expect(publication).toEqual({
       published: false,

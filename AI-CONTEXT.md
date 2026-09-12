@@ -93,6 +93,11 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   and revalidate the actor's current organization membership in the store. The
   current role-to-capability map is only a compatibility adapter; do not treat it
   as scoped authorization or an approval workflow.
+- Ordinary publication requires a canonical UUIDv4 command key. Store only its
+  domain- and tenant-bound SHA-256 fingerprint and canonical request digest;
+  commit the replay body with release, assignment, and audit state. A same-key
+  retry is historical response recovery and must never reactivate a withdrawn
+  assignment. Thirty-day response bodies compact to non-reusable tombstones.
 - Tenant-owned database relationships must carry and enforce the same organization ID at the foreign-key boundary; migrations must abort for investigation rather than silently relabel cross-tenant legacy rows.
 - Location is now a stable tenant-bound classification with audited owner/admin
   CRUD and optional Screen linkage. It has no grants or filtering semantics;

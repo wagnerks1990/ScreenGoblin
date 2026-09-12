@@ -6,6 +6,7 @@ import type {
   PlaylistRecord,
   PublishedReleaseRecord,
   ReleaseAssignmentRecord,
+  SchedulePublicationInput,
 } from "../domain/types.js";
 
 export type ReleaseSnapshotFailureReason =
@@ -79,6 +80,63 @@ export const releaseSnapshotDigest = (
   snapshot: CanonicalReleaseSnapshot,
 ): string =>
   createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+
+export interface CanonicalSchedulePublicationRequest {
+  schemaVersion: 1;
+  operation: "schedule.publish";
+  playlistId: string;
+  name: string;
+  priority: SchedulePublicationInput["priority"];
+  startsAt: string;
+  endsAt?: string | undefined;
+  timezone: string;
+  daysOfWeek: number[];
+  dailyStartMinutes?: number | undefined;
+  dailyEndMinutes?: number | undefined;
+  enabled: boolean;
+  screenIds: string[];
+}
+
+export function canonicalSchedulePublicationRequest(
+  input: SchedulePublicationInput,
+): CanonicalSchedulePublicationRequest {
+  return {
+    schemaVersion: 1,
+    operation: "schedule.publish",
+    playlistId: input.playlistId,
+    name: input.name,
+    priority: input.priority,
+    startsAt: new Date(input.startsAt).toISOString(),
+    ...(input.endsAt ? { endsAt: new Date(input.endsAt).toISOString() } : {}),
+    timezone: input.timezone,
+    daysOfWeek: [...new Set(input.daysOfWeek)].sort((a, b) => a - b),
+    ...(input.dailyStartMinutes !== undefined
+      ? { dailyStartMinutes: input.dailyStartMinutes }
+      : {}),
+    ...(input.dailyEndMinutes !== undefined
+      ? { dailyEndMinutes: input.dailyEndMinutes }
+      : {}),
+    enabled: input.enabled,
+    screenIds: [...new Set(input.screenIds)].sort(),
+  };
+}
+
+export const schedulePublicationRequestDigest = (
+  input: SchedulePublicationInput,
+): string =>
+  createHash("sha256")
+    .update(JSON.stringify(canonicalSchedulePublicationRequest(input)))
+    .digest("hex");
+
+export const schedulePublicationKeyHash = (
+  organizationId: string,
+  key: string,
+): string =>
+  createHash("sha256")
+    .update(
+      `screengoblin:schedule-publish-idempotency:v1\0${organizationId}\0${key}`,
+    )
+    .digest("hex");
 
 export function canonicalStoredReleaseSnapshot(
   release: PublishedReleaseRecord,

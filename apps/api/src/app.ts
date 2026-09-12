@@ -62,6 +62,7 @@ export async function buildApp(
             "req.headers.x-device-token",
             "req.headers.x-device-challenge",
             "req.headers.x-device-signature",
+            "req.headers.idempotency-key",
             "body.password",
             "req.url",
           ],

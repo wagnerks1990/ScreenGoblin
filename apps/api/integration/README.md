@@ -23,6 +23,10 @@ email lookup, deterministic compatibility membership selection, and
 individually revocable user-session races, rollback, expiry, and tenant scope.
 It also verifies serialized failed-login telemetry inserts, retention/cap
 pruning, newest-event preservation, and database rejection of non-HMAC keys.
+Schedule publication coverage includes tenant-bound command keys, concurrent
+same-key serialization, lost-response replay after withdrawal, fresh-key
+intentional republication, authorization races, durable expired tombstones,
+and rollback when either audit or idempotency persistence fails.
 
 Known contract gaps are intentionally not hidden by the harness:
 

@@ -5,6 +5,10 @@ import { mediaStorageKey } from "../src/media/delivery.js";
 import { PrismaStore } from "../src/store/prisma.js";
 import { LOGIN_FAILURE_MAX_RECORDS } from "../src/domain/types.js";
 import { opaqueSecurityEventKey } from "../src/utils/rate-limit.js";
+import {
+  schedulePublicationKeyHash,
+  schedulePublicationRequestDigest,
+} from "../src/releases/canonical.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -30,6 +34,10 @@ if (databaseName !== "screengoblin_test" || !loopbackHosts.has(databaseHost)) {
 const store = new PrismaStore();
 const prisma = store.prisma;
 const proofHash = () => randomUUID().replaceAll("-", "").repeat(2);
+const publicationIdempotency = () => ({
+  keyHash: proofHash(),
+  requestDigestSha256: proofHash(),
+});
 const approvedPasswordHash =
   "$2b$12$C6UzMDM.H6dfI/f/IKcEe.82jG7y4g4AY8I8HibLFSWafVkx8S4hS";
 const proofEnrollment = (byte: number) => ({
@@ -2684,6 +2692,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           input,
           { actorUserId },
           policy,
+          publicationIdempotency(),
         ),
       ).resolves.toEqual({ published: false, reason: "FORBIDDEN" });
     }
@@ -2706,6 +2715,7 @@ describe("PrismaStore PostgreSQL integration", () => {
       input,
       { actorUserId: actor.id },
       policy,
+      publicationIdempotency(),
     );
     if (!publication.published) throw new Error("authorized publish failed");
 
@@ -2802,6 +2812,7 @@ describe("PrismaStore PostgreSQL integration", () => {
       enabled: true,
       screenIds: [screen.id],
     };
+    const concurrentCommand = publicationIdempotency();
     const publications = await Promise.all(
       Array.from({ length: 4 }, (_, index) =>
         store.publishScheduleAndAudit(
@@ -2812,6 +2823,7 @@ describe("PrismaStore PostgreSQL integration", () => {
             requestId: `publish-integration-${index}`,
           },
           { mediaAllowedOrigins: ["https://media.example.test"] },
+          concurrentCommand,
         ),
       ),
     );
@@ -2835,6 +2847,7 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect(await prisma.schedule.count()).toBe(1);
     expect(await prisma.publishedRelease.count()).toBe(1);
     expect(await prisma.releaseAssignment.count()).toBe(1);
+    expect(await prisma.idempotencyRecord.count()).toBe(1);
     expect(
       await prisma.auditEvent.count({
         where: { organizationId: organization.id, action: "release.published" },
@@ -3139,7 +3152,7 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).toBe(2);
   });
 
-  it("creates a new active assignment when unchanged content is republished after withdrawal", async () => {
+  it("replays a withdrawn publication without reactivation and uses a fresh key for a new intent", async () => {
     const organization = await createOrganization("release-reactivation");
     const actor = await createUser("release-reactivation@example.test");
     await prisma.membership.create({
@@ -3187,22 +3200,78 @@ describe("PrismaStore PostgreSQL integration", () => {
       enabled: true,
       screenIds: [screen.id],
     };
+    const originalCommand = publicationIdempotency();
     const first = await store.publishScheduleAndAudit(
       organization.id,
       input,
       { actorUserId: actor.id },
       { mediaAllowedOrigins: ["https://media.example.test"] },
+      originalCommand,
     );
     if (!first.published) throw new Error("initial publication failed");
     await store.withdrawScheduleAndAudit(organization.id, first.schedule.id, {
       actorUserId: actor.id,
     });
 
+    const recovered = await store.publishScheduleAndAudit(
+      organization.id,
+      input,
+      { actorUserId: actor.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+      originalCommand,
+    );
+    expect(recovered).toMatchObject({
+      published: true,
+      replayed: true,
+      schedule: { id: first.schedule.id },
+      assignment: { id: first.assignment.id },
+    });
+    expect(await prisma.schedule.count()).toBe(1);
+    expect(await prisma.releaseAssignment.count()).toBe(2);
+
+    const [replay, demotion] = await Promise.all([
+      store.publishScheduleAndAudit(
+        organization.id,
+        input,
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+        originalCommand,
+      ),
+      store.changeMembershipRoleAndAudit(organization.id, actor.id, "VIEWER", {
+        reason: "Concurrent replay demotion",
+      }),
+    ]);
+    expect(demotion).toEqual({ updated: true });
+    expect(
+      replay.published
+        ? [replay.schedule.id, replay.assignment.id]
+        : replay.reason,
+    ).toEqual(
+      replay.published ? [first.schedule.id, first.assignment.id] : "FORBIDDEN",
+    );
+    await expect(
+      store.activeOrdinaryReleases(
+        organization.id,
+        screen.id,
+        now.toISOString(),
+      ),
+    ).resolves.toEqual([]);
+    expect(await prisma.schedule.count()).toBe(1);
+    expect(await prisma.releaseAssignment.count()).toBe(2);
+    expect(await prisma.idempotencyRecord.count()).toBe(1);
+
+    await store.changeMembershipRoleAndAudit(
+      organization.id,
+      actor.id,
+      "OWNER",
+      { reason: "Intentional republish" },
+    );
     const second = await store.publishScheduleAndAudit(
       organization.id,
       input,
       { actorUserId: actor.id },
       { mediaAllowedOrigins: ["https://media.example.test"] },
+      publicationIdempotency(),
     );
     expect(second.published).toBe(true);
     if (!second.published) throw new Error("republication failed");
@@ -3227,6 +3296,179 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect(await prisma.schedule.count()).toBe(2);
     expect(await prisma.publishedRelease.count()).toBe(1);
     expect(await prisma.releaseAssignment.count()).toBe(3);
+    expect(await prisma.idempotencyRecord.count()).toBe(2);
+  });
+
+  it("tenant-binds keys, rejects actor or payload reuse, and retains expired tombstones", async () => {
+    const [alpha, beta] = await Promise.all([
+      createOrganization("idempotency-alpha"),
+      createOrganization("idempotency-beta"),
+    ]);
+    const [alphaActor, otherAlphaActor, betaActor] = await Promise.all([
+      createMember(alpha.id, "OWNER", "idempotency-alpha-owner"),
+      createMember(alpha.id, "PUBLISHER", "idempotency-alpha-publisher"),
+      createMember(beta.id, "OWNER", "idempotency-beta-owner"),
+    ]);
+    const createInput = async (organizationId: string, suffix: string) => {
+      const screen = await store.createScreen(organizationId, {
+        name: `${suffix} screen`,
+        location: "",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      });
+      const media = await store.createMedia(organizationId, {
+        name: `${suffix} media`,
+        kind: "image",
+        mimeType: "image/png",
+        url: `https://media.example.test/${suffix}.png`,
+        checksumSha256: (suffix === "alpha" ? "a" : "b").repeat(64),
+        sizeBytes: 100,
+      });
+      const playlist = await store.createPlaylist(organizationId, {
+        name: `${suffix} playlist`,
+        description: "",
+        items: [
+          {
+            id: "ignored",
+            assetId: media.id,
+            position: 0,
+            durationSeconds: 10,
+          },
+        ],
+      });
+      return {
+        playlistId: playlist.id,
+        name: `${suffix} schedule`,
+        priority: "normal" as const,
+        startsAt: new Date(Date.now() - 60_000).toISOString(),
+        timezone: "UTC",
+        daysOfWeek: [],
+        enabled: true,
+        screenIds: [screen.id],
+      };
+    };
+    const [alphaInput, betaInput] = await Promise.all([
+      createInput(alpha.id, "alpha"),
+      createInput(beta.id, "beta"),
+    ]);
+    const rawKey = randomUUID();
+    const alphaCommand = {
+      keyHash: schedulePublicationKeyHash(alpha.id, rawKey),
+      requestDigestSha256: schedulePublicationRequestDigest(alphaInput),
+    };
+    const betaCommand = {
+      keyHash: schedulePublicationKeyHash(beta.id, rawKey),
+      requestDigestSha256: schedulePublicationRequestDigest(betaInput),
+    };
+    const policy = { mediaAllowedOrigins: ["https://media.example.test"] };
+    await expect(
+      store.publishScheduleAndAudit(
+        alpha.id,
+        alphaInput,
+        { actorUserId: alphaActor.id },
+        policy,
+        alphaCommand,
+      ),
+    ).resolves.toMatchObject({ published: true });
+    const changedInput = { ...alphaInput, name: "changed payload" };
+    await expect(
+      store.publishScheduleAndAudit(
+        alpha.id,
+        changedInput,
+        { actorUserId: alphaActor.id },
+        policy,
+        {
+          ...alphaCommand,
+          requestDigestSha256: schedulePublicationRequestDigest(changedInput),
+        },
+      ),
+    ).resolves.toEqual({
+      published: false,
+      reason: "IDEMPOTENCY_KEY_REUSED",
+    });
+    await expect(
+      store.publishScheduleAndAudit(
+        alpha.id,
+        alphaInput,
+        { actorUserId: otherAlphaActor.id },
+        policy,
+        alphaCommand,
+      ),
+    ).resolves.toEqual({
+      published: false,
+      reason: "IDEMPOTENCY_KEY_REUSED",
+    });
+    await expect(
+      store.publishScheduleAndAudit(
+        beta.id,
+        betaInput,
+        { actorUserId: betaActor.id },
+        policy,
+        betaCommand,
+      ),
+    ).resolves.toMatchObject({ published: true });
+    const unrelatedAlphaCommand = {
+      keyHash: schedulePublicationKeyHash(alpha.id, crypto.randomUUID()),
+      requestDigestSha256: schedulePublicationRequestDigest(alphaInput),
+    };
+    await expect(
+      store.publishScheduleAndAudit(
+        alpha.id,
+        alphaInput,
+        { actorUserId: alphaActor.id },
+        policy,
+        unrelatedAlphaCommand,
+      ),
+    ).resolves.toMatchObject({ published: true });
+    expect(alphaCommand.keyHash).not.toBe(betaCommand.keyHash);
+    expect(await prisma.idempotencyRecord.count()).toBe(3);
+
+    await prisma.idempotencyRecord.updateMany({
+      where: { organizationId: alpha.id },
+      data: {
+        createdAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000),
+        expiresAt: new Date(Date.now() - 1),
+      },
+    });
+    await expect(
+      store.publishScheduleAndAudit(
+        alpha.id,
+        alphaInput,
+        { actorUserId: alphaActor.id },
+        policy,
+        alphaCommand,
+      ),
+    ).resolves.toEqual({
+      published: false,
+      reason: "IDEMPOTENCY_KEY_EXPIRED",
+    });
+    await expect(
+      prisma.idempotencyRecord.findUniqueOrThrow({
+        where: {
+          organizationId_operation_keyHash: {
+            organizationId: alpha.id,
+            operation: "SCHEDULE_PUBLISH",
+            keyHash: alphaCommand.keyHash,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ responseBody: null });
+    await expect(
+      prisma.idempotencyRecord.findUniqueOrThrow({
+        where: {
+          organizationId_operation_keyHash: {
+            organizationId: alpha.id,
+            operation: "SCHEDULE_PUBLISH",
+            keyHash: unrelatedAlphaCommand.keyHash,
+          },
+        },
+      }),
+    ).resolves.not.toMatchObject({ responseBody: null });
+    expect(await prisma.schedule.count()).toBe(2);
+    expect(
+      await prisma.auditEvent.count({ where: { action: "release.published" } }),
+    ).toBe(2);
   });
 
   it("rejects cross-tenant release sources, targets, frozen assets, and actors", async () => {
@@ -3315,6 +3557,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         { ...input, playlistId: betaPlaylist.id },
         { actorUserId: actor.id },
         { mediaAllowedOrigins: ["https://media.example.test"] },
+        publicationIdempotency(),
       ),
     ).resolves.toEqual({ published: false, reason: "PLAYLIST_NOT_FOUND" });
     await expect(
@@ -3323,6 +3566,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         { ...input, screenIds: [betaScreen.id] },
         { actorUserId: actor.id },
         { mediaAllowedOrigins: ["https://media.example.test"] },
+        publicationIdempotency(),
       ),
     ).resolves.toEqual({ published: false, reason: "SCREEN_NOT_FOUND" });
     await expect(
@@ -3335,6 +3579,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
         { actorUserId: actor.id },
         { mediaAllowedOrigins: ["https://media.example.test"] },
+        publicationIdempotency(),
       ),
     ).resolves.toEqual({ published: false, reason: "FORBIDDEN" });
     expect(await prisma.publishedRelease.count()).toBe(0);
@@ -3360,6 +3605,7 @@ describe("PrismaStore PostgreSQL integration", () => {
       input,
       { actorUserId: actor.id },
       { mediaAllowedOrigins: ["https://media.example.test"] },
+      publicationIdempotency(),
     );
     if (!valid.published) throw new Error("valid tenant publication failed");
     const sourceItem = await prisma.playlistItem.findFirstOrThrow({
@@ -3498,6 +3744,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           },
           { actorUserId: actor.id },
           { mediaAllowedOrigins: ["https://media.example.test"] },
+          publicationIdempotency(),
         ),
       ).rejects.toThrow();
     } finally {
@@ -3510,6 +3757,45 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect(await prisma.schedule.count()).toBe(0);
     expect(await prisma.releaseAssignment.count()).toBe(0);
     expect(await prisma.releaseAssignmentTarget.count()).toBe(0);
+    expect(await prisma.idempotencyRecord.count()).toBe(0);
+
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "IdempotencyRecord" ADD CONSTRAINT "integration_reject_publication_ledger" CHECK ("keyHash" <> repeat(\'9\', 64))',
+    );
+    try {
+      await expect(
+        store.publishScheduleAndAudit(
+          organization.id,
+          {
+            playlistId: playlist.id,
+            name: "Ledger rollback schedule",
+            priority: "normal",
+            startsAt: new Date(Date.now() - 60_000).toISOString(),
+            timezone: "UTC",
+            daysOfWeek: [],
+            enabled: true,
+            screenIds: [screen.id],
+          },
+          { actorUserId: actor.id },
+          { mediaAllowedOrigins: ["https://media.example.test"] },
+          {
+            keyHash: "9".repeat(64),
+            requestDigestSha256: "8".repeat(64),
+          },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "IdempotencyRecord" DROP CONSTRAINT "integration_reject_publication_ledger"',
+      );
+    }
+    expect(await prisma.publishedRelease.count()).toBe(0);
+    expect(await prisma.frozenReleaseItem.count()).toBe(0);
+    expect(await prisma.schedule.count()).toBe(0);
+    expect(await prisma.releaseAssignment.count()).toBe(0);
+    expect(await prisma.releaseAssignmentTarget.count()).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
+    expect(await prisma.idempotencyRecord.count()).toBe(0);
 
     const publication = await store.publishScheduleAndAudit(
       organization.id,
@@ -3525,6 +3811,7 @@ describe("PrismaStore PostgreSQL integration", () => {
       },
       { actorUserId: actor.id },
       { mediaAllowedOrigins: ["https://media.example.test"] },
+      publicationIdempotency(),
     );
     if (!publication.published)
       throw new Error("withdrawal rollback fixture failed");
@@ -3709,6 +3996,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
         { actorUserId: actor.id },
         { mediaAllowedOrigins: ["https://media.example.test"] },
+        publicationIdempotency(),
       );
 
     const expiredAsset = await store.createMedia(organization.id, {

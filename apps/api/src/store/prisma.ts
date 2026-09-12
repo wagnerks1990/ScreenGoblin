@@ -36,6 +36,7 @@ import type {
   ReleasePublicationPolicy,
   ScheduleRecord,
   SchedulePublicationInput,
+  SchedulePublicationIdempotencyInput,
   SchedulePublicationResult,
   ScheduleWithdrawalResult,
   ScreenMutationInput,
@@ -47,6 +48,8 @@ import type {
   UserSessionCreateInput,
 } from "../domain/types.js";
 import {
+  SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION,
+  SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
   LOGIN_FAILURE_RETENTION_MS,
 } from "../domain/types.js";
@@ -65,6 +68,13 @@ import { matchesScheduleWindow } from "../utils/schedule.js";
 import { randomToken } from "../utils/crypto.js";
 
 const iso = (v: Date | null | undefined) => v?.toISOString();
+const lowercaseSha256 = /^[0-9a-f]{64}$/;
+const publicationResponseJson = (
+  result: Extract<SchedulePublicationResult, { published: true }>,
+): Prisma.InputJsonValue =>
+  JSON.parse(JSON.stringify(result.schedule)) as Prisma.InputJsonValue;
+const publicationResponseFromJson = (value: Prisma.JsonValue): ScheduleRecord =>
+  structuredClone(value as unknown as ScheduleRecord);
 const enumLower = <T extends string>(v: string) => v.toLowerCase() as T;
 const safeInteger = (value: unknown, field: string): number => {
   const converted = Number(value);
@@ -3156,7 +3166,13 @@ export class PrismaStore implements DataStore {
     data: SchedulePublicationInput,
     audit: ReleaseAuditContext,
     policy: ReleasePublicationPolicy,
+    idempotency: SchedulePublicationIdempotencyInput,
   ): Promise<SchedulePublicationResult> {
+    if (
+      !lowercaseSha256.test(idempotency.keyHash) ||
+      !lowercaseSha256.test(idempotency.requestDigestSha256)
+    )
+      throw new Error("Canonical publication idempotency hashes are required");
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         return await this.prisma.$transaction(
@@ -3174,6 +3190,90 @@ export class PrismaStore implements DataStore {
               !hasCapability(actorMembership?.role, CAPABILITIES.releasePublish)
             )
               return { published: false, reason: "FORBIDDEN" };
+            const [clock] = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
+              SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+            if (!clock) throw new Error("Database clock is unavailable");
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`idempotency:${org}:${SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION}:${idempotency.keyHash}`}, 0))`;
+            const existingIdempotency = await tx.idempotencyRecord.findUnique({
+              where: {
+                organizationId_operation_keyHash: {
+                  organizationId: org,
+                  operation: "SCHEDULE_PUBLISH",
+                  keyHash: idempotency.keyHash,
+                },
+              },
+            });
+            if (existingIdempotency) {
+              if (
+                existingIdempotency.actorUserId !== audit.actorUserId ||
+                existingIdempotency.requestDigestSha256 !==
+                  idempotency.requestDigestSha256
+              )
+                return {
+                  published: false,
+                  reason: "IDEMPOTENCY_KEY_REUSED",
+                };
+              if (
+                existingIdempotency.expiresAt <= clock.databaseNow ||
+                existingIdempotency.responseBody === null
+              ) {
+                if (existingIdempotency.responseBody !== null)
+                  await tx.idempotencyRecord.update({
+                    where: { id: existingIdempotency.id },
+                    data: { responseBody: Prisma.DbNull },
+                  });
+                return {
+                  published: false,
+                  reason: "IDEMPOTENCY_KEY_EXPIRED",
+                };
+              }
+              const schedule = publicationResponseFromJson(
+                existingIdempotency.responseBody,
+              );
+              if (!schedule.releaseId || !schedule.assignmentId)
+                throw new Error("Idempotent publication response is invalid");
+              const [release, assignment] = await Promise.all([
+                tx.publishedRelease.findFirst({
+                  where: { id: schedule.releaseId, organizationId: org },
+                  include: { items: { orderBy: { position: "asc" } } },
+                }),
+                tx.releaseAssignment.findFirst({
+                  where: { id: schedule.assignmentId, organizationId: org },
+                  include: { targets: true },
+                }),
+              ]);
+              if (!release || !assignment)
+                throw new Error(
+                  "Idempotent publication references are missing",
+                );
+              return {
+                published: true,
+                schedule,
+                release: publishedReleaseDto(release),
+                assignment: releaseAssignmentDto(assignment),
+                replayed: true,
+              };
+            }
+            const rememberPublication = async (
+              result: Extract<SchedulePublicationResult, { published: true }>,
+            ) => {
+              await tx.idempotencyRecord.create({
+                data: {
+                  organizationId: org,
+                  operation: "SCHEDULE_PUBLISH",
+                  keyHash: idempotency.keyHash,
+                  actorUserId: audit.actorUserId,
+                  requestDigestSha256: idempotency.requestDigestSha256,
+                  statusCode: 201,
+                  responseBody: publicationResponseJson(result),
+                  expiresAt: new Date(
+                    clock.databaseNow.getTime() +
+                      SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS,
+                  ),
+                },
+              });
+              return result;
+            };
             const playlist = await tx.playlist.findFirst({
               where: { id: data.playlistId, organizationId: org },
               include: {
@@ -3195,10 +3295,6 @@ export class PrismaStore implements DataStore {
             });
             if (screens.length !== screenIds.length)
               return { published: false, reason: "SCREEN_NOT_FOUND" };
-
-            const [clock] = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
-              SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
-            if (!clock) throw new Error("Database clock is unavailable");
 
             const playlistRecord = playlistDto(playlist);
             const assets = playlist.items.map((item) => mediaDto(item.asset));
@@ -3320,7 +3416,7 @@ export class PrismaStore implements DataStore {
               },
             });
             if (existingAssignment) {
-              return {
+              return rememberPublication({
                 published: true,
                 schedule: {
                   ...scheduleDto(existingAssignment.schedule),
@@ -3329,7 +3425,7 @@ export class PrismaStore implements DataStore {
                 },
                 release: publishedReleaseDto(existingAssignment.release),
                 assignment: releaseAssignmentDto(existingAssignment),
-              };
+              });
             }
             const schedule = await tx.schedule.create({
               data: {
@@ -3401,7 +3497,7 @@ export class PrismaStore implements DataStore {
               },
             });
 
-            return {
+            return rememberPublication({
               published: true,
               schedule: {
                 ...scheduleDto(schedule),
@@ -3410,7 +3506,7 @@ export class PrismaStore implements DataStore {
               },
               release: publishedReleaseDto(release),
               assignment: releaseAssignmentDto(assignment),
-            };
+            });
           },
           { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
         );

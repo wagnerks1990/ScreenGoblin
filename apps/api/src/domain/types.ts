@@ -257,6 +257,16 @@ export interface ReleaseAuditContext {
   requestId?: string | undefined;
 }
 
+export const SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION =
+  "schedule.publish" as const;
+export const SCHEDULE_PUBLICATION_RESPONSE_RETENTION_MS =
+  30 * 24 * 60 * 60 * 1_000;
+
+export interface SchedulePublicationIdempotencyInput {
+  keyHash: string;
+  requestDigestSha256: string;
+}
+
 export type SchedulePublicationInput = Omit<
   ScheduleRecord,
   | "id"
@@ -273,6 +283,7 @@ export type SchedulePublicationResult =
       schedule: ScheduleRecord;
       release: PublishedReleaseRecord;
       assignment: ReleaseAssignmentRecord;
+      replayed?: true;
     }
   | {
       published: false;
@@ -285,8 +296,21 @@ export type SchedulePublicationResult =
         | "ASSET_EXPIRED"
         | "RELEASE_TOO_LARGE"
         | "NO_PLAYABLE_ITEMS"
+        | "IDEMPOTENCY_KEY_REUSED"
+        | "IDEMPOTENCY_KEY_EXPIRED"
         | "FORBIDDEN";
     };
+
+export interface SchedulePublicationIdempotencyRecord {
+  organizationId: string;
+  operation: typeof SCHEDULE_PUBLICATION_IDEMPOTENCY_OPERATION;
+  keyHash: string;
+  actorUserId: string;
+  requestDigestSha256: string;
+  response?: ScheduleRecord | undefined;
+  createdAt: string;
+  expiresAt: string;
+}
 
 export type ScheduleWithdrawalResult =
   | { withdrawn: true; assignment: ReleaseAssignmentRecord }
@@ -808,6 +832,7 @@ export interface DataStore {
     data: SchedulePublicationInput,
     audit: ReleaseAuditContext,
     policy: ReleasePublicationPolicy,
+    idempotency: SchedulePublicationIdempotencyInput,
   ): Promise<SchedulePublicationResult>;
   withdrawScheduleAndAudit(
     orgId: string,

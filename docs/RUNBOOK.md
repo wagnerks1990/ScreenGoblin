@@ -42,6 +42,13 @@ during a mixed-version rollout. Password rotation, user disablement, role change
 and membership removal must go through the audited store boundary, which revokes
 affected sessions atomically; do not issue direct SQL updates for these fields.
 
+The schedule-publication idempotency migration is additive and creates an
+empty tenant-owned command ledger. It does not rewrite schedules or releases.
+Ledger response bodies are replayable for 30 days and are compacted when that
+same key is presented after expiry; the remaining key tombstones are
+retained with release and audit history and must not be manually pruned or
+reused. Restore validation includes a representative ledger relationship.
+
 Do not run the bootstrap profile as part of normal startup. It refuses to reset an existing owner password or grant owner to an existing unrelated user. Remove bootstrap credentials after the first successful login.
 
 ## Observe

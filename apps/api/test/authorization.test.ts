@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { CAPABILITIES } from "@screengoblin/contracts";
+import { randomToken, sha256 } from "../src/utils/crypto.js";
 import { hasCapability } from "../src/authorization/policy.js";
 import type { Role } from "../src/domain/types.js";
 import { MemoryStore } from "../src/store/memory.js";
 
 const allowedOrigins = { mediaAllowedOrigins: ["https://media.example.test"] };
+const idempotency = () => ({
+  keyHash: sha256(randomToken()),
+  requestDigestSha256: sha256(randomToken()),
+});
 
 async function releaseFixture(role: Role) {
   const store = new MemoryStore();
@@ -115,6 +120,7 @@ describe("release capability policy", () => {
           input,
           { actorUserId },
           allowedOrigins,
+          idempotency(),
         ),
       ).resolves.toEqual({ published: false, reason: "FORBIDDEN" });
       expect(store.schedules).toEqual([]);
@@ -126,14 +132,26 @@ describe("release capability policy", () => {
 
   it("re-evaluates current authority before withdrawal", async () => {
     const { store, input } = await releaseFixture("PUBLISHER");
+    const publicationCommand = idempotency();
     const publication = await store.publishScheduleAndAudit(
       "org-a",
       input,
       { actorUserId: "actor" },
       allowedOrigins,
+      publicationCommand,
     );
     if (!publication.published) throw new Error(publication.reason);
     store.users[0]!.role = "VIEWER";
+
+    await expect(
+      store.publishScheduleAndAudit(
+        "org-a",
+        input,
+        { actorUserId: "actor" },
+        allowedOrigins,
+        publicationCommand,
+      ),
+    ).resolves.toEqual({ published: false, reason: "FORBIDDEN" });
 
     await expect(
       store.withdrawScheduleAndAudit("org-a", publication.schedule.id, {

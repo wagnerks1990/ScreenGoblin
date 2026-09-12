@@ -142,7 +142,10 @@ An audit or outbox failure aborts the business mutation. Audit metadata records 
 ## Idempotency contract
 
 - Require `Idempotency-Key` for candidate snapshot, approval/rejection, publish, assignment/rollback, pairing/credential lifecycle, and any future command/emergency mutation.
-- Scope keys by organization, authenticated principal, method, and route/operation. Store a SHA-256 request hash, status, canonical response reference, creation and expiry.
+- Uniquely scope keys by organization and route/operation, and bind each record
+  to its original authenticated principal. Store a SHA-256 request hash,
+  status, canonical response, creation and expiry. Another actor cannot reuse a
+  tenant command key.
 - Same key + same hash returns the original terminal response. Same key + different hash returns `409 IDEMPOTENCY_KEY_REUSED`. In-progress duplicate returns a stable retry response.
 - The idempotency record is written in the same transaction as the mutation. Client-supplied IDs alone are not an idempotency implementation.
 
