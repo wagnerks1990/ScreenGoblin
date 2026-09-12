@@ -886,11 +886,11 @@ export class PrismaStore implements DataStore {
           if (!locked)
             return { activated: false as const, reason: "NOT_FOUND" as const };
           const [grantLock] = await tx.$queryRaw<Array<{ id: string }>>`
-            SELECT grant."id" FROM "PairingCode" grant
-            WHERE grant."id" = ${grantId} AND grant."organizationId" = ${org}
-              AND grant."targetScreenId" = ${screenId}
-              AND grant."purpose" = 'REENROLL'::"PairingPurpose"
-            FOR UPDATE OF grant`;
+            SELECT pairing_grant."id" FROM "PairingCode" pairing_grant
+            WHERE pairing_grant."id" = ${grantId} AND pairing_grant."organizationId" = ${org}
+              AND pairing_grant."targetScreenId" = ${screenId}
+              AND pairing_grant."purpose" = 'REENROLL'::"PairingPurpose"
+            FOR UPDATE OF pairing_grant`;
           if (!grantLock)
             return { activated: false as const, reason: "NOT_FOUND" as const };
           const [attemptLock] = await tx.$queryRaw<Array<{ id: string }>>`
@@ -1123,11 +1123,11 @@ export class PrismaStore implements DataStore {
           const [grant] = await tx.$queryRaw<
             Array<{ id: string; status: string }>
           >`
-          SELECT grant."id", grant."status"::text AS "status" FROM "PairingCode" grant
-          WHERE grant."id" = ${grantId} AND grant."organizationId" = ${org}
-            AND grant."targetScreenId" = ${screenId}
-            AND grant."purpose" = 'REENROLL'::"PairingPurpose"
-          FOR UPDATE OF grant`;
+          SELECT pairing_grant."id", pairing_grant."status"::text AS "status" FROM "PairingCode" pairing_grant
+          WHERE pairing_grant."id" = ${grantId} AND pairing_grant."organizationId" = ${org}
+            AND pairing_grant."targetScreenId" = ${screenId}
+            AND pairing_grant."purpose" = 'REENROLL'::"PairingPurpose"
+          FOR UPDATE OF pairing_grant`;
           if (!grant || grant.status !== "PENDING")
             return { cancelled: false as const, reason: "NOT_FOUND" as const };
           await tx.$queryRaw<Array<{ id: string }>>`
