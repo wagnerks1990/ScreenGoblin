@@ -4,8 +4,10 @@ on:
   pull_request:
     paths:
       - ".github/workflows/recovery-drill.yml"
+      - "apps/api/prisma/**"
       - "deploy/scripts/**"
       - "deploy/docker/**"
+      - "docs/RELEASE_EVIDENCE.md"
       - "docs/RUNBOOK.md"
   schedule:
     - cron: "17 6 1 * *"
@@ -21,15 +23,19 @@ concurrency:
 jobs:
   disposable-recovery:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Exercise PostgreSQL, object, and image recovery
+      - name: Exercise migrated application, object, and image recovery
+        env:
+          RECOVERY_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: deploy/scripts/validate-recovery.sh
+      - name: Report disposable recovery measurements
+        run: cat recovery-evidence/measurements.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always() && hashFiles('recovery-evidence/**') != ''
         with:
-          name: recovery-drill-evidence-${{ github.sha }}
+          name: recovery-drill-evidence-${{ github.event.pull_request.head.sha || github.sha }}
           path: recovery-evidence
           if-no-files-found: error
           retention-days: 14

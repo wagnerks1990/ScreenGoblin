@@ -191,6 +191,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Operations
 
+- Upgrade the disposable recovery drill from a synthetic row/object probe to
+  the complete Prisma migration chain and a representative restored application
+  relation graph whose live and frozen media metadata is bound to independently
+  restored MinIO bytes. Retain checksum-bound elapsed CI measurements while
+  explicitly excluding production RPO/RTO claims and real-environment recovery
+  coverage.
+
 - Exercise the complete production-mode Compose stack in CI with ephemeral
   secrets and local TLS. Bound startup, probe API/Console/Player/media routing
   and browser headers through Caddy, verify private service ports and the

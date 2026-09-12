@@ -72,7 +72,17 @@ deploy/scripts/postgres-restore.sh /path/to/screengoblin-TIMESTAMP.dump
 
 The restore requires the adjacent checksum and refuses to replace any existing database by default. Restoring into a protected database requires the explicit `ALLOW_DANGEROUS_RESTORE=I_UNDERSTAND_THIS_CAN_DESTROY_DATA` acknowledgement; replacing an existing database separately requires `ALLOW_EXISTING_RESTORE_DATABASE=I_UNDERSTAND_THIS_OVERWRITES_A_DATABASE`. Take a fresh backup, stop writers, and obtain the operational approval required by local policy before either override. Do not use an override for routine validation.
 
-Object storage needs a matching versioned backup and integrity inventory; the PostgreSQL scripts do not back up MinIO. Test restoration into an isolated environment at least quarterly and verify a sample manifest can be reconstructed with its media. `.github/workflows/recovery-drill.yml` exercises disposable PostgreSQL dump/restore, MinIO object delete/restore/byte comparison, and retained-image rollback monthly and when its implementation changes. It pulls exact fixture tags once, records their resolved repository digests, and uses those immutable digests with `--pull never` during the drill. Runtime fixture resolution is test evidence, not production provenance. Passing CI is development evidence, not proof that off-site production backups, credentials, RPO, or RTO work.
+Object storage needs a matching versioned backup and integrity inventory; the PostgreSQL scripts do not back up MinIO. Test restoration into an isolated environment at least quarterly and verify a sample manifest can be reconstructed with its media. `.github/workflows/recovery-drill.yml` applies the real Prisma migration chain, restores a representative tenant/content/schedule/immutable-release/audit graph, validates its constraints and references, matches restored database media metadata to a restored MinIO object's exact size and SHA-256, and exercises retained-image rollback. It runs monthly, when recovery implementation changes, and when Prisma migrations change. It pulls exact fixture tags once, records their resolved repository digests, and uses those immutable digests with `--pull never` during the drill.
+
+Download the short-lived `recovery-drill-evidence-<commit>` artifact and verify
+`SHA256SUMS` before reviewing `result.txt`, `measurements.json`, and the
+resolved fixture-image digests. Treat the recorded durations as disposable CI
+elapsed times only. They are useful for detecting gross regressions in the same
+fixture, but they are not production RPO/RTO objectives or measurements.
+Runtime fixture resolution is test evidence, not production provenance.
+Passing CI does not prove off-host encrypted transfer, retention, production
+volume or load, consistent live write quiescence, regional recovery, credential
+availability, operator readiness, or restoration into production infrastructure.
 
 ## Roll back
 
