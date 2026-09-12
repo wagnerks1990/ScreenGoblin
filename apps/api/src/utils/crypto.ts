@@ -29,6 +29,8 @@ const privateKeyFromSeed = (encodedSeed: string) => {
 export const randomToken = () => randomBytes(32).toString("base64url");
 export const sha256 = (value: string) =>
   createHash("sha256").update(value).digest("hex");
+export const isApprovedPasswordHash = (value: string) =>
+  /^\$2[aby]\$(?:1[2-9]|2\d|3[01])\$[./A-Za-z0-9]{53}$/.test(value);
 export const pairingCodeHash = (code: string, pepper: string) =>
   createHmac("sha256", pepper).update(code).digest("hex");
 export const secureHashEquals = (value: string, hash: string) => {

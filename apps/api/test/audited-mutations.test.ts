@@ -8,6 +8,8 @@ const actor = {
   passwordHash: "unused",
   organizationId: "org-a",
   role: "OWNER" as const,
+  authenticationEpoch: 0,
+  authorizationEpoch: 0,
 };
 
 const screenInput = {

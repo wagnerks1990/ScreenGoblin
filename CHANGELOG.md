@@ -12,6 +12,15 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   cleanup/retry, and safe image/video derivative design without claiming that
   upload or external scanning/transcoding is implemented.
 
+- Bind each one-hour user session to immutable user-authentication and
+  membership-authorization epoch snapshots. Internal password rotation,
+  disablement, role change, and membership removal helpers now advance the
+  applicable epoch, revoke affected sessions, and append tenant audit records
+  atomically, so restoring an old role cannot revive an old session. The Console
+  now attempts `POST /auth/logout` before clearing tab credentials and warns when
+  server revocation cannot be confirmed. Public identity-administration APIs,
+  external SSO, and MFA remain absent requirements.
+
 - Upgrade the Android Google Services Gradle plugin to 4.5.0 with its exact
   buildscript lock and strict artifact verification checksums. Retain the
   checksum-locked Gradle 8.11.1 wrapper paired with Android Gradle Plugin 8.10.1;

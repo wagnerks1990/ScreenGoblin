@@ -619,6 +619,36 @@ describe("ScreenGoblin console", () => {
     expect(screen.getByLabelText("Password")).toHaveValue("");
   });
 
+  it("warns precisely and clears local state when logout revocation is unconfirmed", async () => {
+    setAdminSession();
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/auth/logout") && init?.method === "POST")
+          throw new Error("offline");
+        return new Response(JSON.stringify({ data: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Disconnect live" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Server revocation was not confirmed. Local credentials were cleared; the session may remain usable until its one-hour expiry.",
+    );
+    expect(screen.getByRole("button", { name: /connect live/i })).toBeTruthy();
+    expect(window.sessionStorage.getItem("sg_access_token")).toBeNull();
+    expect(document.body).not.toHaveTextContent("admin-token");
+  });
+
   it("focuses dialogs, closes them with Escape, and restores the opener", async () => {
     const user = userEvent.setup();
     const { container } = render(

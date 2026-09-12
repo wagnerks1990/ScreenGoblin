@@ -50,6 +50,8 @@ export function App() {
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutStatus, setLogoutStatus] = useState("");
   const location = useLocation();
   const canAdmin =
     (!liveSession && demoAllowed) ||
@@ -82,6 +84,7 @@ export function App() {
       setSessionUser(session.user);
       setEmail("");
       setPassword("");
+      setLogoutStatus("");
       setLoginOpen(false);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Login failed");
@@ -89,6 +92,18 @@ export function App() {
       setPassword("");
       setLoggingIn(false);
     }
+  };
+  const disconnectLive = async () => {
+    setLoggingOut(true);
+    setLogoutStatus("");
+    const result = await api.logout();
+    setLiveSession(false);
+    setSessionUser(undefined);
+    if (!result.revocationConfirmed)
+      setLogoutStatus(
+        "Server revocation was not confirmed. Local credentials were cleared; the session may remain usable until its one-hour expiry.",
+      );
+    setLoggingOut(false);
   };
   return (
     <div className="app-shell">
@@ -189,23 +204,29 @@ export function App() {
           <div className="top-actions">
             <button
               className="demo-pill"
+              disabled={loggingOut}
               onClick={() => {
                 if (liveSession) {
-                  api.logout();
-                  setLiveSession(false);
-                  setSessionUser(undefined);
+                  void disconnectLive();
                 } else {
                   setLoginOpen(true);
                 }
               }}
             >
               <WifiOff size={14} />
-              {liveSession
-                ? "Disconnect live"
-                : demoAllowed
-                  ? "Demo data · Connect live"
-                  : "Reconnect live"}
+              {loggingOut
+                ? "Disconnecting…"
+                : liveSession
+                  ? "Disconnect live"
+                  : demoAllowed
+                    ? "Demo data · Connect live"
+                    : "Reconnect live"}
             </button>
+            {logoutStatus && (
+              <p className="logout-status" role="status">
+                {logoutStatus}
+              </p>
+            )}
             <button className="icon-button" aria-label="Notifications">
               <Bell size={19} />
               <i />

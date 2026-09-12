@@ -32,6 +32,7 @@ import type {
   ScheduleWithdrawalResult,
   ScreenRecord,
   SessionUser,
+  SystemIdentityMutationAuditContext,
   UserMutationAuditContext,
   UserSessionCreateInput,
   UserSessionRecord,
@@ -52,7 +53,7 @@ import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { mediaPublicationFailure } from "../utils/media-policy.js";
 import { hasCapability } from "../authorization/policy.js";
 import { CAPABILITIES } from "@screengoblin/contracts";
-import { randomToken } from "../utils/crypto.js";
+import { isApprovedPasswordHash, randomToken } from "../utils/crypto.js";
 import { mediaStorageKey } from "../media/delivery.js";
 
 const id = () => crypto.randomUUID();
@@ -95,7 +96,8 @@ export class MemoryStore implements DataStore {
         (user) =>
           user.email !== identity.email ||
           user.name !== identity.name ||
-          user.passwordHash !== identity.passwordHash,
+          user.passwordHash !== identity.passwordHash ||
+          user.authenticationEpoch !== identity.authenticationEpoch,
       ) ||
       new Set(matches.map((user) => user.organizationId)).size !==
         matches.length
@@ -148,6 +150,8 @@ export class MemoryStore implements DataStore {
       !user ||
       user.passwordHash !== input.expectedPasswordHash ||
       user.role !== input.expectedRole ||
+      user.authenticationEpoch !== input.expectedAuthenticationEpoch ||
+      user.authorizationEpoch !== input.expectedAuthorizationEpoch ||
       input.expiresAt <= timestamp
     )
       return { created: false, reason: "FORBIDDEN" } as const;
@@ -156,6 +160,8 @@ export class MemoryStore implements DataStore {
       organizationId,
       userId: user.id,
       tokenHash: input.tokenHash,
+      authenticationEpoch: user.authenticationEpoch,
+      authorizationEpoch: user.authorizationEpoch,
       expiresAt: input.expiresAt,
       createdAt: timestamp,
     };
@@ -193,7 +199,14 @@ export class MemoryStore implements DataStore {
         !candidate.revokedAt &&
         candidate.expiresAt > timestamp,
     );
-    return session ? await this.findSessionUser(userId, organizationId) : null;
+    const user = session
+      ? await this.findSessionUser(userId, organizationId)
+      : null;
+    return user &&
+      user.authenticationEpoch === session?.authenticationEpoch &&
+      user.authorizationEpoch === session.authorizationEpoch
+      ? user
+      : null;
   }
   async revokeUserSessionAndAudit(
     userId: string,
@@ -227,6 +240,175 @@ export class MemoryStore implements DataStore {
     session.revokedAt = timestamp;
     this.audits.push(auditRecord);
     return { revoked: true } as const;
+  }
+  private identityAudit(
+    organizationId: string,
+    action: string,
+    entityType: string,
+    entityId: string,
+    audit: SystemIdentityMutationAuditContext,
+    metadata: Record<string, unknown> = {},
+  ) {
+    const reason = audit.reason.trim();
+    if (!reason || reason.length > 500)
+      throw new Error(
+        "Identity mutation reason must contain 1 to 500 characters",
+      );
+    return this.buildAuditRecord({
+      organizationId,
+      actorType: "system",
+      action,
+      entityType,
+      entityId,
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { reason, ...metadata },
+    });
+  }
+  async rotateUserPasswordAndAudit(
+    userId: string,
+    passwordHash: string,
+    audit: SystemIdentityMutationAuditContext,
+  ) {
+    if (!isApprovedPasswordHash(passwordHash))
+      throw new Error("An approved bcrypt password hash is required");
+    const memberships = this.users.filter((user) => user.id === userId);
+    const organizationIds = [
+      ...new Set(memberships.map((user) => user.organizationId)),
+    ].sort();
+    const epochs = new Set(memberships.map((user) => user.authenticationEpoch));
+    if (organizationIds.length === 0 || epochs.size !== 1)
+      return { updated: false, reason: "NOT_FOUND" } as const;
+    const authenticationEpoch = memberships[0]!.authenticationEpoch + 1;
+    const timestamp = now();
+    const auditRecords = organizationIds.map((organizationId) =>
+      this.identityAudit(
+        organizationId,
+        "identity.password_rotated",
+        "user",
+        userId,
+        audit,
+      ),
+    );
+    this.users = this.users.map((user) =>
+      user.id === userId
+        ? { ...user, passwordHash, authenticationEpoch }
+        : user,
+    );
+    this.userSessions = this.userSessions.map((session) =>
+      session.userId === userId && !session.revokedAt
+        ? { ...session, revokedAt: timestamp }
+        : session,
+    );
+    this.audits.push(...auditRecords);
+    return { updated: true, affectedOrganizationIds: organizationIds } as const;
+  }
+  async disableUserAndAudit(
+    userId: string,
+    audit: SystemIdentityMutationAuditContext,
+  ) {
+    const memberships = this.users.filter((user) => user.id === userId);
+    const organizationIds = [
+      ...new Set(memberships.map((user) => user.organizationId)),
+    ].sort();
+    const epochs = new Set(memberships.map((user) => user.authenticationEpoch));
+    if (organizationIds.length === 0 || epochs.size !== 1)
+      return { updated: false, reason: "NOT_FOUND" } as const;
+    const authenticationEpoch = memberships[0]!.authenticationEpoch + 1;
+    const timestamp = now();
+    const auditRecords = organizationIds.map((organizationId) =>
+      this.identityAudit(
+        organizationId,
+        "identity.user_disabled",
+        "user",
+        userId,
+        audit,
+      ),
+    );
+    this.users = this.users.map((user) =>
+      user.id === userId
+        ? {
+            ...user,
+            authenticationEpoch,
+            disabledAt: timestamp,
+          }
+        : user,
+    );
+    this.userSessions = this.userSessions.map((session) =>
+      session.userId === userId && !session.revokedAt
+        ? { ...session, revokedAt: timestamp }
+        : session,
+    );
+    this.audits.push(...auditRecords);
+    return { updated: true, affectedOrganizationIds: organizationIds } as const;
+  }
+  async changeMembershipRoleAndAudit(
+    organizationId: string,
+    userId: string,
+    role: SessionUser["role"],
+    audit: SystemIdentityMutationAuditContext,
+  ) {
+    const membership = this.users.find(
+      (user) => user.id === userId && user.organizationId === organizationId,
+    );
+    if (!membership) return { updated: false, reason: "NOT_FOUND" } as const;
+    const timestamp = now();
+    const auditRecord = this.identityAudit(
+      organizationId,
+      "identity.membership_role_changed",
+      "membership",
+      `${organizationId}:${userId}`,
+      audit,
+      { previousRole: membership.role, role },
+    );
+    this.users = this.users.map((user) =>
+      user.id === userId && user.organizationId === organizationId
+        ? {
+            ...user,
+            role,
+            authorizationEpoch: user.authorizationEpoch + 1,
+          }
+        : user,
+    );
+    this.userSessions = this.userSessions.map((session) =>
+      session.userId === userId &&
+      session.organizationId === organizationId &&
+      !session.revokedAt
+        ? { ...session, revokedAt: timestamp }
+        : session,
+    );
+    this.audits.push(auditRecord);
+    return { updated: true } as const;
+  }
+  async removeMembershipAndAudit(
+    organizationId: string,
+    userId: string,
+    audit: SystemIdentityMutationAuditContext,
+  ) {
+    const membership = this.users.find(
+      (user) => user.id === userId && user.organizationId === organizationId,
+    );
+    if (!membership) return { updated: false, reason: "NOT_FOUND" } as const;
+    const timestamp = now();
+    const auditRecord = this.identityAudit(
+      organizationId,
+      "identity.membership_removed",
+      "membership",
+      `${organizationId}:${userId}`,
+      audit,
+      { previousRole: membership.role },
+    );
+    this.userSessions = this.userSessions.map((session) =>
+      session.userId === userId &&
+      session.organizationId === organizationId &&
+      !session.revokedAt
+        ? { ...session, revokedAt: timestamp }
+        : session,
+    );
+    this.users = this.users.filter(
+      (user) => user.id !== userId || user.organizationId !== organizationId,
+    );
+    this.audits.push(auditRecord);
+    return { updated: true } as const;
   }
   private publicScreen(screen: ScreenRecord): ScreenRecord {
     const safe = { ...screen };

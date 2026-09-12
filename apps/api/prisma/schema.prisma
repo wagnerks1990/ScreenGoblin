@@ -89,17 +89,18 @@ model Organization {
 }
 
 model User {
-  id           String       @id @default(cuid())
+  id                  String       @id @default(cuid())
   /// A custom migration also enforces UNIQUE (LOWER(email)); Prisma cannot
   /// currently express this functional index in the schema DSL.
-  email        String       @unique
-  name         String
-  passwordHash String
-  disabledAt   DateTime?
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-  memberships  Membership[]
-  audits       AuditEvent[]
+  email               String       @unique
+  name                String
+  passwordHash        String
+  authenticationEpoch Int          @default(0)
+  disabledAt          DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  memberships         Membership[]
+  audits              AuditEvent[]
 }
 
 model Membership {
@@ -107,6 +108,7 @@ model Membership {
   organizationId     String
   userId             String
   role               OrgRole
+  authorizationEpoch Int                 @default(0)
   organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   publishedReleases  PublishedRelease[]  @relation("PublishedReleaseCreatorMembership")
@@ -130,14 +132,16 @@ model LoginFailureEvent {
 }
 
 model UserSession {
-  id             String     @id @default(cuid())
-  organizationId String
-  userId         String
-  tokenHash      String     @unique
-  expiresAt      DateTime
-  revokedAt      DateTime?
-  createdAt      DateTime   @default(now())
-  membership     Membership @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Cascade)
+  id                  String     @id @default(cuid())
+  organizationId      String
+  userId              String
+  tokenHash           String     @unique
+  authenticationEpoch Int
+  authorizationEpoch  Int
+  expiresAt           DateTime
+  revokedAt           DateTime?
+  createdAt           DateTime   @default(now())
+  membership          Membership @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Cascade)
 
   @@index([organizationId, userId])
   @@index([expiresAt])

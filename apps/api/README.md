@@ -76,10 +76,15 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
 - Staff email login is case-insensitive. PostgreSQL enforces a functional unique index on `LOWER(email)`; its migration aborts without changing data when legacy case-only duplicates exist, and runtime lookup also fails closed if it encounters ambiguous identity data.
 - User access tokens expire after one hour and contain a random per-login session
   identity. Only its SHA-256 hash is stored. Every authenticated request rechecks
-  that exact session's expiry/revocation plus the existing live user, membership,
-  organization, and role state. `POST /auth/logout` revokes only the presented
-  session and records the revocation atomically; other sessions remain active.
-  Expired rows for the same user and organization are pruned during later login.
+  that exact session's expiry/revocation and immutable user-authentication and
+  membership-authorization epoch snapshots against live identity state.
+  `POST /auth/logout` revokes only the presented session and records the
+  revocation atomically; the Console attempts it before clearing tab storage and
+  reports when server revocation cannot be confirmed. Internal, system-audited
+  store methods rotate password hashes, disable users, change roles, or remove
+  memberships while advancing the applicable epoch and revoking affected
+  sessions in the same transaction. There are no public password, user-disable,
+  role, or membership mutation endpoints in this prototype.
 - Failed login attempts for known and unknown accounts produce the same generic
   credential response and one tenant-neutral security event. Events contain
   only deployment-secret, domain-separated HMAC account/source keys, a bounded

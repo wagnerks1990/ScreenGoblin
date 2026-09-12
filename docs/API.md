@@ -12,6 +12,14 @@
 
 Shared request and response shapes are defined in `packages/contracts`. The OpenAPI document generated or maintained by the API is the detailed endpoint authority once available.
 
+User bearer envelopes and their server-side session rows expire after one hour.
+Each row snapshots the user's authentication epoch and the selected membership's
+authorization epoch; every authenticated request compares both snapshots with
+current state. `POST /auth/logout` revokes only the presented session. Password
+rotation, user disablement, role change, and membership removal exist only as
+trusted internal, system-audited store operations in this prototype; there are
+no public identity-administration endpoints.
+
 ## Main resource groups
 
 | Group          | Purpose                                                          | Principal       |

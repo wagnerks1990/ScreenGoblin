@@ -34,6 +34,14 @@ not replace staging, external TLS/DNS/firewall, load, backup, or device tests.
 
 Tenant-integrity and normalized-email migrations deliberately abort if they find cross-organization relationships or case-colliding accounts. Before applying them, stop writers, take a verified backup, run the documented preflight queries in a restored staging copy, and investigate every conflict; do not bypass the checks or relabel records automatically.
 
+The session-authority epoch migration is additive and backfills zero-valued
+snapshots for existing sessions. Complete the API rollout promptly: an older API
+instance can create a default-zero session after an epoch has advanced, which a
+new instance correctly rejects. This is fail-closed but can interrupt that login
+during a mixed-version rollout. Password rotation, user disablement, role change,
+and membership removal must go through the audited store boundary, which revokes
+affected sessions atomically; do not issue direct SQL updates for these fields.
+
 Do not run the bootstrap profile as part of normal startup. It refuses to reset an existing owner password or grant owner to an existing unrelated user. Remove bootstrap credentials after the first successful login.
 
 ## Observe

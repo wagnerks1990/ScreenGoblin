@@ -19,9 +19,13 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   may remain usable only when `NODE_ENV` is explicitly non-production.
 - User JWTs are one-hour bearer envelopes around a random, per-login session
   identity whose SHA-256 hash is persisted. Every authenticated request must
-  recheck that exact session's expiry/revocation and the live user, membership,
-  organization, and role. Logout revokes only the presented session and commits
-  that change with its audit event; never restore stateless acceptance.
+  recheck that exact session's expiry/revocation, its user-authentication and
+  membership-authorization epoch snapshots, and the live user, membership,
+  organization, and role. Password rotation, disablement, role changes, and
+  membership removal must use the internal atomic audited store methods; never
+  mutate those fields directly or expose an unreviewed administration route.
+  Logout revokes only the presented session and commits that change with its
+  audit event; never restore stateless acceptance.
 - Failed-login telemetry must cover known and unknown accounts and rate-limit
   rejections without storing raw email, password, or source IP. Use
   deployment-secret, domain-separated HMAC account/source keys and identical

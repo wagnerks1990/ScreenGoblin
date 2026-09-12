@@ -74,6 +74,8 @@ describe("proof-v1 device routes", () => {
       passwordHash: "unused",
       organizationId: "org-a",
       role: "OWNER",
+      authenticationEpoch: 0,
+      authorizationEpoch: 0,
     });
     app = await buildApp({
       store,
@@ -89,6 +91,8 @@ describe("proof-v1 device routes", () => {
       organizationId: "org-a",
       userId: store.users[0]!.id,
       tokenHash: sha256(sessionId),
+      authenticationEpoch: 0,
+      authorizationEpoch: 0,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       createdAt: new Date().toISOString(),
     });

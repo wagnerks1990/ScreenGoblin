@@ -27,6 +27,8 @@ const issueTestToken = (
     organizationId: user.organizationId,
     userId: user.id,
     tokenHash: sha256(sessionId),
+    authenticationEpoch: user.authenticationEpoch,
+    authorizationEpoch: user.authorizationEpoch,
     expiresAt: storedExpiresAt,
     createdAt: new Date().toISOString(),
   });
@@ -51,6 +53,8 @@ beforeEach(async () => {
       passwordHash: await hash("correct horse battery staple", 4),
       organizationId: "org-a",
       role: "OWNER",
+      authenticationEpoch: 0,
+      authorizationEpoch: 0,
     },
     {
       id: "00000000-0000-4000-8000-000000000002",
@@ -59,6 +63,8 @@ beforeEach(async () => {
       passwordHash: await hash("correct horse battery staple", 4),
       organizationId: "org-a",
       role: "VIEWER",
+      authenticationEpoch: 0,
+      authorizationEpoch: 0,
     },
   );
   app = await buildApp({
@@ -351,6 +357,8 @@ describe("authentication and organization RBAC", () => {
       organizationId: "org-a",
       userId: store.users[0]!.id,
       tokenHash: "f".repeat(64),
+      authenticationEpoch: store.users[0]!.authenticationEpoch,
+      authorizationEpoch: store.users[0]!.authorizationEpoch,
       expiresAt: new Date(Date.now() - 1_000).toISOString(),
       createdAt: new Date(Date.now() - 2_000).toISOString(),
     });
@@ -465,6 +473,55 @@ describe("authentication and organization RBAC", () => {
     expect(stillActive.body).not.toContain("sessionId");
   });
 
+  it("revokes every session after password rotation and keeps login failures generic", async () => {
+    const login = (password: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: { email: "admin@example.test", password },
+      });
+    const [first, second] = await Promise.all([
+      login("correct horse battery staple"),
+      login("correct horse battery staple"),
+    ]);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    const newPasswordHash = await hash("rotated horse battery staple", 12);
+
+    await expect(
+      store.rotateUserPasswordAndAudit(store.users[0]!.id, newPasswordHash, {
+        reason: "Test password reset",
+        requestId: "password-reset-test",
+      }),
+    ).resolves.toMatchObject({ updated: true });
+
+    for (const accessToken of [
+      first.json().accessToken as string,
+      second.json().accessToken as string,
+    ]) {
+      const response = await app.inject({
+        url: "/api/v1/auth/me",
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      expect(response.statusCode).toBe(401);
+      expect(response.json().error.code).toBe("SESSION_REVOKED");
+    }
+    const oldPassword = await login("correct horse battery staple");
+    const wrongPassword = await login("definitely incorrect password");
+    expect(oldPassword.statusCode).toBe(401);
+    expect(oldPassword.json().error).toEqual(wrongPassword.json().error);
+    expect((await login("rotated horse battery staple")).statusCode).toBe(200);
+    const audit = store.audits.find(
+      (event) => event.action === "identity.password_rotated",
+    );
+    expect(audit).toMatchObject({
+      actorType: "system",
+      entityId: store.users[0]!.id,
+      metadata: { reason: "Test password reset" },
+    });
+    expect(JSON.stringify(audit)).not.toContain(newPasswordHash);
+  });
+
   it("limits login attempts for the same normalized account", async () => {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const response = await app.inject({
@@ -569,8 +626,10 @@ describe("authentication and organization RBAC", () => {
     });
     expect(r.statusCode).toBe(404);
   });
-  it("revokes an existing token after a user is disabled or their role changes", async () => {
-    store.users[0]!.disabledAt = new Date().toISOString();
+  it("does not revive sessions after disablement or a role demote-restore cycle", async () => {
+    await store.disableUserAndAudit(store.users[0]!.id, {
+      reason: "Test offboarding",
+    });
     const disabled = await app.inject({
       url: "/api/v1/screens",
       headers: { authorization: `Bearer ${token}` },
@@ -578,14 +637,25 @@ describe("authentication and organization RBAC", () => {
     expect(disabled.statusCode).toBe(401);
     expect(disabled.json().error.code).toBe("SESSION_REVOKED");
 
-    delete store.users[0]!.disabledAt;
-    store.users[0]!.role = "VIEWER";
-    const downgraded = await app.inject({
-      url: "/api/v1/screens",
-      headers: { authorization: `Bearer ${token}` },
+    const viewerToken = issueTestToken(store.users[1]!);
+    await store.changeMembershipRoleAndAudit(
+      "org-a",
+      store.users[1]!.id,
+      "ADMIN",
+      { reason: "Temporary promotion" },
+    );
+    await store.changeMembershipRoleAndAudit(
+      "org-a",
+      store.users[1]!.id,
+      "VIEWER",
+      { reason: "Restore original role" },
+    );
+    const restored = await app.inject({
+      url: "/api/v1/auth/me",
+      headers: { authorization: `Bearer ${viewerToken}` },
     });
-    expect(downgraded.statusCode).toBe(401);
-    expect(downgraded.json().error.code).toBe("SESSION_REVOKED");
+    expect(restored.statusCode).toBe(401);
+    expect(restored.json().error.code).toBe("SESSION_REVOKED");
   });
 
   it("marks management responses as non-cacheable", async () => {

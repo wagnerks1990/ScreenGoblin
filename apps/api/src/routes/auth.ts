@@ -127,6 +127,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           expiresAt,
           expectedPasswordHash: user.passwordHash,
           expectedRole: user.role,
+          expectedAuthenticationEpoch: user.authenticationEpoch,
+          expectedAuthorizationEpoch: user.authorizationEpoch,
         },
         {
           actorUserId: user.id,
