@@ -231,6 +231,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Fixed
 
+- Make the Console Dashboard issue counts and explanations derive from one
+  screen-list response, distinguish loading, failure, successful empty, live,
+  and demonstration states, and provide a working refresh/retry without
+  presenting unavailable screenshots or activity as operational telemetry.
+
 - Make the prototype Settings page explicitly read-only. Remove editable
   workspace defaults, content-approval and proof-of-play toggles, and the false
   save affordance so the Console does not imply that unavailable governance or

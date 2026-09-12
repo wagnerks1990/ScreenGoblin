@@ -120,6 +120,34 @@ test("an owner connects to live fleet data, creates a pairing code, and disconne
     .toEqual({ token: null, user: null });
 });
 
+test("the live dashboard reads screens once per load and refreshes explicitly", async ({
+  page,
+}) => {
+  await loginAsSeededOwner(page);
+  await expect(page.getByText("Live API data")).toBeVisible();
+
+  let screenReads = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === "/api/v1/screens") {
+      screenReads += 1;
+    }
+  });
+
+  await page.reload();
+  await expect(page.getByText("Live API data")).toBeVisible();
+  await expect.poll(() => screenReads).toBe(1);
+  await expect(
+    page.getByText("Live activity reporting is unavailable in this pilot."),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Current screen screenshots are unavailable in this pilot"),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Refresh screen data" }).click();
+  await expect.poll(() => screenReads).toBe(2);
+});
+
 test("a screens 401 clears the live session and never substitutes demo fleet records", async ({
   page,
 }) => {

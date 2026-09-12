@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   Clock,
@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import type { FleetSummary, ScreenSummary } from "@screengoblin/contracts";
 import { api } from "../api";
-import { activity, demoFleet, screens as fallbackScreens } from "../data";
+import { activity } from "../data";
 import { Button, PageHeader, Panel, Preview, Status } from "../components";
 import { Link } from "react-router-dom";
 
@@ -24,56 +24,66 @@ export function Dashboard({
   onCreate: () => void;
   canCreate: boolean;
 }) {
-  const demoAllowed = api.demoAllowed();
-  const [fleet, setFleet] = useState<FleetSummary>(
-    demoAllowed
-      ? demoFleet
-      : { total: 0, online: 0, warning: 0, offline: 0, fallback: 0 },
-  );
-  const [screens, setScreens] = useState<ScreenSummary[]>(
-    demoAllowed ? fallbackScreens : [],
-  );
-  const [source, setSource] = useState<"live" | "demo">(
-    demoAllowed ? "demo" : "live",
-  );
+  const [screens, setScreens] = useState<ScreenSummary[]>([]);
+  const [loadState, setLoadState] = useState<
+    "loading" | "live" | "demo" | "error"
+  >("loading");
   const [loadError, setLoadError] = useState("");
-  useEffect(() => {
-    void Promise.all([api.fleet(), api.screens()])
-      .then(([fleetResult, screensResult]) => {
-        setFleet(fleetResult.data);
-        setScreens(screensResult.data);
-        setLoadError("");
-        setSource(
-          fleetResult.source === "live" && screensResult.source === "live"
-            ? "live"
-            : "demo",
-        );
-      })
-      .catch((error: unknown) => {
-        setFleet({ total: 0, online: 0, warning: 0, offline: 0, fallback: 0 });
-        setScreens([]);
-        setSource("live");
-        setLoadError(
-          error instanceof Error
-            ? error.message
-            : "Live fleet data could not be loaded",
-        );
-      });
+  const initialLoadStarted = useRef(false);
+  const loadDashboard = useCallback(async () => {
+    setLoadState("loading");
+    setLoadError("");
+    try {
+      const result = await api.screens();
+      setScreens(result.data);
+      setLoadState(result.source);
+    } catch (error: unknown) {
+      setScreens([]);
+      setLoadState("error");
+      setLoadError(
+        error instanceof Error
+          ? error.message
+          : "Live fleet data could not be loaded",
+      );
+    }
   }, []);
+
+  useEffect(() => {
+    if (initialLoadStarted.current) return;
+    initialLoadStarted.current = true;
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  const hasCurrentData = loadState === "live" || loadState === "demo";
+  const fleet = summarizeFleet(screens);
   const alerts = screens.filter((screen) => screen.status !== "online");
+  const attentionDetail = summarizeAttention(fleet, hasCurrentData);
+  const sourceLabel =
+    loadState === "loading"
+      ? "Loading screen data…"
+      : loadState === "live"
+        ? "Live API data"
+        : loadState === "demo"
+          ? "Clearly labeled demonstration data"
+          : "Live API data unavailable";
   return (
     <>
-      {loadError && (
+      {loadState === "error" && (
         <div className="operational-error" role="alert">
           <TriangleAlert size={18} />
           <span>
-            <b>Live data unavailable.</b> {loadError}. Displayed values are
-            stale and must not be used as current fleet status.
+            <b>Live data unavailable.</b> {loadError}. Fleet counts are unknown
+            until a successful retry.
           </span>
+          <button className="text-button" onClick={() => void loadDashboard()}>
+            <RefreshCw size={14} /> Retry
+          </button>
         </div>
       )}
       <PageHeader
-        eyebrow="Friday, September 11"
+        eyebrow={new Intl.DateTimeFormat(undefined, {
+          dateStyle: "full",
+        }).format(new Date())}
         title="Screen operations overview"
         description="Here’s what’s happening across your screens."
         actions={
@@ -86,41 +96,57 @@ export function Dashboard({
           </Button>
         }
       />
+      <p className="data-source-label" aria-live="polite">
+        {sourceLabel}
+        {hasCurrentData && screens.length === 0
+          ? " · No screens are registered."
+          : ""}
+      </p>
       <div className="metrics-grid">
         <Metric
           icon={<MonitorCheck />}
-          value={fleet.online}
+          value={hasCurrentData ? fleet.online : "—"}
           label="Screens online"
           detail={
-            fleet.total
-              ? `${Math.round((fleet.online / fleet.total) * 100)}% of fleet`
-              : "No current fleet data"
+            !hasCurrentData
+              ? "Current fleet data unavailable"
+              : fleet.total
+                ? `${Math.round((fleet.online / fleet.total) * 100)}% of fleet`
+                : "No screens are registered"
           }
           tone="green"
         />
         <Metric
           icon={<Play />}
-          value={source === "demo" ? "8" : "—"}
+          value={loadState === "demo" ? "8" : "—"}
           label="Active playlists"
           detail={
-            source === "demo" ? "Demonstration data" : "Not available from API"
+            loadState === "demo"
+              ? "Demonstration data"
+              : "Not available from API"
           }
           tone="blue"
         />
         <Metric
           icon={<CalendarClock />}
-          value={source === "demo" ? "3" : "—"}
+          value={loadState === "demo" ? "3" : "—"}
           label="Scheduled today"
           detail={
-            source === "demo" ? "Demonstration data" : "Not available from API"
+            loadState === "demo"
+              ? "Demonstration data"
+              : "Not available from API"
           }
           tone="violet"
         />
         <Metric
           icon={<MonitorX />}
-          value={fleet.offline + fleet.fallback}
+          value={
+            hasCurrentData
+              ? fleet.warning + fleet.offline + fleet.fallback
+              : "—"
+          }
           label="Needs attention"
-          detail="1 offline · 1 fallback"
+          detail={attentionDetail}
           tone="red"
         />
       </div>
@@ -149,16 +175,24 @@ export function Dashboard({
                   <b>{screen.name}</b>
                   <small>
                     {screen.status === "offline"
-                      ? `Offline since ${screen.lastSeenAt}`
+                      ? heartbeatDescription(screen.lastSeenAt)
                       : screen.status === "fallback"
-                        ? "Playing fallback content"
-                        : "Storage is 91% full"}
+                        ? "Player reports fallback playback"
+                        : `Heartbeat delayed · ${heartbeatDescription(screen.lastSeenAt)}`}
                   </small>
                 </span>
                 <Status value={screen.status} />
                 <ArrowRight size={16} />
               </Link>
             ))}
+            {hasCurrentData && alerts.length === 0 && (
+              <p className="data-source-label">No reported screen issues.</p>
+            )}
+            {!hasCurrentData && (
+              <p className="data-source-label">
+                Attention status is unavailable until screen data loads.
+              </p>
+            )}
           </div>
         </Panel>
         <Panel>
@@ -166,9 +200,11 @@ export function Dashboard({
             <div>
               <h2>Fleet pulse</h2>
               <p>
-                {source === "live"
+                {loadState === "live"
                   ? "Live API connection"
-                  : "Prototype snapshot"}
+                  : loadState === "demo"
+                    ? "Demonstration snapshot"
+                    : "Current status unavailable"}
               </p>
             </div>
             <Activity size={19} className="muted" />
@@ -183,26 +219,26 @@ export function Dashboard({
               }
             >
               <span>
-                <b>{fleet.online}</b>
-                <small>of {fleet.total}</small>
+                <b>{hasCurrentData ? fleet.online : "—"}</b>
+                <small>of {hasCurrentData ? fleet.total : "—"}</small>
               </span>
             </div>
             <div className="legend">
               <span>
                 <i className="green" />
-                Online <b>{fleet.online}</b>
+                Online <b>{hasCurrentData ? fleet.online : "—"}</b>
               </span>
               <span>
                 <i className="amber" />
-                Warning <b>{fleet.warning}</b>
+                Warning <b>{hasCurrentData ? fleet.warning : "—"}</b>
               </span>
               <span>
                 <i className="red" />
-                Offline <b>{fleet.offline}</b>
+                Offline <b>{hasCurrentData ? fleet.offline : "—"}</b>
               </span>
               <span>
                 <i className="slate" />
-                Fallback <b>{fleet.fallback}</b>
+                Fallback <b>{hasCurrentData ? fleet.fallback : "—"}</b>
               </span>
             </div>
           </div>
@@ -212,18 +248,22 @@ export function Dashboard({
             <div>
               <h2>Playing now</h2>
               <p>
-                {source === "demo"
+                {loadState === "demo"
                   ? "Illustrative demonstration previews"
-                  : "Screenshot capture is not enabled in this pilot"}
+                  : "Current screen screenshots are unavailable in this pilot"}
               </p>
             </div>
-            <button className="text-button">
-              <RefreshCw size={14} /> Refresh
+            <button
+              className="text-button"
+              onClick={() => void loadDashboard()}
+              disabled={loadState === "loading"}
+            >
+              <RefreshCw size={14} /> Refresh screen data
             </button>
           </div>
           <div className="now-grid">
             {screens
-              .slice(0, source === "demo" ? 3 : 0)
+              .slice(0, loadState === "demo" ? 3 : 0)
               .map((screen, index) => (
                 <article key={screen.id} className="now-card">
                   <Preview
@@ -264,7 +304,7 @@ export function Dashboard({
             </div>
           </div>
           <ol className="activity-list">
-            {(source === "demo" ? activity : []).map((item) => (
+            {(loadState === "demo" ? activity : []).map((item) => (
               <li key={item.title}>
                 <span className="activity-dot" />
                 <div>
@@ -277,14 +317,43 @@ export function Dashboard({
                 </time>
               </li>
             ))}
-            {source === "live" && (
-              <li>Live activity reporting is not enabled.</li>
+            {loadState !== "demo" && (
+              <li>Live activity reporting is unavailable in this pilot.</li>
             )}
           </ol>
         </Panel>
       </div>
     </>
   );
+}
+
+function summarizeFleet(screens: ScreenSummary[]): FleetSummary {
+  return screens.reduce<FleetSummary>(
+    (summary, screen) => {
+      summary.total += 1;
+      summary[screen.status] += 1;
+      return summary;
+    },
+    { total: 0, online: 0, warning: 0, offline: 0, fallback: 0 },
+  );
+}
+
+function summarizeAttention(fleet: FleetSummary, hasCurrentData: boolean) {
+  if (!hasCurrentData) return "Current fleet data unavailable";
+  const parts = (["warning", "offline", "fallback"] as const)
+    .filter((status) => fleet[status] > 0)
+    .map((status) => `${fleet[status]} ${status}`);
+  return parts.length ? parts.join(" · ") : "No reported screen issues";
+}
+
+function heartbeatDescription(lastSeenAt?: string) {
+  if (!lastSeenAt) return "Player has not reported a heartbeat";
+  const timestamp = new Date(lastSeenAt);
+  if (Number.isNaN(timestamp.getTime())) return `Last heartbeat ${lastSeenAt}`;
+  return `Last heartbeat ${new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(timestamp)}`;
 }
 
 function Metric({
