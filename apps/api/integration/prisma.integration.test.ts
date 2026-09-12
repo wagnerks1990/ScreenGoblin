@@ -309,20 +309,26 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "P2003" });
-    await expect(
-      prisma.pairingCode.update({
+    const checkConstraintError = await prisma.pairingCode
+      .update({
         where: { id: pairing.id },
         data: {
           screenId: betaScreen.id,
           screenOrganizationId: beta.id,
         },
-      }),
-    ).rejects.toMatchObject({
-      name: "PrismaClientUnknownRequestError",
-      message: expect.stringContaining(
-        'violates check constraint "PairingCode_screen_organization_check"',
-      ),
-    });
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(checkConstraintError).toBeInstanceOf(Error);
+    expect(checkConstraintError).toHaveProperty(
+      "name",
+      "PrismaClientUnknownRequestError",
+    );
+    expect((checkConstraintError as Error).message).toContain(
+      'violates check constraint "PairingCode_screen_organization_check"',
+    );
 
     await prisma.screen.delete({ where: { id: alphaScreen.id } });
     await expect(
