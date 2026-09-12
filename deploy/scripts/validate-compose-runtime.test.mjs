@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const script = new URL("./validate-compose-runtime.sh", import.meta.url);
+const scriptSource = readFileSync(script, "utf8");
 
 const dockerFixture = `#!/usr/bin/env bash
 set -eu
@@ -112,6 +113,8 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     const result = runSmoke(f);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /production-runtime smoke passed/);
+    assert.match(scriptSource, /export ACME_EMAIL="ops@smoke\.example\.test"/);
+    assert.match(scriptSource, /ACME_EMAIL=\$ACME_EMAIL/);
     const commands = readFileSync(f.commandLog, "utf8");
     assert.match(commands, /up --detach --wait --wait-timeout 180/);
     assert.match(commands, /network inspect screengoblin-smoke-test_backend/);

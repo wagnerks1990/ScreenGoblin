@@ -151,6 +151,7 @@ jobs:
     env:
       SCREEN_GOBLIN_HOST: signage.example.test
       PLAYER_HOST: player.example.test
+      ACME_EMAIL: ops@example.test
       POSTGRES_DB: screengoblin
       POSTGRES_USER: screengoblin
       POSTGRES_PASSWORD: ci-compose-password

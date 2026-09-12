@@ -48,6 +48,7 @@ random_hex() {
 
 export SCREEN_GOBLIN_HOST="signage.example.test"
 export PLAYER_HOST="player.example.test"
+export ACME_EMAIL="ops@smoke.example.test"
 export POSTGRES_DB="screengoblin"
 export POSTGRES_USER="screengoblin"
 export POSTGRES_PASSWORD="$(random_hex 32)"
@@ -79,6 +80,7 @@ export EMERGENCY_FEATURE_ENABLED="false"
 cat >"$env_file" <<EOF
 SCREEN_GOBLIN_HOST=$SCREEN_GOBLIN_HOST
 PLAYER_HOST=$PLAYER_HOST
+ACME_EMAIL=$ACME_EMAIL
 POSTGRES_DB=$POSTGRES_DB
 POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
