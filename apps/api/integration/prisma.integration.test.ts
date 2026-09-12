@@ -600,6 +600,177 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).resolves.toMatchObject({ organizationId: beta.id, role: "VIEWER" });
   });
 
+  it("rechecks release capabilities from locked current memberships before writes", async () => {
+    const [organization, otherOrganization] = await Promise.all([
+      createOrganization("release-capabilities"),
+      createOrganization("release-capabilities-other"),
+    ]);
+    const [actor, missingActor, crossOrgActor, deletedActor, disabledActor] =
+      await Promise.all([
+        createUser("release-viewer@example.test"),
+        createUser("release-missing@example.test"),
+        createUser("release-cross-org@example.test"),
+        createUser("release-deleted@example.test"),
+        createUser("release-disabled@example.test"),
+      ]);
+    await prisma.membership.createMany({
+      data: [
+        {
+          organizationId: organization.id,
+          userId: actor.id,
+          role: "VIEWER",
+        },
+        {
+          organizationId: otherOrganization.id,
+          userId: crossOrgActor.id,
+          role: "PUBLISHER",
+        },
+        {
+          organizationId: organization.id,
+          userId: deletedActor.id,
+          role: "PUBLISHER",
+        },
+        {
+          organizationId: organization.id,
+          userId: disabledActor.id,
+          role: "PUBLISHER",
+        },
+      ],
+    });
+    await prisma.user.update({
+      where: { id: disabledActor.id },
+      data: { disabledAt: new Date() },
+    });
+    await prisma.membership.delete({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: deletedActor.id,
+        },
+      },
+    });
+    const screen = await store.createScreen(organization.id, {
+      name: "Capability screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia(organization.id, {
+      name: "Capability media",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/capability.png",
+      checksumSha256: "c".repeat(64),
+      sizeBytes: 100,
+    });
+    const playlist = await store.createPlaylist(organization.id, {
+      name: "Capability playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+    const input = {
+      playlistId: playlist.id,
+      name: "Capability schedule",
+      priority: "normal" as const,
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      timezone: "UTC",
+      daysOfWeek: [],
+      enabled: true,
+      screenIds: [screen.id],
+    };
+    const policy = { mediaAllowedOrigins: ["https://media.example.test"] };
+
+    for (const actorUserId of [
+      actor.id,
+      missingActor.id,
+      crossOrgActor.id,
+      deletedActor.id,
+      disabledActor.id,
+    ]) {
+      await expect(
+        store.publishScheduleAndAudit(
+          organization.id,
+          input,
+          { actorUserId },
+          policy,
+        ),
+      ).resolves.toEqual({ published: false, reason: "FORBIDDEN" });
+    }
+    expect(await prisma.publishedRelease.count()).toBe(0);
+    expect(await prisma.schedule.count()).toBe(0);
+    expect(await prisma.releaseAssignment.count()).toBe(0);
+    expect(await prisma.auditEvent.count()).toBe(0);
+
+    await prisma.membership.update({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+      data: { role: "PUBLISHER" },
+    });
+    const publication = await store.publishScheduleAndAudit(
+      organization.id,
+      input,
+      { actorUserId: actor.id },
+      policy,
+    );
+    if (!publication.published) throw new Error("authorized publish failed");
+
+    await prisma.membership.update({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+      data: { role: "VIEWER" },
+    });
+    for (const actorUserId of [
+      actor.id,
+      missingActor.id,
+      crossOrgActor.id,
+      deletedActor.id,
+      disabledActor.id,
+    ]) {
+      await expect(
+        store.withdrawScheduleAndAudit(
+          organization.id,
+          publication.schedule.id,
+          { actorUserId },
+        ),
+      ).resolves.toEqual({ withdrawn: false, reason: "FORBIDDEN" });
+    }
+    expect(await prisma.releaseAssignment.count()).toBe(1);
+    expect(await prisma.auditEvent.count()).toBe(1);
+
+    await prisma.membership.update({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+      data: { role: "ADMIN" },
+    });
+    await expect(
+      store.withdrawScheduleAndAudit(organization.id, publication.schedule.id, {
+        actorUserId: actor.id,
+      }),
+    ).resolves.toMatchObject({ withdrawn: true });
+    expect(await prisma.releaseAssignment.count()).toBe(2);
+    expect(await prisma.auditEvent.count()).toBe(2);
+  });
+
   it("freezes published content and schedule selection, then preserves history after withdrawal", async () => {
     const organization = await createOrganization("immutable-release");
     const actor = await createUser("release-owner@example.test");
@@ -1003,7 +1174,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         { actorUserId: actor.id },
         { mediaAllowedOrigins: ["https://media.example.test"] },
       ),
-    ).rejects.toThrow("Release actor is not an organization member");
+    ).resolves.toEqual({ published: false, reason: "FORBIDDEN" });
     expect(await prisma.publishedRelease.count()).toBe(0);
     expect(await prisma.releaseAssignment.count()).toBe(0);
     expect(await prisma.schedule.count()).toBe(0);
