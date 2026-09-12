@@ -65,7 +65,11 @@ describe("cache asset staging", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://cdn.example.test/asset.png",
-      expect.objectContaining({ cache: "no-store", signal: expect.anything() }),
+      expect.objectContaining({
+        cache: "no-store",
+        redirect: "error",
+        signal: expect.anything(),
+      }),
     );
     expect(cache.put).toHaveBeenCalledOnce();
     expect(cache.delete).not.toHaveBeenCalled();

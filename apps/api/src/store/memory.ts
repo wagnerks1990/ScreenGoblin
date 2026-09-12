@@ -33,13 +33,29 @@ export class MemoryStore implements DataStore {
     return { id: id(), ...event, createdAt: now() };
   }
   async findUserByEmail(email: string) {
+    const normalizedEmail = email.toLowerCase();
+    const matches = this.users.filter(
+      (user) => user.email.toLowerCase() === normalizedEmail,
+    );
+    const userIds = new Set(matches.map((user) => user.id));
+    if (userIds.size !== 1 || matches.some((user) => user.disabledAt))
+      return null;
+    const identity = matches[0]!;
+    if (
+      matches.some(
+        (user) =>
+          user.email !== identity.email ||
+          user.name !== identity.name ||
+          user.passwordHash !== identity.passwordHash,
+      ) ||
+      new Set(matches.map((user) => user.organizationId)).size !==
+        matches.length
+    )
+      return null;
     return (
-      this.users
-        .filter(
-          (u) => u.email.toLowerCase() === email.toLowerCase() && !u.disabledAt,
-        )
-        .sort((a, b) => a.organizationId.localeCompare(b.organizationId))[0] ??
-      null
+      matches.sort((a, b) =>
+        a.organizationId.localeCompare(b.organizationId),
+      )[0] ?? null
     );
   }
   async findSessionUser(userId: string, organizationId: string) {

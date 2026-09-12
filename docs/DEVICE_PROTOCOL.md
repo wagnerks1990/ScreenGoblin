@@ -63,6 +63,8 @@ The player downloads into a staging cache, validates size and SHA-256, then atom
 
 Routine polls may refresh `generatedAt`, `validUntil`, and the signature without changing `version`; the version changes only when the semantic release changes. `validUntil` is the signed-envelope lease, while `playbackEndsAt` is the hard schedule authorization boundary enforced locally during an outage. When no schedule applies, or an applicable schedule has no playable non-expired assets, the API emits a signed withdrawal so previously active content does not continue past its authorization window.
 
+Daily times use local wall-clock semantics in the configured IANA time zone. A boundary that does not exist during a spring-forward gap advances to the first valid instant after the gap. During a fall-back repeat, starts use the later occurrence and ends use the earlier occurrence. This prevents early activation and prevents ended content from reactivating when the clock repeats.
+
 Emergency overrides are distinct, expire explicitly, and never erase the baseline schedule. Emergency publishing remains disabled by default until separate approval, player acknowledgement, and partial-delivery handling are implemented and physically tested.
 
 ## Commands (planned; disabled in this prototype)

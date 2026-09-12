@@ -18,6 +18,8 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - Non-web assets are bounded, size/hash verified, and cache-pruned around atomic activation. Emergency overlays never enter the normal rollback chain, and stale callbacks may not roll back a newer active version.
 - Live operational data must fail visibly. Never replace a failed authenticated request with demo values.
 - Published content, schedules, commands, permissions, emergencies, and device lifecycle operations require durable audit coverage.
+- Tenant-owned database relationships must carry and enforce the same organization ID at the foreign-key boundary; migrations must abort for investigation rather than silently relabel cross-tenant legacy rows.
+- Production media must match an explicit canonical HTTPS origin. Direct player delivery still requires controlled DNS and egress because hostname allowlisting alone cannot prevent rebinding to private addresses.
 - Remote shell is not a default capability. Any future implementation needs explicit authorization, consent, scope, expiry, strong audit, and product-level review.
 
 ## Deliberately disabled or incomplete
@@ -30,4 +32,4 @@ AI may draft copy, suggest templates/tags/schedules, summarize device health, an
 
 ## Quality gate
 
-Run `npm run validate`; CI additionally runs the destructive-guarded PostgreSQL integration suite. Continue expanding database-enforced composite tenant integrity, browser accessibility/E2E tests, Android tests, native stream-to-disk caching, offline/emergency recovery tests, and physical-device evidence as the corresponding features mature. Green automated tests alone do not establish pre-production readiness.
+Run `npm run validate`; CI additionally runs the destructive-guarded PostgreSQL integration suite. Continue expanding scoped authorization and immutable release integrity, browser accessibility/E2E tests, Android tests, native stream-to-disk caching, DNS/egress enforcement, offline/emergency recovery tests, and physical-device evidence as the corresponding features mature. Green automated tests alone do not establish pre-production readiness.

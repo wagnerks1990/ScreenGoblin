@@ -65,6 +65,8 @@ model Organization {
 
 model User {
   id           String       @id @default(cuid())
+  /// A custom migration also enforces UNIQUE (LOWER(email)); Prisma cannot
+  /// currently express this functional index in the schema DSL.
   email        String       @unique
   name         String
   passwordHash String
@@ -114,20 +116,22 @@ model Screen {
   schedules           ScheduleTarget[]
   pairingCodes        PairingCode[]
 
+  @@unique([id, organizationId])
   @@index([organizationId, status])
 }
 
 model PairingCode {
-  id             String        @id @default(cuid())
-  organizationId String
-  screenId       String?
-  codeHash       String
-  status         PairingStatus @default(PENDING)
-  expiresAt      DateTime
-  claimedAt      DateTime?
-  createdAt      DateTime      @default(now())
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  screen         Screen?       @relation(fields: [screenId], references: [id], onDelete: SetNull)
+  id                   String        @id @default(cuid())
+  organizationId       String
+  screenId             String?
+  screenOrganizationId String?
+  codeHash             String
+  status               PairingStatus @default(PENDING)
+  expiresAt            DateTime
+  claimedAt            DateTime?
+  createdAt            DateTime      @default(now())
+  organization         Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  screen               Screen?       @relation(fields: [screenId, screenOrganizationId], references: [id, organizationId], onDelete: SetNull)
 
   @@index([organizationId, status, expiresAt])
   @@index([codeHash])
@@ -149,6 +153,7 @@ model MediaAsset {
   organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   playlistItems   PlaylistItem[]
 
+  @@unique([id, organizationId])
   @@index([organizationId, createdAt])
 }
 
@@ -163,17 +168,19 @@ model Playlist {
   items          PlaylistItem[]
   schedules      Schedule[]
 
+  @@unique([id, organizationId])
   @@unique([organizationId, name])
 }
 
 model PlaylistItem {
   id              String     @id @default(cuid())
+  organizationId  String
   playlistId      String
   assetId         String
   position        Int
   durationSeconds Int
-  playlist        Playlist   @relation(fields: [playlistId], references: [id], onDelete: Cascade)
-  asset           MediaAsset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  playlist        Playlist   @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  asset           MediaAsset @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   @@unique([playlistId, position])
 }
@@ -194,17 +201,19 @@ model Schedule {
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
   organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  playlist          Playlist         @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  playlist          Playlist         @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
   targets           ScheduleTarget[]
 
+  @@unique([id, organizationId])
   @@index([organizationId, startsAt, endsAt])
 }
 
 model ScheduleTarget {
-  scheduleId String
-  screenId   String
-  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  screen     Screen   @relation(fields: [screenId], references: [id], onDelete: Cascade)
+  organizationId String
+  scheduleId     String
+  screenId       String
+  schedule       Schedule @relation(fields: [scheduleId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  screen         Screen   @relation(fields: [screenId, organizationId], references: [id, organizationId], onDelete: Cascade)
 
   @@id([scheduleId, screenId])
 }

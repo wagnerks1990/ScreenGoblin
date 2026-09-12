@@ -59,7 +59,10 @@ Proposed records:
 - `AccessGrant(organizationId, id, subjectType, subjectId, roleDefinitionId or capability, scopeType, scopeId, startsAt?, expiresAt?, createdById, revokedAt?)`.
 - `Location(organizationId, id, name, timezone, ...)`, `ScreenGroup(organizationId, id, name)`, and `ScreenGroupMember(organizationId, groupId, screenId)`.
 
-Each tenant-owned table has a composite unique key `@@unique([organizationId, id])`. Foreign keys include `organizationId` and reference that composite key, making cross-tenant linkage impossible even if application validation regresses. In particular:
+Each tenant-owned table has a composite unique key containing both `id` and
+`organizationId`. Foreign keys include `organizationId` and reference that
+composite key, making cross-tenant linkage impossible even if application
+validation regresses. In particular:
 
 - `PairingCode(organizationId, screenId)` → `Screen(organizationId, id)`.
 - `PlaylistItem(organizationId, playlistId, assetId)` → `Playlist` and `MediaAsset` in the same organization.
@@ -68,6 +71,19 @@ Each tenant-owned table has a composite unique key `@@unique([organizationId, id
 - Release revision/item/assignment references described below use the same rule.
 
 Migration sequence must add nullable tenant keys where necessary, backfill and verify zero mismatches/duplicates, add composite unique indexes, add constraints as `NOT VALID` where PostgreSQL permits, validate them, then make required fields non-null. Keep a rehearsed forward-fix/rollback plan; do not drop old constraints until compatible application versions are deployed.
+
+The first composite-integrity migration implements these boundaries for playlist
+items, schedules, schedule targets, and paired screens. `PairingCode` retains its
+own required `organizationId` and uses a separate nullable
+`screenOrganizationId` in the composite screen relation. A database check binds
+the two organization values whenever a screen is linked. This deliberate extra
+column allows `ON DELETE SET NULL` to detach both relation columns and preserve
+pairing/audit history when a screen is deleted. The migration performs a
+cross-tenant preflight before backfill and aborts rather than guessing ownership.
+Because the new child ownership columns become required in the same migration,
+deploy it with API writers stopped; mixed old/new API writers are not supported.
+Database backup and restore verification remain required before applying it to
+any environment containing non-test data.
 
 ## Policy evaluation
 
