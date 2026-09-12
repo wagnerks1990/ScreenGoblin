@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Upgrade the ESLint toolchain to ESLint 10 with matching core, React Hooks,
+  React Refresh, and globals packages, and upgrade the DOM matcher package to
+  its Node 22-compatible release. Preserve the reviewed Rules of Hooks and
+  exhaustive-dependency policy explicitly instead of silently enabling the
+  React Compiler rule set.
+
 - Add authoritative, privacy-preserving failed-login telemetry for known and
   unknown accounts and rate-limit rejections. Store only domain-separated HMAC
   account/source keys, bounded reasons, and server time; keep credential
