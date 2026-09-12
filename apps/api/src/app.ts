@@ -40,6 +40,7 @@ export interface BuildOptions {
   logger?: boolean | string;
   trustProxy?: boolean | string[];
   mediaAllowedOrigins?: string[];
+  legacyMediaRegistrationEnabled?: boolean;
   publicApiUrl?: string;
   redis?: Redis;
   rateLimitBudget?: RateLimitBudget;
@@ -87,6 +88,8 @@ export async function buildApp(
     deviceAuthMode: options.deviceAuthMode,
     emergencyPublishingEnabled: options.emergencyPublishingEnabled ?? false,
     mediaAllowedOrigins: options.mediaAllowedOrigins ?? [],
+    legacyMediaRegistrationEnabled:
+      options.legacyMediaRegistrationEnabled ?? false,
     ...(options.publicApiUrl ? { publicApiUrl: options.publicApiUrl } : {}),
   });
   app.addHook("onClose", async () => {

@@ -6,6 +6,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Disable deprecated caller-supplied media metadata registration by default and
+  reject enabling it in production. Document the separate durable quarantine,
+  fail-closed malware scanning, canonicalization, atomic-visibility promotion,
+  cleanup/retry, and safe image/video derivative design without claiming that
+  upload or external scanning/transcoding is implemented.
+
 - Upgrade the Android Google Services Gradle plugin to 4.5.0 with its exact
   buildscript lock and strict artifact verification checksums. Retain the
   checksum-locked Gradle 8.11.1 wrapper paired with Android Gradle Plugin 8.10.1;

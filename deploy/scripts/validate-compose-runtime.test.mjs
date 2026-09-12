@@ -14,6 +14,10 @@ import test from "node:test";
 
 const script = new URL("./validate-compose-runtime.sh", import.meta.url);
 const scriptSource = readFileSync(script, "utf8");
+const composeSource = readFileSync(
+  new URL("../../docker-compose.yml", import.meta.url),
+  "utf8",
+);
 
 const dockerFixture = `#!/usr/bin/env bash
 set -eu
@@ -130,6 +134,7 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.match(scriptSource, /export ACME_EMAIL="ops@smoke\.example\.test"/);
     assert.match(scriptSource, /ACME_EMAIL=\$ACME_EMAIL/);
     assert.match(scriptSource, /MEDIA_DELIVERY_SECRET=\$MEDIA_DELIVERY_SECRET/);
+    assert.match(composeSource, /LEGACY_MEDIA_REGISTRATION_ENABLED: "false"/);
     assert.match(scriptSource, /\/media\/runtime-smoke\.txt" 404/);
     assert.match(scriptSource, /Anonymous MinIO object GET returned/);
     assert.match(scriptSource, /private-media-valid/);

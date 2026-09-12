@@ -126,3 +126,10 @@ does not exclude dependencies, generated code, paths, or any other finding.
 Browser upload, sniffing, scanning, decoding, and transcoding remain disabled
 and are not closed by this delivery control. A private quarantine and
 safe-derivative pipeline remains a pre-production gate.
+
+The legacy caller-supplied metadata registration route is now disabled by
+default and production configuration rejects enabling it. The proposed private
+ingestion state machine, separate quarantine authority, fail-closed scanner,
+reader-visible promotion transaction, deterministic orphan reconciliation, and
+safe-derivative gates are documented in `MEDIA_INGESTION_DESIGN.md`; this design
+does not complete the upload pre-production gate.

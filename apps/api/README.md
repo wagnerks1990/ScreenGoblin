@@ -29,7 +29,8 @@ All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the
 
 - `POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`
 - `GET|POST|PATCH|DELETE /api/v1/screens`
-- `GET|POST|DELETE /api/v1/media`
+- `GET|DELETE /api/v1/media` (`POST` is deprecated and disabled by default;
+  production rejects enabling it)
 - `GET|POST|DELETE /api/v1/playlists`
 - `GET|POST|DELETE /api/v1/schedules`
 - `POST /api/v1/emergencies`, `POST /api/v1/emergencies/:id/clear`
@@ -91,12 +92,11 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
   insertion-triggered, so a dormant deployment may retain aged rows until the
   next failed or rate-limited login.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
-- Media upload/scanning/transcoding and private object delivery are intentionally
-  adapter boundaries. The prototype registers only pre-provisioned allowlisted
-  JPEG, PNG, MP4, and JSON template metadata; web media is disabled. Registration
-  canonicalizes SHA-256 values and rejects zero/oversized (over 128 MiB) or
-  already-expired assets. Publication transactionally revalidates legacy rows
-  and rejects releases exceeding 512 MiB.
+- Private object delivery is implemented, but upload, quarantine, scanning, safe
+  decoding, and transcoding are not. The legacy caller-supplied metadata route
+  is deprecated, disabled by default, and forbidden in production. The required
+  durable state machine and external controls are specified in
+  [`docs/MEDIA_INGESTION_DESIGN.md`](../../docs/MEDIA_INGESTION_DESIGN.md).
 
 ## Validation
 
