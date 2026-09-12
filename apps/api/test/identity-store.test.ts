@@ -1,8 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
+import { getRounds } from "bcryptjs";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "../src/store/memory.js";
 import { PrismaStore } from "../src/store/prisma.js";
-import type { SessionUser } from "../src/domain/types.js";
+import type { DataStore, SessionUser } from "../src/domain/types.js";
+import { verifyLoginCredentials } from "../src/routes/auth.js";
 
 const approvedPasswordHash =
   "$2b$12$C6UzMDM.H6dfI/f/IKcEe.82jG7y4g4AY8I8HibLFSWafVkx8S4hS";
@@ -18,24 +20,16 @@ const sessionUser = (id: string, email: string, organizationId: string) => ({
   authorizationEpoch: 0,
 });
 
-const prismaUser = (id: string, email: string) => ({
+const prismaLoginRow = (id: string, email: string) => ({
   id,
   email,
   name: `User ${id}`,
   passwordHash: `hash-${id}`,
   authenticationEpoch: 0,
   disabledAt: null,
-  createdAt: new Date("2026-09-12T00:00:00Z"),
-  updatedAt: new Date("2026-09-12T00:00:00Z"),
-  memberships: [
-    {
-      id: `membership-${id}`,
-      organizationId: "org-a",
-      userId: id,
-      role: "OWNER" as const,
-      authorizationEpoch: 0,
-    },
-  ],
+  organizationId: "org-a",
+  role: "OWNER" as const,
+  authorizationEpoch: 0,
 });
 
 describe("case-insensitive user identity lookup", () => {
@@ -63,14 +57,38 @@ describe("case-insensitive user identity lookup", () => {
     ).resolves.toBeNull();
   });
 
-  it("uses the normalized index expression and rejects ambiguous IDs", async () => {
+  it("keeps active, disabled, and absent identity eligibility aligned in memory", async () => {
+    const store = new MemoryStore();
+    const active = sessionUser("user-active", "active@example.test", "org-a");
+    const disabled = {
+      ...sessionUser("user-disabled", "disabled@example.test", "org-a"),
+      disabledAt: "2026-09-12T00:00:00.000Z",
+    };
+    store.users.push(active, disabled);
+
+    await expect(store.findUserByEmail("ACTIVE@example.test")).resolves.toEqual(
+      active,
+    );
+    await expect(
+      store.findUserByEmail("DISABLED@example.test"),
+    ).resolves.toBeNull();
+    await expect(
+      store.findUserByEmail("membershipless@example.test"),
+    ).resolves.toBeNull();
+    await expect(
+      store.findUserByEmail("unknown@example.test"),
+    ).resolves.toBeNull();
+  });
+
+  it("uses one SQL statement and rejects ambiguous IDs", async () => {
     const queryRaw = vi
       .fn()
-      .mockResolvedValue([{ id: "user-a" }, { id: "user-b" }]);
-    const findUnique = vi.fn();
+      .mockResolvedValue([
+        prismaLoginRow("user-a", "owner@example.test"),
+        prismaLoginRow("user-b", "owner@example.test"),
+      ]);
     const prisma = {
       $queryRaw: queryRaw,
-      user: { findUnique },
     } as unknown as PrismaClient;
 
     await expect(
@@ -78,24 +96,100 @@ describe("case-insensitive user identity lookup", () => {
     ).resolves.toBeNull();
     expect(queryRaw).toHaveBeenCalledOnce();
     expect(queryRaw.mock.calls[0]?.[1]).toBe("owner@example.test");
-    expect(findUnique).not.toHaveBeenCalled();
   });
 
-  it("returns the stable first organization only for one unique Prisma user", async () => {
-    const user = prismaUser("user-a", "Owner@example.test");
-    user.memberships[0]!.organizationId = "org-a";
+  it("uses the same single-statement lookup shape for every login eligibility class", async () => {
+    const active = prismaLoginRow("user-active", "active@example.test");
+    const disabled = {
+      ...prismaLoginRow("user-disabled", "disabled@example.test"),
+      disabledAt: new Date("2026-09-12T00:00:00Z"),
+    };
+    const membershipless = {
+      ...prismaLoginRow("user-membershipless", "membershipless@example.test"),
+      organizationId: null,
+      role: null,
+      authorizationEpoch: null,
+    };
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce([active])
+      .mockResolvedValueOnce([disabled])
+      .mockResolvedValueOnce([membershipless])
+      .mockResolvedValueOnce([]);
     const prisma = {
-      $queryRaw: vi.fn().mockResolvedValue([{ id: "user-a" }]),
-      user: { findUnique: vi.fn().mockResolvedValue(user) },
+      $queryRaw: queryRaw,
     } as unknown as PrismaClient;
+    const store = new PrismaStore(prisma);
 
     await expect(
-      new PrismaStore(prisma).findUserByEmail("owner@example.test"),
+      store.findUserByEmail("active@example.test"),
     ).resolves.toMatchObject({
-      id: "user-a",
-      email: "Owner@example.test",
+      id: "user-active",
       organizationId: "org-a",
     });
+    await expect(
+      store.findUserByEmail("disabled@example.test"),
+    ).resolves.toBeNull();
+    await expect(
+      store.findUserByEmail("membershipless@example.test"),
+    ).resolves.toBeNull();
+    await expect(
+      store.findUserByEmail("unknown@example.test"),
+    ).resolves.toBeNull();
+
+    expect(queryRaw).toHaveBeenCalledTimes(4);
+    const statementShapes = queryRaw.mock.calls.map(([strings]) => [
+      ...(strings as TemplateStringsArray),
+    ]);
+    expect(statementShapes).toEqual([
+      statementShapes[0],
+      statementShapes[0],
+      statementShapes[0],
+      statementShapes[0],
+    ]);
+  });
+});
+
+describe("login credential verification shape", () => {
+  it("performs one identity lookup and one bcrypt-shaped comparison for every outcome", async () => {
+    const active = sessionUser("user-active", "active@example.test", "org-a");
+    active.passwordHash = "active-account-hash";
+    const results = new Map<string, SessionUser | null>([
+      ["active@example.test", active],
+      ["unknown@example.test", null],
+      ["disabled@example.test", null],
+      ["membershipless@example.test", null],
+    ]);
+    const findUserByEmail = vi.fn(async (email: string) => results.get(email)!);
+    const comparedHashes: string[] = [];
+    const comparePassword = vi.fn(async (_password: string, digest: string) => {
+      comparedHashes.push(digest);
+      return false;
+    });
+    const store = { findUserByEmail } satisfies Pick<
+      DataStore,
+      "findUserByEmail"
+    >;
+
+    for (const email of results.keys()) {
+      const lookupCalls = findUserByEmail.mock.calls.length;
+      const compareCalls = comparePassword.mock.calls.length;
+      await expect(
+        verifyLoginCredentials(
+          store,
+          email,
+          "incorrect password",
+          comparePassword,
+        ),
+      ).resolves.toBeNull();
+      expect(findUserByEmail.mock.calls.length).toBe(lookupCalls + 1);
+      expect(comparePassword.mock.calls.length).toBe(compareCalls + 1);
+    }
+
+    expect(comparedHashes[0]).toBe(active.passwordHash);
+    expect(new Set(comparedHashes.slice(1))).toHaveLength(1);
+    expect(comparedHashes[1]).toMatch(/^\$2b\$12\$/);
+    expect(getRounds(comparedHashes[1]!)).toBe(12);
   });
 });
 

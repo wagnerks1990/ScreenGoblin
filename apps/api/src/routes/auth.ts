@@ -1,7 +1,11 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { compare } from "bcryptjs";
 import { z } from "zod";
-import type { LoginFailureReason } from "../domain/types.js";
+import type {
+  DataStore,
+  LoginFailureReason,
+  SessionUser,
+} from "../domain/types.js";
 import { ApiError } from "../utils/http.js";
 import { randomToken, sha256 } from "../utils/crypto.js";
 import {
@@ -15,6 +19,25 @@ import {
 const DUMMY_PASSWORD_HASH =
   "$2b$12$C6UzMDM.H6dfI/f/IKcEe.82jG7y4g4AY8I8HibLFSWafVkx8S4hS";
 const SESSION_LIFETIME_SECONDS = 60 * 60;
+
+type PasswordComparator = (
+  password: string,
+  passwordHash: string,
+) => Promise<boolean>;
+
+export const verifyLoginCredentials = async (
+  store: Pick<DataStore, "findUserByEmail">,
+  email: string,
+  password: string,
+  comparePassword: PasswordComparator = compare,
+): Promise<SessionUser | null> => {
+  const user = await store.findUserByEmail(email);
+  const passwordValid = await comparePassword(
+    password,
+    user?.passwordHash ?? DUMMY_PASSWORD_HASH,
+  );
+  return user && passwordValid ? user : null;
+};
 
 const loginSchema = z
   .object({
@@ -93,12 +116,12 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     },
     async (request) => {
       const input = loginSchema.parse(request.body);
-      const user = await app.store.findUserByEmail(input.email);
-      const passwordValid = await compare(
+      const user = await verifyLoginCredentials(
+        app.store,
+        input.email,
         input.password,
-        user?.passwordHash ?? DUMMY_PASSWORD_HASH,
       );
-      if (!user || !passwordValid) {
+      if (!user) {
         await recordLoginFailure(request, input.email, "INVALID_CREDENTIALS");
         throw new ApiError(
           401,

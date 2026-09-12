@@ -31,6 +31,13 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   deployment-secret, domain-separated HMAC account/source keys and identical
   generic responses. Telemetry persistence fails safe; inserts enforce the
   30-day and 10,000-row bounds. Do not silently downgrade this to best effort.
+- Login identity eligibility, including the stable first organization for a
+  multi-organization user, must resolve in one fixed store-query shape. Every
+  credential check admitted past request validation and rate limiting performs
+  exactly one bcrypt comparison; unknown, disabled, and membershipless
+  identities use the fixed cost-12 dummy credential. Describe this only as
+  reduced timing distinguishability, never as constant-time authentication, and
+  never expose membership existence.
 - Enrollment is a two-stage, transcript-bound challenge exchange. Android installation ID equals the server-derived SHA-256 SPKI key ID; an identical successful final claim is idempotently recoverable. A reported Keystore security level is not attestation, and a stolen pairing code remains first-winner authority.
 - Device revocation is an OWNER/ADMIN capability revalidated transactionally with the credential/screen change, outstanding-challenge invalidation, and one audit record. Revocation blocks online proof use but cannot recall or erase content from an offline player.
 - Targeted re-enrollment is a manual, zero-overlap recovery protocol for an

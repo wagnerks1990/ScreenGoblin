@@ -1997,7 +1997,7 @@ describe("PrismaStore PostgreSQL integration", () => {
     );
   });
 
-  it("finds email case-insensitively and resolves the requested membership for multi-organization sessions", async () => {
+  it("resolves login identity eligibility in one store operation without leaking membership state", async () => {
     const [alpha, beta] = await Promise.all([
       prisma.organization.create({
         data: {
@@ -2015,6 +2015,10 @@ describe("PrismaStore PostgreSQL integration", () => {
       }),
     ]);
     const user = await createUser("Owner@Example.Test");
+    const disabledUser = await createUser("disabled-login@example.test");
+    const membershiplessUser = await createUser(
+      "membershipless-login@example.test",
+    );
     await prisma.membership.createMany({
       data: [
         {
@@ -2027,7 +2031,16 @@ describe("PrismaStore PostgreSQL integration", () => {
           userId: user.id,
           role: "VIEWER",
         },
+        {
+          organizationId: alpha.id,
+          userId: disabledUser.id,
+          role: "VIEWER",
+        },
       ],
+    });
+    await prisma.user.update({
+      where: { id: disabledUser.id },
+      data: { disabledAt: new Date() },
     });
 
     const loginUser = await store.findUserByEmail("owner@example.test");
@@ -2037,6 +2050,13 @@ describe("PrismaStore PostgreSQL integration", () => {
       organizationId: alpha.id,
       role: "OWNER",
     });
+    await expect(store.findUserByEmail(disabledUser.email)).resolves.toBeNull();
+    await expect(
+      store.findUserByEmail(membershiplessUser.email),
+    ).resolves.toBeNull();
+    await expect(
+      store.findUserByEmail("unknown-login@example.test"),
+    ).resolves.toBeNull();
     await expect(
       store.findSessionUser(user.id, alpha.id),
     ).resolves.toMatchObject({ organizationId: alpha.id, role: "OWNER" });
