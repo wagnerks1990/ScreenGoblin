@@ -6,6 +6,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
+- Add blocking, checksum-verified repository secret and IaC/configuration scans plus an exact dependency-license policy. Require every non-link lock entry to have exact identity/version/license; validate HTTPS, file, and git locators, inherit only exact package-version provenance, and explicitly inventory entries whose lockfile locator is absent. Reject broad, stale, malformed, or unused exceptions; retain successful sanitized SARIF/license evidence with a verified checksum manifest. These static controls do not provide DAST or production-runtime coverage.
+
 - Require `PUBLIC_API_URL` to be a canonical credential-free HTTPS origin
   in production, normalize it before constructing the paired device API base,
   and reject path, query, or fragment configuration before a pairing code can

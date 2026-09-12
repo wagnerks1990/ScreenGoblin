@@ -21,9 +21,9 @@ COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages/contracts/
 COPY apps/api/package.json apps/api/tsconfig.json ./apps/api/
 RUN npm ci --omit=dev --ignore-scripts \
- && test -f apps/api/node_modules/@prisma/client/package.json \
- && cd apps/api \
- && node --input-type=module -e "await import('fastify')"
+ && test -f apps/api/node_modules/@prisma/client/package.json
+WORKDIR /app/apps/api
+RUN node --input-type=module -e "await import('fastify')"
 
 FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001
@@ -45,9 +45,12 @@ COPY --from=build --chown=screengoblin:screengoblin /app/packages/contracts ./pa
 COPY --from=build --chown=screengoblin:screengoblin /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build --chown=screengoblin:screengoblin /app/apps/api/dist ./apps/api/dist
 COPY --from=build --chown=screengoblin:screengoblin /app/apps/api/prisma ./apps/api/prisma
-RUN cd apps/api \
- && node --input-type=module -e "await Promise.all([import('@prisma/client'), import('fastify'), import('@screengoblin/contracts')])" \
+WORKDIR /app/apps/api
+RUN node --input-type=module -e "await Promise.all([import('@prisma/client'), import('fastify'), import('@screengoblin/contracts')])" \
  && test -f node_modules/.prisma/client/schema.prisma
+WORKDIR /app
 USER screengoblin
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=10 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3001/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 EXPOSE 3001
 CMD ["node", "apps/api/dist/server.js"]

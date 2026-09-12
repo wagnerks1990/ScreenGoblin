@@ -23,12 +23,13 @@ the query's recommendation. The exception activates only while both that source
 file and its manifest declaration retain their reviewed SHA-256 values; a change
 to either makes the alert blocking again. The full result remains in SARIF.
 
-`.github/workflows/container-scan.yml` performs two blocking checks:
+`.github/workflows/container-scan.yml` performs blocking repository vulnerability, secret, infrastructure/configuration misconfiguration, exact lockfile-license policy, and final-image vulnerability checks. The repository job uses the same checksum-verified Trivy binary for independent vulnerability, secret, configuration, and license-inventory passes. A repository-owned validator rejects unapproved or unidentified lockfile licenses and fails closed on broad, stale, malformed, or unused exceptions.
 
-- repository filesystem scanning for unresolved `HIGH` and `CRITICAL` findings; and
-- final-image builds followed by unresolved `HIGH` and `CRITICAL` image scanning.
+Successful repository scans retain secret, misconfiguration, and vulnerability SARIF plus deterministic, sanitized dependency-license evidence under an exact commit-named artifact. `SHA256SUMS` binds every retained file. The license evidence contains dependency names, versions, exact license expressions, provenance classifications, and input-policy digests, but omits registry/file/git locators and integrity material. Secret SARIF and the artifact are uploaded only after all blocking scans succeed, avoiding retention of an actual detected secret. See `security/README.md` for the exact, time-bounded exception process.
 
 The image job also emits CycloneDX SBOMs, Trivy SARIF, Docker image inspection records, image IDs, source commit/tree/archive digests, Dockerfile digests, and SHA-256 checksums. SARIF is uploaded to GitHub code scanning and the remaining evidence is retained as a short-lived workflow artifact. The builder refuses a dirty worktree or a requested evidence ID that differs from the checked-out commit.
+
+These are static repository and build-input controls only. They do not perform DAST, inspect a deployed target, continuously monitor production, or establish production runtime configuration.
 
 CI also runs four single-worker Chromium scenarios against the compiled Console,
 compiled API, and a dedicated migrated PostgreSQL database. The gate exercises

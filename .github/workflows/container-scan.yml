@@ -3,9 +3,12 @@ name: Container scan
 on:
   pull_request:
     paths:
+      - ".github/workflows/container-scan.yml"
       - "deploy/**"
       - "docker-compose.yml"
+      - "package.json"
       - "package-lock.json"
+      - "security/**"
       - "apps/**"
       - "packages/**"
   schedule:
@@ -37,22 +40,92 @@ jobs:
             https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
           echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
           tar --extract --gzip --file "$RUNNER_TEMP/trivy.tar.gz" --directory "$RUNNER_TEMP" trivy
-      - name: Create repository SARIF
+      - name: Validate static policies and prepare evidence
+        run: |
+          mkdir -p static-security-evidence
+          node deploy/scripts/validate-static-security-policy.mjs \
+            --static-policy security/static-scan-exceptions.json \
+            --license-policy security/dependency-license-policy.json \
+            --lockfile package-lock.json \
+            --trivy-ignore-output "$RUNNER_TEMP/trivyignore.yaml" \
+            --license-evidence-output static-security-evidence/dependency-licenses.json
+      - name: Block unresolved high and critical repository vulnerabilities
         run: |
           "$RUNNER_TEMP/trivy" fs \
+            --scanners vuln \
             --format sarif \
-            --output trivy-repository.sarif \
+            --output static-security-evidence/vulnerabilities.sarif \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
+            --exit-code 1 \
             .
-      - name: Block unresolved high and critical findings
+      - name: Block repository secrets
         run: |
-          "$RUNNER_TEMP/trivy" fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed .
+          "$RUNNER_TEMP/trivy" fs \
+            --scanners secret \
+            --ignorefile "$RUNNER_TEMP/trivyignore.yaml" \
+            --format sarif \
+            --output static-security-evidence/secrets.sarif \
+            --exit-code 1 \
+            .
+      - name: Block infrastructure and configuration misconfigurations
+        run: |
+          set +e
+          "$RUNNER_TEMP/trivy" config \
+            --skip-check-update \
+            --ignorefile "$RUNNER_TEMP/trivyignore.yaml" \
+            --format sarif \
+            --output static-security-evidence/misconfigurations.sarif \
+            --exit-code 1 \
+            .
+          scan_status=$?
+          set -e
+          if (( scan_status != 0 )); then
+            jq --compact-output \
+              '[.runs[].results[] | {ruleId, paths: [.locations[]?.physicalLocation.artifactLocation.uri]}]' \
+              static-security-evidence/misconfigurations.sarif
+            exit "$scan_status"
+          fi
+      - name: Cross-check dependency license inventory with Trivy
+        run: |
+          "$RUNNER_TEMP/trivy" fs \
+            --scanners license \
+            --include-dev-deps \
+            --format json \
+            --output "$RUNNER_TEMP/trivy-license-inventory.json" \
+            .
+          test -s "$RUNNER_TEMP/trivy-license-inventory.json"
+      - name: Seal repository security evidence
+        run: |
+          (
+            cd static-security-evidence
+            find . -type f ! -name SHA256SUMS -print0 |
+              sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
       - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
-        if: always() && hashFiles('trivy-repository.sarif') != ''
+        if: success() && hashFiles('static-security-evidence/vulnerabilities.sarif') != ''
         with:
-          sarif_file: trivy-repository.sarif
-          category: trivy-repository
+          sarif_file: static-security-evidence/vulnerabilities.sarif
+          category: trivy-repository-vulnerabilities
+      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        if: success() && hashFiles('static-security-evidence/secrets.sarif') != ''
+        with:
+          sarif_file: static-security-evidence/secrets.sarif
+          category: trivy-repository-secrets
+      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        if: success() && hashFiles('static-security-evidence/misconfigurations.sarif') != ''
+        with:
+          sarif_file: static-security-evidence/misconfigurations.sarif
+          category: trivy-repository-misconfigurations
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: success()
+        with:
+          name: repository-security-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: static-security-evidence
+          if-no-files-found: error
+          retention-days: 14
 
   images:
     runs-on: ubuntu-latest
