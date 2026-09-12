@@ -317,7 +317,12 @@ describe("PrismaStore PostgreSQL integration", () => {
           screenOrganizationId: beta.id,
         },
       }),
-    ).rejects.toMatchObject({ code: "P2004" });
+    ).rejects.toMatchObject({
+      name: "PrismaClientUnknownRequestError",
+      message: expect.stringContaining(
+        'violates check constraint "PairingCode_screen_organization_check"',
+      ),
+    });
 
     await prisma.screen.delete({ where: { id: alphaScreen.id } });
     await expect(
@@ -615,9 +620,10 @@ describe("PrismaStore PostgreSQL integration", () => {
         createUser("legacy@example.test"),
       ]);
 
-      await expect(prisma.$executeRawUnsafe(preflight!)).rejects.toThrow(
-        /duplicate normalized emails exist/,
-      );
+      await expect(prisma.$executeRawUnsafe(preflight!)).rejects.toMatchObject({
+        code: "P2010",
+        meta: expect.objectContaining({ code: "23505" }),
+      });
       const indexes = await prisma.$queryRaw<Array<{ count: number }>>`
         SELECT COUNT(*)::int AS count
         FROM pg_indexes
