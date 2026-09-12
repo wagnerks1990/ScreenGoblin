@@ -71,6 +71,15 @@ during later inserts. This insertion-triggered retention is not a SIEM, alerting
 pipeline, or immediate deletion scheduler, and sustained attacks can churn the
 bounded window.
 
+The PostgreSQL login lookup resolves identity eligibility and its stable
+first-organization compatibility membership in one fixed statement. Active,
+unknown, disabled, and membershipless outcomes each lead to exactly one bcrypt
+comparison, with a supported fixed cost-12 dummy credential used whenever no
+eligible identity is returned. This narrows account-existence and membership
+timing differences; database execution, scheduler effects, rate limiting, and
+successful session creation remain data-dependent, so this is not a constant-
+time authentication claim.
+
 The isolated non-production emergency fixture path rechecks current emergency
 capabilities, locks organization-scoped targets, and commits each activation or
 clear with its audit event in one transaction. Production remains hard-disabled

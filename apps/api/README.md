@@ -116,6 +116,12 @@ revocation across PostgreSQL and object storage.
   than 30 days and cap the table at 10,000 newest rows. Pruning is
   insertion-triggered, so a dormant deployment may retain aged rows until the
   next failed or rate-limited login.
+- Login resolves identity eligibility and the stable first-organization
+  compatibility membership with one fixed SQL statement. Known, unknown,
+  disabled, and membershipless attempts then perform exactly one bcrypt
+  comparison; ineligible identities use a supported fixed cost-12 dummy hash.
+  This reduces account-existence timing distinguishability but does not make
+  authentication constant time or disclose whether a tenant membership exists.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
 - Private object delivery is implemented, but upload, quarantine, scanning, safe
   decoding, and transcoding are not. The legacy caller-supplied metadata route

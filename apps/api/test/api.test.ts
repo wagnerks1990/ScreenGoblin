@@ -531,6 +531,8 @@ describe("authentication and organization RBAC", () => {
   });
 
   it("limits login attempts for the same normalized account", async () => {
+    // Ten admitted attempts intentionally perform ten real cost-12 dummy
+    // bcrypt comparisons. Give only this test bounded parallel-CI headroom.
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const response = await app.inject({
         method: "POST",
@@ -562,7 +564,7 @@ describe("authentication and organization RBAC", () => {
     expect(
       new Set(store.loginFailures.map((event) => event.accountKey)).size,
     ).toBe(1);
-  });
+  }, 15_000);
   it("denies a viewer mutation", async () => {
     const viewer = issueTestToken(store.users[1]!);
     const r = await app.inject({

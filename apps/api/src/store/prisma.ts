@@ -471,35 +471,60 @@ export class PrismaStore implements DataStore {
     await this.prisma.$disconnect();
   }
   async findUserByEmail(email: string) {
-    // Use equality on the same LOWER(email) expression enforced and indexed by
-    // the custom migration. LIMIT 2 keeps pre-migration ambiguity fail-closed.
-    const matches = await this.prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT "id"
-      FROM "User"
-      WHERE LOWER("email") = ${email.toLowerCase()}
-      ORDER BY "id" ASC
+    // Resolve identity eligibility and the stable compatibility membership in
+    // one statement for known, unknown, disabled, and membershipless accounts.
+    // LIMIT 2 keeps pre-migration case ambiguity fail-closed.
+    const matches = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        email: string;
+        name: string;
+        passwordHash: string;
+        authenticationEpoch: number;
+        disabledAt: Date | null;
+        organizationId: string | null;
+        role: SessionUser["role"] | null;
+        authorizationEpoch: number | null;
+      }>
+    >`
+      SELECT identity."id",
+             identity."email",
+             identity."name",
+             identity."passwordHash",
+             identity."authenticationEpoch",
+             identity."disabledAt",
+             membership."organizationId",
+             membership."role"::text AS "role",
+             membership."authorizationEpoch"
+      FROM "User" identity
+      LEFT JOIN LATERAL (
+        SELECT candidate."organizationId",
+               candidate."role",
+               candidate."authorizationEpoch"
+        FROM "Membership" candidate
+        WHERE candidate."userId" = identity."id"
+        ORDER BY candidate."organizationId" ASC
+        LIMIT 1
+      ) membership ON TRUE
+      WHERE LOWER(identity."email") = ${email.toLowerCase()}
+      ORDER BY identity."id" ASC
       LIMIT 2
     `;
     if (matches.length !== 1) return null;
-    const x = await this.prisma.user.findUnique({
-      where: { id: matches[0]!.id },
-      include: {
-        // Login does not yet accept an organization selector. Make the
-        // compatibility default stable rather than relying on database order.
-        memberships: { orderBy: { organizationId: "asc" }, take: 1 },
-      },
-    });
-    const m = x?.memberships[0];
-    return x && !x.disabledAt && m
+    const x = matches[0]!;
+    return !x.disabledAt &&
+      x.organizationId !== null &&
+      x.role !== null &&
+      x.authorizationEpoch !== null
       ? ({
           id: x.id,
           email: x.email,
           name: x.name,
           passwordHash: x.passwordHash,
-          organizationId: m.organizationId,
-          role: m.role,
+          organizationId: x.organizationId,
+          role: x.role,
           authenticationEpoch: x.authenticationEpoch,
-          authorizationEpoch: m.authorizationEpoch,
+          authorizationEpoch: x.authorizationEpoch,
         } satisfies SessionUser)
       : null;
   }

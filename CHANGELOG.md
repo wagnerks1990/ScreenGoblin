@@ -18,6 +18,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   before storage access so withdrawal or replacement revokes subsequent online
   reads immediately without resource-existence disclosure.
 
+- Reduce account-existence timing distinguishability by resolving active,
+  unknown, disabled, and membershipless login identities with one fixed SQL
+  statement and performing exactly one bcrypt comparison for each. Ineligible
+  identities use a supported fixed cost-12 dummy credential; generic failure
+  telemetry and stable first-organization login semantics remain unchanged.
+  This is not a constant-time authentication claim.
+
 - Disable deprecated caller-supplied media metadata registration by default and
   reject enabling it in production. Document the separate durable quarantine,
   fail-closed malware scanning, canonicalization, atomic-visibility promotion,
