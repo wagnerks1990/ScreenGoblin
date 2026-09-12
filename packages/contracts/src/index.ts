@@ -6,6 +6,7 @@ export type SchedulePriority = "normal" | "campaign" | "priority" | "emergency";
 export const CAPABILITIES = {
   releasePublish: "release.publish",
   releaseWithdraw: "release.withdraw",
+  screenCredentialRevoke: "screen.credential.revoke",
 } as const;
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
@@ -58,20 +59,66 @@ export interface ScreenSummary {
 
 export interface PairingRequest {
   code: string;
-  device: {
-    installationId: string;
-    model: string;
-    osVersion: string;
-    playerVersion: string;
-  };
+  device: DeviceMetadata;
+  identity: DeviceIdentityEnrollment;
+  pairingProof: DeviceProof;
+}
+
+export interface DeviceMetadata {
+  installationId: string;
+  model: string;
+  osVersion: string;
+  playerVersion: string;
+}
+
+export interface DeviceIdentityEnrollment {
+  algorithm: "ES256";
+  publicKeySpki: string;
+  keyId: string;
+  securityLevel:
+    | "strongbox"
+    | "trusted-environment"
+    | "software"
+    | "unknown-secure"
+    | "unknown";
+}
+
+export interface DeviceProof {
+  challengeId: string;
+  challenge: string;
+  keyId: string;
+  signatureFormat: "ES256-DER";
+  signature: string;
+}
+
+export interface PairingChallengeRequest {
+  code: string;
+  device: DeviceMetadata;
+  identity: DeviceIdentityEnrollment;
+}
+
+export interface DeviceChallengeResponse {
+  id: string;
+  challenge: string;
+  expiresAt: string;
 }
 
 export interface PairingResponse {
+  authMode: "proof-v1";
   screenId: string;
-  deviceToken: string;
+  credentialId: string;
+  keyId: string;
   apiBaseUrl: string;
   heartbeatIntervalSeconds: number;
   manifestVerificationKey: string;
+}
+
+export type DeviceProofOperation = "manifest" | "heartbeat";
+
+export interface DeviceAuthChallengeRequest {
+  operation: DeviceProofOperation;
+  /** Lowercase hexadecimal SHA-256 of the canonical request body. */
+  bodySha256: string;
 }
 
 export interface HeartbeatRequest {
@@ -91,4 +138,44 @@ export interface FleetSummary {
   warning: number;
   offline: number;
   fallback: number;
+}
+
+export const PAIRING_TRANSCRIPT_VERSION =
+  "ScreenGoblin pairing transcript v1" as const;
+
+/**
+ * Deterministic JSON for protocol hashes. Object keys are recursively sorted;
+ * unsupported JSON values are rejected instead of being silently transformed.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean")
+    return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value))
+      throw new TypeError("Canonical JSON requires finite numbers");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value !== "object")
+    throw new TypeError("Value is not representable as canonical JSON");
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null)
+    throw new TypeError("Canonical JSON objects must be plain objects");
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
+export function canonicalPairingTranscript(
+  request: PairingChallengeRequest,
+): string {
+  return canonicalJson({
+    version: PAIRING_TRANSCRIPT_VERSION,
+    code: request.code,
+    device: request.device,
+    identity: request.identity,
+  });
 }

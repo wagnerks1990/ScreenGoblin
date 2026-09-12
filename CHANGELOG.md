@@ -6,10 +6,20 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Security
 
-- Add the Android Keystore P-256 device-identity foundation with StrongBox
-  preference, public-key fingerprint installation IDs for new Android installs,
-  and domain-separated challenge signing. Server-side enrollment and proof
-  verification remain a release gate.
+- Enroll canonical Android Keystore P-256 public keys through a two-stage,
+  transcript-bound pairing challenge; derive installation identity from the
+  SPKI fingerprint and require strict domain-separated `ES256-DER` proof before
+  atomically creating the screen, credential, and audit event.
+- Require short-lived, one-use, operation- and canonical-body-bound device proof
+  challenges for manifests and heartbeats. Recheck active credential state when
+  consuming proofs, consume heartbeat proof with its mutation transactionally,
+  return non-enumerating dummy challenges, and bound live challenges durably.
+- Add transactionally authorized, audited, idempotent OWNER/ADMIN device
+  credential revocation that invalidates outstanding challenges, and require
+  `DEVICE_AUTH_MODE=proof-v1` in production. The legacy bearer path is limited
+  to explicit non-production localhost development.
+- Keep hardware/application attestation, rotation, targeted re-enrollment,
+  offline recall, and verified native erasure as explicit pilot/release gates.
 - Require a reachable Redis backend in production and apply fail-closed,
   distributed, HMAC-keyed login, pairing, heartbeat, and manifest budgets.
 - Replace shared-secret manifest MACs with Ed25519 signatures verified by the player using a public key pinned during enrollment.

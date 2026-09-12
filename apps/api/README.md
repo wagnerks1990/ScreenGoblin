@@ -1,6 +1,6 @@
 # ScreenGoblin API
 
-Fastify/TypeScript control-plane API for the ScreenGoblin pre-production prototype. PostgreSQL is accessed through Prisma. Device playback is outbound-only: players pair once, authenticate with unique random credentials, send heartbeats, and fetch signed manifests.
+Fastify/TypeScript control-plane API for the ScreenGoblin pre-production prototype. PostgreSQL is accessed through Prisma. Device playback is outbound-only: production Android players enroll a unique Keystore P-256 public key, prove possession for each heartbeat and manifest request, and verify signed manifests.
 
 ## Run locally
 
@@ -29,12 +29,17 @@ All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the
 - `POST /api/v1/emergencies`, `POST /api/v1/emergencies/:id/clear`
 - `GET /api/v1/audit-events`
 - `POST /api/v1/pairing-codes`
+- `POST /api/v1/screens/:id/device-credential/revoke`
 
-Player endpoints use `X-Screen-Id` and `X-Device-Token` after the initial pairing call:
+Production Player endpoints use the two-stage `proof-v1` protocol:
 
+- `POST /api/v1/device/pair/challenge`
 - `POST /api/v1/device/pair`
+- `POST /api/v1/device/challenges`
 - `POST /api/v1/device/heartbeat`
 - `GET /api/v1/device/manifest`
+
+Pairing and request proofs use the Android Keystore P-256 identity, short-lived one-use challenges, strict domain-separated `ES256-DER` signatures, and operation/body-digest binding. See [`docs/DEVICE_PROTOCOL.md`](../../docs/DEVICE_PROTOCOL.md) for the exact contract. Production requires `DEVICE_AUTH_MODE=proof-v1`. `X-Device-Token` is retained only for explicit non-production localhost browser development in `development-bearer` mode.
 
 The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing pins the deployment public key; players verify the signed envelope and expected screen ID before downloading assets and atomically activating a manifest. Emergency overlays never replace the normal last-known-good rollback baseline.
 
@@ -42,7 +47,8 @@ The manifest contains SHA-256 asset checksums and an Ed25519 signature. Pairing 
 
 - OWNER/ADMIN control screens and emergency takeovers; PUBLISHER may manage ordinary content and schedules; VIEWER is read-only.
 - Emergency publishing is supplemental—not a life-safety or mass-notification system—and is disabled by default. Set `EMERGENCY_FEATURE_ENABLED=true` only after local policy, authorization, failover, and end-to-end device acknowledgment have been validated.
-- Database queries include organization scope. Public screen responses explicitly exclude device verifier hashes. Device tokens are SHA-256 hashed and short pairing codes use a deployment-specific HMAC pepper at rest; native non-exportable device identity and durable distributed pairing-attempt budgets remain release gates.
+- Database queries include organization scope. Public screen responses exclude bearer verifier hashes and private device-authentication state. Pairing codes use a deployment-specific HMAC pepper at rest. Proof challenges are short-lived, stored only as hashes, durably bounded, and consumed once after valid signature verification. OWNER/ADMIN revocation transactionally disables a credential, invalidates outstanding challenges, marks the screen, and appends one audit record.
+- Proof-v1 does not yet provide server-verified hardware/application attestation, credential/key rotation, targeted re-enrollment, offline recall, or verified native erasure; those remain pilot/release gates.
 - Staff email login is case-insensitive. PostgreSQL enforces a functional unique index on `LOWER(email)`; its migration aborts without changing data when legacy case-only duplicates exist, and runtime lookup also fails closed if it encounters ambiguous identity data.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
 - Media upload/transcoding and object-storage presigning are intentionally adapter boundaries. This prototype stores validated metadata only.

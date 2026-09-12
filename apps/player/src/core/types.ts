@@ -28,14 +28,26 @@ export interface PlayerManifest {
   items: PlayerAsset[];
 }
 
-export interface Credentials {
+interface CredentialBase {
   installationId: string;
   screenId: string;
-  deviceToken: string;
   apiBaseUrl: string;
   heartbeatIntervalSeconds: number;
   manifestVerificationKey: string;
 }
+
+export interface ProofCredentials extends CredentialBase {
+  authMode: "proof-v1";
+  credentialId: string;
+  keyId: string;
+}
+
+export interface DevelopmentBearerCredentials extends CredentialBase {
+  authMode: "development-bearer";
+  deviceToken: string;
+}
+
+export type Credentials = ProofCredentials | DevelopmentBearerCredentials;
 
 export interface PairingSession {
   code: string;

@@ -11,6 +11,7 @@ afterEach(() => {
 });
 
 const credentials: Credentials = {
+  authMode: "development-bearer",
   installationId: "installation-123",
   screenId: "screen-1",
   deviceToken: "device-token",

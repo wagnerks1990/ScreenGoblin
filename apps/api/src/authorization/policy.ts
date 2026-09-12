@@ -2,8 +2,16 @@ import { CAPABILITIES, type Capability } from "@screengoblin/contracts";
 import type { Role } from "../domain/types.js";
 
 const ROLE_CAPABILITIES = {
-  OWNER: [CAPABILITIES.releasePublish, CAPABILITIES.releaseWithdraw],
-  ADMIN: [CAPABILITIES.releasePublish, CAPABILITIES.releaseWithdraw],
+  OWNER: [
+    CAPABILITIES.releasePublish,
+    CAPABILITIES.releaseWithdraw,
+    CAPABILITIES.screenCredentialRevoke,
+  ],
+  ADMIN: [
+    CAPABILITIES.releasePublish,
+    CAPABILITIES.releaseWithdraw,
+    CAPABILITIES.screenCredentialRevoke,
+  ],
   PUBLISHER: [CAPABILITIES.releasePublish, CAPABILITIES.releaseWithdraw],
   VIEWER: [],
 } as const satisfies Record<Role, readonly Capability[]>;

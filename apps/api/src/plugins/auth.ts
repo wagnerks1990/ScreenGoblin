@@ -26,6 +26,12 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
       );
   });
   app.decorate("authenticateDevice", async (request) => {
+    if (app.config.deviceAuthMode !== "development-bearer")
+      throw new ApiError(
+        401,
+        "DEVICE_UNAUTHORIZED",
+        "Device credentials are invalid or revoked",
+      );
     const screenId = request.headers["x-screen-id"];
     const token = request.headers["x-device-token"];
     if (typeof screenId !== "string" || typeof token !== "string")

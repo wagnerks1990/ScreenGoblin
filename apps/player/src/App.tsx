@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pairing } from "./components/Pairing";
 import { Playback } from "./components/Playback";
-import { PlayerApi } from "./core/api";
+import {
+  developmentBearerAllowed,
+  PlayerApi,
+  PlayerApiFailure,
+} from "./core/api";
 import { CacheAssetRepository } from "./core/assets";
 import {
   freeStorageBytes,
+  hasNativeDeviceIdentity,
   installationId as getInstallationId,
   networkType,
 } from "./core/device";
@@ -29,16 +34,13 @@ export default function App() {
   const playingRef = useRef<string | undefined>(undefined);
   const activeManifestVersionRef = useRef<string | undefined>(undefined);
   const manifestSyncRef = useRef(new SingleFlight());
+  const deprovisionRef = useRef<Promise<void> | undefined>(undefined);
+  const credentialEpochRef = useRef(0);
   activeManifestVersionRef.current = manifest?.version;
   const api = useMemo(
     () =>
       credentials
-        ? new PlayerApi(
-            credentials.apiBaseUrl,
-            credentials.deviceToken,
-            credentials.screenId,
-            credentials.manifestVerificationKey,
-          )
+        ? new PlayerApi(credentials.apiBaseUrl, credentials)
         : undefined,
     [credentials],
   );
@@ -49,10 +51,23 @@ export default function App() {
       store.getCredentials(),
       manager.recover(),
     ])
-      .then(([id, savedCredentials, savedManifest]) => {
+      .then(async ([id, savedCredentials, savedManifest]) => {
         setInstallationId(id);
-        if (savedCredentials && !savedCredentials.manifestVerificationKey) {
-          void store.clear();
+        const validCredentials =
+          savedCredentials &&
+          savedCredentials.manifestVerificationKey &&
+          ((savedCredentials.authMode === "proof-v1" &&
+            hasNativeDeviceIdentity() &&
+            savedCredentials.keyId === id &&
+            savedCredentials.installationId === id) ||
+            (savedCredentials.authMode === "development-bearer" &&
+              !hasNativeDeviceIdentity() &&
+              developmentBearerAllowed(savedCredentials.apiBaseUrl)));
+        if (
+          (savedCredentials && !validCredentials) ||
+          (!savedCredentials && savedManifest)
+        ) {
+          await Promise.all([store.clear(), assetRepository.removeAll()]);
           setCredentials(undefined);
           setManifest(undefined);
           setFallback(false);
@@ -64,9 +79,28 @@ export default function App() {
         setReady(true);
       })
       .catch(() => {
-        setFatal("Player storage could not be opened");
+        setFatal("Player storage could not be opened or securely cleared");
         setReady(true);
       });
+  }, []);
+
+  const deprovision = useCallback(async () => {
+    if (!deprovisionRef.current) {
+      credentialEpochRef.current += 1;
+      deprovisionRef.current = (async () => {
+        playingRef.current = undefined;
+        setCredentials(undefined);
+        setManifest(undefined);
+        setFallback(false);
+        setFatal(undefined);
+        try {
+          await Promise.all([store.clear(), assetRepository.removeAll()]);
+        } catch {
+          setFatal("Revoked device data could not be securely cleared");
+        }
+      })();
+    }
+    await deprovisionRef.current;
   }, []);
 
   useEffect(() => {
@@ -83,13 +117,26 @@ export default function App() {
   const syncManifest = useCallback(async () => {
     if (!api || !online) return;
     await manifestSyncRef.current.run(async () => {
+      const credentialEpoch = credentialEpochRef.current;
       try {
         const next = await manager.stageAndActivate(await api.manifest());
+        if (credentialEpoch !== credentialEpochRef.current) {
+          try {
+            await Promise.all([store.clear(), assetRepository.removeAll()]);
+          } catch {
+            setFatal("Revoked device data could not be securely cleared");
+          }
+          return;
+        }
         if (!next) playingRef.current = undefined;
         setManifest(next);
         setFallback(false);
         setFatal(undefined);
       } catch (reason) {
+        if (reason instanceof PlayerApiFailure && reason.status === 401) {
+          await deprovision();
+          return;
+        }
         const saved = await manager.recover();
         if (saved) {
           setManifest(saved);
@@ -102,7 +149,7 @@ export default function App() {
           );
       }
     });
-  }, [api, online]);
+  }, [api, deprovision, online]);
 
   useEffect(() => {
     if (!credentials) return;
@@ -173,7 +220,12 @@ export default function App() {
           ? { nowPlayingAssetId: playingRef.current }
           : {}),
       };
-      await api.heartbeat(heartbeat).catch(() => undefined);
+      try {
+        await api.heartbeat(heartbeat);
+      } catch (reason) {
+        if (reason instanceof PlayerApiFailure && reason.status === 401)
+          await deprovision();
+      }
     };
     void send();
     const timer = window.setInterval(
@@ -181,10 +233,12 @@ export default function App() {
       credentials.heartbeatIntervalSeconds * 1_000,
     );
     return () => clearInterval(timer);
-  }, [api, credentials, fallback, manifest]);
+  }, [api, credentials, deprovision, fallback, manifest]);
 
   const paired = useCallback(async (value: Credentials) => {
     await store.putCredentials(value);
+    credentialEpochRef.current += 1;
+    deprovisionRef.current = undefined;
     setCredentials(value);
   }, []);
   const playbackError = useCallback(async () => {

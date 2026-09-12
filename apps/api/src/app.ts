@@ -29,6 +29,7 @@ export interface BuildOptions {
   jwtSecret: string;
   manifestSigningPrivateKey: string;
   pairingCodePepper: string;
+  deviceAuthMode: "proof-v1" | "development-bearer";
   emergencyPublishingEnabled?: boolean;
   corsOrigins?: string[];
   logger?: boolean | string;
@@ -52,6 +53,8 @@ export async function buildApp(
           redact: [
             "req.headers.authorization",
             "req.headers.x-device-token",
+            "req.headers.x-device-challenge",
+            "req.headers.x-device-signature",
             "body.password",
           ],
         }
@@ -71,6 +74,7 @@ export async function buildApp(
   app.decorate("config", {
     manifestSigningPrivateKey: options.manifestSigningPrivateKey,
     pairingCodePepper: options.pairingCodePepper,
+    deviceAuthMode: options.deviceAuthMode,
     emergencyPublishingEnabled: options.emergencyPublishingEnabled ?? false,
     mediaAllowedOrigins: options.mediaAllowedOrigins ?? [],
     ...(options.publicApiUrl ? { publicApiUrl: options.publicApiUrl } : {}),

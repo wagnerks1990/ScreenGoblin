@@ -88,6 +88,7 @@ const schema = z
     MEDIA_ALLOWED_ORIGINS: z.string().default(""),
     LOG_LEVEL: z.string().default("info"),
     TRUST_PROXY_RANGES: z.string().default(""),
+    DEVICE_AUTH_MODE: z.enum(["proof-v1", "development-bearer"]),
     EMERGENCY_FEATURE_ENABLED: z
       .enum(["true", "false"])
       .default("false")
@@ -104,6 +105,12 @@ const schema = z
       });
     }
     if (value.NODE_ENV !== "production") return;
+    if (value.DEVICE_AUTH_MODE !== "proof-v1")
+      context.addIssue({
+        code: "custom",
+        path: ["DEVICE_AUTH_MODE"],
+        message: "must be proof-v1 in production",
+      });
     if (!/^rediss?:\/\//.test(value.REDIS_URL))
       context.addIssue({
         code: "custom",

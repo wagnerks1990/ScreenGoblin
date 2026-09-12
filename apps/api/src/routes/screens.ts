@@ -1,6 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { requireRole, sendNotFound } from "../utils/http.js";
+import { CAPABILITIES } from "@screengoblin/contracts";
+import {
+  ApiError,
+  requireCapability,
+  requireRole,
+  sendNotFound,
+} from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
 
 const screen = z
@@ -78,6 +84,29 @@ export const screenRoutes: FastifyPluginAsync = async (app) => {
       metadata: {},
     });
     return x;
+  });
+  app.post("/screens/:id/device-credential/revoke", async (request, reply) => {
+    requireCapability(request, CAPABILITIES.screenCredentialRevoke);
+    const { id } = params.parse(request.params);
+    const result = await app.store.revokeDeviceCredentialAndAudit(
+      request.user.organizationId,
+      id,
+      {
+        actorUserId: request.user.sub,
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
+    );
+    if (!result.revoked) {
+      if (result.reason === "FORBIDDEN")
+        throw new ApiError(
+          403,
+          "FORBIDDEN",
+          "You do not have permission to perform this action",
+        );
+      if (result.reason === "NOT_FOUND") return sendNotFound(reply);
+    }
+    return reply.code(204).send();
   });
   app.delete("/screens/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN"]);

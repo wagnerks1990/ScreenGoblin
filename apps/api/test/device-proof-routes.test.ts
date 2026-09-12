@@ -1,0 +1,323 @@
+import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
+import { buildApp } from "../src/app.js";
+import {
+  canonicalHeartbeatDigest,
+  EMPTY_BODY_SHA256,
+} from "../src/device-proof/canonical.js";
+import { sha256Base64Url } from "../src/device-proof/crypto.js";
+import { MemoryStore } from "../src/store/memory.js";
+
+const jwtSecret = "test-secret-that-is-longer-than-thirty-two-characters";
+const manifestSigningKey = Buffer.alloc(32, 7).toString("base64url");
+const proofDomain = Buffer.from("ScreenGoblin device proof v1\0", "utf8");
+
+interface ChallengeResponse {
+  id: string;
+  challenge: string;
+  expiresAt: string;
+}
+
+interface ProofIdentity {
+  algorithm: "ES256";
+  publicKeySpki: string;
+  keyId: string;
+  securityLevel: "software";
+}
+
+interface PairingFixture {
+  code: string;
+  device: {
+    installationId: string;
+    model: string;
+    osVersion: string;
+    playerVersion: string;
+  };
+  identity: ProofIdentity;
+  privateKey: KeyObject;
+}
+
+const signatureFor = (privateKey: KeyObject, challenge: string) =>
+  sign(
+    "sha256",
+    Buffer.concat([proofDomain, Buffer.from(challenge, "base64url")]),
+    privateKey,
+  ).toString("base64url");
+
+const proofHeaders = (
+  screenId: string,
+  keyId: string,
+  challenge: ChallengeResponse,
+  privateKey: KeyObject,
+) => ({
+  "x-screen-id": screenId,
+  "x-device-key-id": keyId,
+  "x-device-challenge-id": challenge.id,
+  "x-device-challenge": challenge.challenge,
+  "x-device-signature-format": "ES256-DER",
+  "x-device-signature": signatureFor(privateKey, challenge.challenge),
+});
+
+describe("proof-v1 device routes", () => {
+  let app: FastifyInstance;
+  let store: MemoryStore;
+  let ownerToken: string;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    store.users.push({
+      id: "00000000-0000-4000-8000-000000000001",
+      email: "owner@example.test",
+      name: "Owner",
+      passwordHash: "unused",
+      organizationId: "org-a",
+      role: "OWNER",
+    });
+    app = await buildApp({
+      store,
+      jwtSecret,
+      manifestSigningPrivateKey: manifestSigningKey,
+      pairingCodePepper: jwtSecret,
+      deviceAuthMode: "proof-v1",
+      mediaAllowedOrigins: ["https://media.example.test"],
+    });
+    ownerToken = app.jwt.sign({
+      sub: store.users[0]!.id,
+      email: store.users[0]!.email,
+      organizationId: "org-a",
+      role: "OWNER",
+    });
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  const pairingFixture = async (): Promise<PairingFixture> => {
+    const pairingCode = await app.inject({
+      method: "POST",
+      url: "/api/v1/pairing-codes",
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(pairingCode.statusCode).toBe(201);
+
+    const { publicKey, privateKey } = generateKeyPairSync("ec", {
+      namedCurve: "prime256v1",
+    });
+    const spki = Buffer.from(publicKey.export({ format: "der", type: "spki" }));
+    const keyId = sha256Base64Url(spki);
+    return {
+      code: pairingCode.json<{ code: string }>().code,
+      device: {
+        installationId: keyId,
+        model: "Proof route test player",
+        osVersion: "14",
+        playerVersion: "0.1.0",
+      },
+      identity: {
+        algorithm: "ES256",
+        publicKeySpki: spki.toString("base64url"),
+        keyId,
+        securityLevel: "software",
+      },
+      privateKey,
+    };
+  };
+
+  const pair = async (fixture: PairingFixture) => {
+    const request = {
+      code: fixture.code,
+      device: fixture.device,
+      identity: fixture.identity,
+    };
+    const challengeResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/pair/challenge",
+      payload: request,
+    });
+    expect(challengeResponse.statusCode).toBe(201);
+    const challenge = challengeResponse.json<ChallengeResponse>();
+    expect(challenge.id).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const remaining = Date.parse(challenge.expiresAt) - Date.now();
+    expect(remaining).toBeGreaterThan(20_000);
+    expect(remaining).toBeLessThanOrEqual(30_000);
+    const payload = {
+      ...request,
+      pairingProof: {
+        challengeId: challenge.id,
+        challenge: challenge.challenge,
+        keyId: fixture.identity.keyId,
+        signatureFormat: "ES256-DER" as const,
+        signature: signatureFor(fixture.privateKey, challenge.challenge),
+      },
+    };
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/pair",
+      payload,
+    });
+    expect(response.statusCode).toBe(201);
+    return { payload, credentials: response.json<Record<string, unknown>>() };
+  };
+
+  const issueChallenge = async (
+    screenId: string,
+    keyId: string,
+    operation: "heartbeat" | "manifest",
+    bodySha256: string,
+  ) => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/challenges",
+      headers: {
+        "x-screen-id": screenId,
+        "x-device-key-id": keyId,
+      },
+      payload: { operation, bodySha256 },
+    });
+    expect(response.statusCode).toBe(201);
+    return response.json<ChallengeResponse>();
+  };
+
+  it("pairs in two stages without a bearer and recovers an identical final retry", async () => {
+    const fixture = await pairingFixture();
+    const first = await pair(fixture);
+
+    expect(first.credentials).toMatchObject({
+      authMode: "proof-v1",
+      keyId: fixture.identity.keyId,
+    });
+    expect(first.credentials).not.toHaveProperty("deviceToken");
+
+    const retry = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/pair",
+      payload: first.payload,
+    });
+    expect(retry.statusCode).toBe(201);
+    expect(retry.json()).toEqual(first.credentials);
+    expect(store.screens).toHaveLength(1);
+    expect(store.deviceCredentials).toHaveLength(1);
+    expect(
+      store.audits.filter((audit) => audit.action === "device.paired"),
+    ).toHaveLength(1);
+  });
+
+  it("accepts a heartbeat proof once and rejects its replay", async () => {
+    const fixture = await pairingFixture();
+    const { credentials } = await pair(fixture);
+    const screenId = credentials.screenId as string;
+    const heartbeat = {
+      installationId: fixture.identity.keyId,
+      playerVersion: "0.1.1",
+      manifestVersion: "release-7",
+      uptimeSeconds: 120,
+      freeStorageBytes: 1_000_000,
+      networkType: "wifi",
+      occurredAt: new Date().toISOString(),
+    };
+    const challenge = await issueChallenge(
+      screenId,
+      fixture.identity.keyId,
+      "heartbeat",
+      canonicalHeartbeatDigest(heartbeat),
+    );
+    const request = {
+      method: "POST" as const,
+      url: "/api/v1/device/heartbeat",
+      headers: proofHeaders(
+        screenId,
+        fixture.identity.keyId,
+        challenge,
+        fixture.privateKey,
+      ),
+      payload: heartbeat,
+    };
+
+    const accepted = await app.inject(request);
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ accepted: true });
+    expect(store.screens[0]).toMatchObject({
+      playerVersion: "0.1.1",
+      manifestVersion: "release-7",
+      uptimeSeconds: 120,
+    });
+
+    const replay = await app.inject(request);
+    expect(replay.statusCode).toBe(401);
+    expect(replay.json().error.code).toBe("DEVICE_UNAUTHORIZED");
+  });
+
+  it("serves a manifest with proof, revokes once, and returns dummy challenges afterward", async () => {
+    const fixture = await pairingFixture();
+    const { payload: pairingPayload, credentials } = await pair(fixture);
+    const screenId = credentials.screenId as string;
+    const manifestChallenge = await issueChallenge(
+      screenId,
+      fixture.identity.keyId,
+      "manifest",
+      EMPTY_BODY_SHA256,
+    );
+    const manifest = await app.inject({
+      method: "GET",
+      url: "/api/v1/device/manifest",
+      headers: proofHeaders(
+        screenId,
+        fixture.identity.keyId,
+        manifestChallenge,
+        fixture.privateKey,
+      ),
+    });
+    expect(manifest.statusCode).toBe(200);
+    expect(manifest.json()).toMatchObject({ screenId });
+
+    const auditsBeforeRevocation = store.audits.length;
+    const revoke = () =>
+      app.inject({
+        method: "POST",
+        url: `/api/v1/screens/${screenId}/device-credential/revoke`,
+        headers: { authorization: `Bearer ${ownerToken}` },
+      });
+    expect((await revoke()).statusCode).toBe(204);
+    expect((await revoke()).statusCode).toBe(204);
+    expect(store.audits).toHaveLength(auditsBeforeRevocation + 1);
+
+    const revokedPairingRetry = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/pair",
+      payload: pairingPayload,
+    });
+    expect(revokedPairingRetry.statusCode).toBe(404);
+
+    const dummyResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/device/challenges",
+      headers: {
+        "x-screen-id": screenId,
+        "x-device-key-id": fixture.identity.keyId,
+      },
+      payload: { operation: "manifest", bodySha256: EMPTY_BODY_SHA256 },
+    });
+    expect(dummyResponse.statusCode).toBe(201);
+    const dummy = dummyResponse.json<ChallengeResponse>();
+    expect(dummy).toEqual({
+      id: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      challenge: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      expiresAt: expect.any(String),
+    });
+
+    const denied = await app.inject({
+      method: "GET",
+      url: "/api/v1/device/manifest",
+      headers: proofHeaders(
+        screenId,
+        fixture.identity.keyId,
+        dummy,
+        fixture.privateKey,
+      ),
+    });
+    expect(denied.statusCode).toBe(401);
+    expect(denied.json().error.code).toBe("DEVICE_UNAUTHORIZED");
+  });
+});

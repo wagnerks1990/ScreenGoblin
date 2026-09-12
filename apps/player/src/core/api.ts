@@ -1,5 +1,19 @@
 import type { Credentials, Heartbeat, PlayerManifest } from "./types";
-import { verifyManifestSignature } from "./crypto";
+import {
+  canonicalJson,
+  canonicalPairingTranscript,
+  type DeviceAuthChallengeRequest,
+  type DeviceChallengeResponse,
+  type DeviceMetadata,
+  type PairingChallengeRequest,
+  type PairingResponse,
+} from "@screengoblin/contracts";
+import { sha256Hex, utf8, verifyManifestSignature } from "./crypto";
+import {
+  getDeviceIdentity,
+  hasNativeDeviceIdentity,
+  signDeviceChallenge,
+} from "./device";
 
 const trim = (url: string) => url.replace(/\/+$/, "");
 
@@ -43,6 +57,152 @@ const defaults = {
 } as const;
 
 const retryableStatuses = new Set([408, 425, 429, 500, 502, 503, 504]);
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
+function decodeCanonicalBase64Url(
+  value: unknown,
+  name: string,
+  minimumBytes: number,
+  maximumBytes = minimumBytes,
+): Uint8Array {
+  if (
+    typeof value !== "string" ||
+    !BASE64URL.test(value) ||
+    value.length % 4 === 1
+  )
+    throw new PlayerApiFailure(
+      `${name} is not canonical base64url`,
+      "protocol",
+      false,
+    );
+  try {
+    const padded = `${value.replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat(
+      (4 - (value.length % 4)) % 4,
+    )}`;
+    const binary = atob(padded);
+    const canonical = btoa(binary)
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    if (
+      canonical !== value ||
+      binary.length < minimumBytes ||
+      binary.length > maximumBytes
+    )
+      throw new Error("invalid encoding");
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch (cause) {
+    if (cause instanceof PlayerApiFailure) throw cause;
+    throw new PlayerApiFailure(
+      `${name} is not canonical base64url`,
+      "protocol",
+      false,
+      undefined,
+      undefined,
+      { cause },
+    );
+  }
+}
+
+function validOpaqueId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 64 &&
+    BASE64URL.test(value)
+  );
+}
+
+function validateChallenge(value: unknown): DeviceChallengeResponse {
+  if (!value || typeof value !== "object")
+    throw new PlayerApiFailure(
+      "Invalid device challenge response",
+      "protocol",
+      false,
+    );
+  const response = value as Record<string, unknown>;
+  const expiresAt =
+    typeof response.expiresAt === "string"
+      ? Date.parse(response.expiresAt)
+      : NaN;
+  if (
+    !Number.isFinite(expiresAt) ||
+    new Date(expiresAt).toISOString() !== response.expiresAt ||
+    expiresAt <= Date.now()
+  )
+    throw new PlayerApiFailure(
+      "Invalid device challenge response",
+      "protocol",
+      false,
+    );
+  decodeCanonicalBase64Url(response.id, "Device challenge ID", 32);
+  decodeCanonicalBase64Url(response.challenge, "Device challenge", 16, 512);
+  return {
+    id: response.id as string,
+    challenge: response.challenge as string,
+    expiresAt: response.expiresAt,
+  };
+}
+
+function secureApiBaseUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+    return (
+      (url.protocol === "https:" || (url.protocol === "http:" && local)) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validatePairingResponse(
+  value: unknown,
+  expectedKeyId: string,
+): PairingResponse {
+  if (!value || typeof value !== "object")
+    throw new PlayerApiFailure(
+      "Invalid proof pairing response",
+      "protocol",
+      false,
+    );
+  const response = value as Record<string, unknown>;
+  if (
+    response.authMode !== "proof-v1" ||
+    response.keyId !== expectedKeyId ||
+    !validOpaqueId(response.screenId) ||
+    !validOpaqueId(response.credentialId) ||
+    !secureApiBaseUrl(response.apiBaseUrl) ||
+    !Number.isSafeInteger(response.heartbeatIntervalSeconds) ||
+    (response.heartbeatIntervalSeconds as number) < 5 ||
+    (response.heartbeatIntervalSeconds as number) > 86_400 ||
+    Object.hasOwn(response, "deviceToken")
+  )
+    throw new PlayerApiFailure(
+      "Invalid proof pairing response",
+      "protocol",
+      false,
+    );
+  try {
+    decodeCanonicalBase64Url(
+      response.manifestVerificationKey,
+      "Manifest verification key",
+      32,
+    );
+  } catch {
+    throw new PlayerApiFailure(
+      "Invalid proof pairing response",
+      "protocol",
+      false,
+    );
+  }
+  return response as unknown as PairingResponse;
+}
 
 const parseRetryAfter = (value: string | null, now = Date.now()) => {
   if (!value) return undefined;
@@ -57,9 +217,7 @@ export class PlayerApi {
 
   constructor(
     private readonly apiBaseUrl: string,
-    private readonly token?: string,
-    private readonly screenId?: string,
-    private readonly manifestVerificationKey?: string,
+    private readonly credentials?: Credentials,
     options: PlayerApiOptions = {},
   ) {
     this.options = {
@@ -81,6 +239,15 @@ export class PlayerApi {
       this.options.retryMaxDelayMs < 0
     )
       throw new RangeError("Player API timing options are out of range");
+    if (
+      credentials?.authMode === "development-bearer" &&
+      !developmentBearerAllowed(apiBaseUrl)
+    )
+      throw new PlayerApiFailure(
+        "Development bearer credentials require an explicit localhost build",
+        "protocol",
+        false,
+      );
   }
 
   private async attempt<T>(
@@ -118,14 +285,19 @@ export class PlayerApi {
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
     if (!headers.has("Content-Type"))
       headers.set("Content-Type", "application/json");
-    if (this.token) headers.set("X-Device-Token", this.token);
-    if (this.screenId) headers.set("X-Screen-Id", this.screenId);
+    if (this.credentials) {
+      headers.set("X-Screen-Id", this.credentials.screenId);
+      if (this.credentials.authMode === "development-bearer")
+        headers.set("X-Device-Token", this.credentials.deviceToken);
+      else headers.set("X-Device-Key-Id", this.credentials.keyId);
+    }
 
     try {
       const response = await Promise.race([
         fetch(`${trim(this.apiBaseUrl)}${path}`, {
           ...init,
           headers,
+          redirect: "error",
           signal: controller.signal,
         }),
         timedOut,
@@ -222,64 +394,213 @@ export class PlayerApi {
     }
   }
 
+  private async withRetries<T>(
+    operation: () => Promise<T>,
+    options: PlayerRequestOptions,
+    maxAttempts: number,
+  ): Promise<T> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await operation();
+      } catch (cause) {
+        if (
+          !(cause instanceof PlayerApiFailure) ||
+          !cause.retryable ||
+          attempt >= maxAttempts ||
+          options.signal?.aborted
+        )
+          throw cause;
+        await this.options.sleep(this.retryDelay(cause, attempt));
+      }
+    }
+  }
+
+  private async proofHeaders(
+    operation: DeviceAuthChallengeRequest["operation"],
+    bodySha256: string,
+    options: PlayerRequestOptions,
+  ): Promise<Headers> {
+    if (!this.credentials || this.credentials.authMode !== "proof-v1")
+      throw new PlayerApiFailure(
+        "Device proof credentials are unavailable",
+        "protocol",
+        false,
+      );
+    const challenge = validateChallenge(
+      await this.request<unknown>(
+        "/challenges",
+        {
+          method: "POST",
+          body: canonicalJson({ operation, bodySha256 }),
+        },
+        options,
+      ),
+    );
+    const signature = await signDeviceChallenge(
+      challenge.challenge,
+      this.credentials.keyId,
+    );
+    const headers = new Headers();
+    headers.set("X-Device-Key-Id", signature.keyId);
+    headers.set("X-Device-Challenge-Id", challenge.id);
+    headers.set("X-Device-Challenge", challenge.challenge);
+    headers.set("X-Device-Signature", signature.signature);
+    headers.set("X-Device-Signature-Format", signature.signatureFormat);
+    return headers;
+  }
+
+  private async protectedRequest<T>(
+    operation: DeviceAuthChallengeRequest["operation"],
+    path: string,
+    body: string | undefined,
+    init: RequestInit,
+    options: PlayerRequestOptions,
+  ): Promise<T> {
+    if (!this.credentials)
+      throw new PlayerApiFailure(
+        "Device credentials are unavailable",
+        "protocol",
+        false,
+      );
+    if (this.credentials.authMode === "development-bearer")
+      return this.request<T>(
+        path,
+        { ...init, ...(body === undefined ? {} : { body }) },
+        options,
+      );
+    const bodySha256 = await sha256Hex(
+      body === undefined ? new ArrayBuffer(0) : utf8(body),
+    );
+    const headers = await this.proofHeaders(operation, bodySha256, options);
+    return this.request<T>(
+      path,
+      { ...init, headers, ...(body === undefined ? {} : { body }) },
+      options,
+    );
+  }
+
   async pair(
     code: string,
     installationId: string,
     options: PlayerRequestOptions = {},
   ): Promise<Credentials> {
-    // Pairing consumes a one-time code. Never replay this POST automatically:
-    // a timeout can occur after the server successfully enrolls the device.
-    const result = await this.request<Omit<Credentials, "installationId">>(
-      "/api/v1/device/pair",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          code,
-          device: {
-            installationId,
-            model: "Android TV",
-            osVersion: navigator.userAgent,
-            playerVersion: __APP_VERSION__,
-          },
-        }),
+    const device: DeviceMetadata = {
+      installationId,
+      model: "Android TV",
+      osVersion: navigator.userAgent,
+      playerVersion: __APP_VERSION__,
+    };
+    if (!hasNativeDeviceIdentity()) {
+      if (!developmentBearerAllowed(this.apiBaseUrl))
+        throw new PlayerApiFailure(
+          "Device proof is required outside local development",
+          "protocol",
+          false,
+        );
+      const result = await this.request<{
+        screenId: string;
+        deviceToken: string;
+        apiBaseUrl: string;
+        heartbeatIntervalSeconds: number;
+        manifestVerificationKey: string;
+      }>(
+        "/api/v1/device/pair",
+        {
+          method: "POST",
+          body: JSON.stringify({ code, device }),
+        },
+        options,
+      );
+      return { ...result, installationId, authMode: "development-bearer" };
+    }
+
+    const identity = await getDeviceIdentity();
+    if (!identity)
+      throw new PlayerApiFailure(
+        "Android device identity is unavailable",
+        "protocol",
+        false,
+      );
+    if (installationId !== identity.keyId)
+      throw new PlayerApiFailure(
+        "Android installation ID does not match its device identity",
+        "protocol",
+        false,
+      );
+    const pairing: PairingChallengeRequest = { code, device, identity };
+    // Evaluate the shared canonicalizer before enrollment. This fails closed on
+    // unsupported metadata and guarantees the repeated final fields are hashable.
+    canonicalPairingTranscript(pairing);
+    const challenge = validateChallenge(
+      await this.request<unknown>(
+        "/api/v1/device/pair/challenge",
+        { method: "POST", body: canonicalJson(pairing) },
+        options,
+      ),
+    );
+    const signature = await signDeviceChallenge(
+      challenge.challenge,
+      identity.keyId,
+    );
+    const body = canonicalJson({
+      ...pairing,
+      pairingProof: {
+        challengeId: challenge.id,
+        challenge: challenge.challenge,
+        ...signature,
       },
-      options,
+    });
+    // The API makes an identical successfully verified final claim idempotent.
+    // Retries reuse these exact proof bytes and never acquire a new challenge.
+    const result = validatePairingResponse(
+      await this.request<unknown>(
+        "/api/v1/device/pair",
+        {
+          method: "POST",
+          body,
+        },
+        options,
+        this.options.manifestMaxAttempts,
+      ),
+      identity.keyId,
     );
     return { ...result, installationId };
   }
 
   async manifest(options: PlayerRequestOptions = {}): Promise<PlayerManifest> {
     // GET is safe to retry. Every attempt retains its own hard deadline.
-    const response = await this.request<{
-      version: string;
-      generatedAt: string;
-      validUntil: string;
-      playbackEndsAt?: string;
-      screenId: string;
-      priority: PlayerManifest["priority"];
-      withdrawn: boolean;
-      items: Array<{
-        asset: Omit<PlayerManifest["items"][number], "durationSeconds">;
-        durationSeconds: number;
-      }>;
-      signatureAlgorithm: "Ed25519";
-      signature: string;
-    }>(
-      "/manifest",
-      { cache: "no-store" },
+    const fetchManifest = () =>
+      this.protectedRequest<{
+        version: string;
+        generatedAt: string;
+        validUntil: string;
+        playbackEndsAt?: string;
+        screenId: string;
+        priority: PlayerManifest["priority"];
+        withdrawn: boolean;
+        items: Array<{
+          asset: Omit<PlayerManifest["items"][number], "durationSeconds">;
+          durationSeconds: number;
+        }>;
+        signatureAlgorithm: "Ed25519";
+        signature: string;
+      }>("manifest", "/manifest", undefined, { cache: "no-store" }, options);
+    // A proof is one-use, so every safe GET retry obtains and signs a new one.
+    const response = await this.withRetries(
+      fetchManifest,
       options,
       this.options.manifestMaxAttempts,
     );
     const { signature, signatureAlgorithm, ...unsigned } = response;
     if (
-      !this.screenId ||
-      response.screenId !== this.screenId ||
+      !this.credentials ||
+      response.screenId !== this.credentials.screenId ||
       signatureAlgorithm !== "Ed25519" ||
-      !this.manifestVerificationKey ||
+      !this.credentials.manifestVerificationKey ||
       !(await verifyManifestSignature(
         unsigned,
         signature,
-        this.manifestVerificationKey,
+        this.credentials.manifestVerificationKey,
       ))
     )
       throw new PlayerApiFailure(
@@ -315,14 +636,28 @@ export class PlayerApi {
         : {}),
     };
     // Heartbeat POSTs are bounded but not replayed without an idempotency contract.
-    return this.request(
+    const body = canonicalJson(wireValue);
+    return this.protectedRequest(
+      "heartbeat",
       "/heartbeat",
+      body,
       {
         method: "POST",
-        body: JSON.stringify(wireValue),
       },
       options,
     );
+  }
+}
+
+export function developmentBearerAllowed(apiBaseUrl: string): boolean {
+  if (import.meta.env.VITE_DEVICE_AUTH_DEVELOPMENT_BEARER !== "true")
+    return false;
+  try {
+    return ["localhost", "127.0.0.1", "::1"].includes(
+      new URL(apiBaseUrl).hostname,
+    );
+  } catch {
+    return false;
   }
 }
 

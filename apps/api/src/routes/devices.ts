@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createHash, randomInt } from "node:crypto";
 import { ApiError, requireRole } from "../utils/http.js";
@@ -19,22 +19,79 @@ import {
   opaqueRateLimitKey,
 } from "../utils/rate-limit.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
+import {
+  decodeCanonicalBase64Url,
+  DeviceProofFormatError,
+  randomChallenge,
+  sha256Hex,
+  validateP256Identity,
+  verifyDeviceSignature,
+} from "../device-proof/crypto.js";
+import {
+  canonicalHeartbeatDigest,
+  canonicalPairingDigest,
+  EMPTY_BODY_SHA256,
+} from "../device-proof/canonical.js";
 
 const MANIFEST_LEASE_MS = 5 * 60_000;
 
+const device = z
+  .object({
+    installationId: z.string().min(8).max(200),
+    model: z.string().min(1).max(120),
+    osVersion: z.string().min(1).max(80),
+    playerVersion: z.string().min(1).max(80),
+  })
+  .strict();
 const claim = z
   .object({
     code: z.string().regex(/^\d{6}$/),
-    device: z
-      .object({
-        installationId: z.string().min(8).max(200),
-        model: z.string().min(1).max(120),
-        osVersion: z.string().min(1).max(80),
-        playerVersion: z.string().min(1).max(80),
-      })
-      .strict(),
+    device,
   })
   .strict();
+const keyId = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+const encodedChallenge = z.string().regex(/^[A-Za-z0-9_-]{22,683}$/);
+const identity = z
+  .object({
+    algorithm: z.literal("ES256"),
+    publicKeySpki: z.string().regex(/^[A-Za-z0-9_-]{107,342}$/),
+    keyId,
+    securityLevel: z.enum([
+      "strongbox",
+      "trusted-environment",
+      "software",
+      "unknown-secure",
+      "unknown",
+    ]),
+  })
+  .strict();
+const pairingChallenge = claim.extend({ identity }).strict();
+const pairingProof = z
+  .object({
+    challengeId: z.string().min(1).max(200),
+    challenge: encodedChallenge,
+    keyId,
+    signatureFormat: z.literal("ES256-DER"),
+    signature: z.string().regex(/^[A-Za-z0-9_-]{11,107}$/),
+  })
+  .strict();
+const proofClaim = pairingChallenge.extend({ pairingProof }).strict();
+const deviceChallenge = z
+  .object({
+    operation: z.enum(["heartbeat", "manifest"]),
+    bodySha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+const proofHeaders = z
+  .object({
+    "x-screen-id": z.string().min(1).max(200),
+    "x-device-key-id": keyId,
+    "x-device-challenge-id": z.string().min(1).max(200),
+    "x-device-challenge": encodedChallenge,
+    "x-device-signature-format": z.literal("ES256-DER"),
+    "x-device-signature": z.string().regex(/^[A-Za-z0-9_-]{11,107}$/),
+  })
+  .passthrough();
 const heartbeat = z
   .object({
     installationId: z.string().min(8).max(200),
@@ -128,13 +185,207 @@ export const pairingAdminRoutes: FastifyPluginAsync = async (app) => {
 
 export const deviceRoutes: FastifyPluginAsync = async (app) => {
   const sourceBudget =
-    (dimension: string, maximum: number) =>
-    async (request: Parameters<typeof app.authenticateDevice>[0]) =>
+    (dimension: string, maximum: number) => async (request: FastifyRequest) =>
       enforceRateLimitBudget(
         app.rateLimitBudget,
         opaqueRateLimitKey(app.config.pairingCodePepper, dimension, request.ip),
         maximum,
       );
+
+  const invalidDeviceProof = () =>
+    new ApiError(
+      401,
+      "DEVICE_UNAUTHORIZED",
+      "Device credentials are invalid or revoked",
+    );
+  const apiBaseUrl = (request: FastifyRequest) =>
+    `${(
+      app.config.publicApiUrl ?? `${request.protocol}://${request.host}`
+    ).replace(/\/+$/, "")}/api/v1/device`;
+  const proofIdentity = (input: z.infer<typeof pairingChallenge>) => {
+    if (input.device.installationId !== input.identity.keyId)
+      throw new DeviceProofFormatError("Installation identity is invalid");
+    return validateP256Identity(input.identity).enrollment;
+  };
+  const readDeviceProof = async (request: FastifyRequest) => {
+    const parsed = proofHeaders.safeParse(request.headers);
+    if (!parsed.success) throw invalidDeviceProof();
+    try {
+      decodeCanonicalBase64Url(parsed.data["x-device-challenge"], 16, 512);
+      decodeCanonicalBase64Url(parsed.data["x-device-signature"], 8, 80);
+    } catch {
+      throw invalidDeviceProof();
+    }
+    const authenticated = await app.store.authenticateDeviceCredential(
+      parsed.data["x-screen-id"],
+      parsed.data["x-device-key-id"],
+    );
+    if (!authenticated.authenticated) throw invalidDeviceProof();
+    return { headers: parsed.data, authenticated };
+  };
+  const deviceProofBudget =
+    (dimension: string, maximum: number) =>
+    async (
+      request: FastifyRequest,
+      reply: Parameters<typeof app.authenticateDevice>[1],
+    ) => {
+      if (app.config.deviceAuthMode === "development-bearer") {
+        await app.authenticateDevice(request, reply);
+        return enforceRateLimitBudget(
+          app.rateLimitBudget,
+          opaqueRateLimitKey(
+            app.config.pairingCodePepper,
+            dimension,
+            request.device!.id,
+          ),
+          maximum,
+        );
+      }
+      const screenId = request.headers["x-screen-id"];
+      const deviceKeyId = request.headers["x-device-key-id"];
+      return enforceRateLimitBudget(
+        app.rateLimitBudget,
+        opaqueRateLimitKey(
+          app.config.pairingCodePepper,
+          dimension,
+          `${typeof screenId === "string" ? screenId : "invalid"}:${
+            typeof deviceKeyId === "string" ? deviceKeyId : "invalid"
+          }`,
+        ),
+        maximum,
+      );
+    };
+
+  app.post(
+    "/pair/challenge",
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: "1 minute",
+          keyGenerator: (request) =>
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "pair-challenge-source",
+              request.ip,
+            ),
+        },
+      },
+      preHandler: async (request) => {
+        const code =
+          typeof request.body === "object" &&
+          request.body !== null &&
+          "code" in request.body &&
+          typeof request.body.code === "string"
+            ? request.body.code
+            : "invalid";
+        await enforceRateLimitBudget(
+          app.rateLimitBudget,
+          opaqueRateLimitKey(
+            app.config.pairingCodePepper,
+            "pair-challenge-code",
+            code,
+          ),
+          8,
+        );
+      },
+    },
+    async (request, reply) => {
+      const input = pairingChallenge.parse(request.body);
+      let enrollment;
+      try {
+        enrollment = proofIdentity(input);
+      } catch (error) {
+        if (error instanceof DeviceProofFormatError)
+          throw new ApiError(
+            422,
+            "INVALID_DEVICE_IDENTITY",
+            "Device identity is invalid",
+          );
+        throw error;
+      }
+      const challenge = randomChallenge();
+      // Keep 15 seconds of tolerance below the database's hard 45-second cap
+      // so small API/database clock skew cannot turn valid attempts into dummies.
+      const expiresAt = new Date(Date.now() + 30_000).toISOString();
+      const attempt = await app.store.issuePairingChallenge({
+        codeHash: pairingCodeHash(input.code, app.config.pairingCodePepper),
+        credential: enrollment,
+        challengeHashSha256: sha256Hex(
+          decodeCanonicalBase64Url(challenge, 32, 32),
+        ),
+        transcriptDigestSha256: canonicalPairingDigest(
+          input,
+          app.config.pairingCodePepper,
+        ),
+        expiresAt,
+      });
+      return reply.code(201).send({
+        id: attempt?.id ?? randomToken(),
+        challenge,
+        expiresAt,
+      });
+    },
+  );
+
+  app.post(
+    "/challenges",
+    {
+      onRequest: [sourceBudget("device-challenge-source", 120)],
+      config: { rateLimit: false },
+      preHandler: async (request) => {
+        const screenId = request.headers["x-screen-id"];
+        const deviceKeyId = request.headers["x-device-key-id"];
+        await enforceRateLimitBudget(
+          app.rateLimitBudget,
+          opaqueRateLimitKey(
+            app.config.pairingCodePepper,
+            "device-challenge-key",
+            `${typeof screenId === "string" ? screenId : "invalid"}:${
+              typeof deviceKeyId === "string" ? deviceKeyId : "invalid"
+            }`,
+          ),
+          30,
+        );
+      },
+    },
+    async (request, reply) => {
+      const headers = z
+        .object({
+          "x-screen-id": z.string().min(1).max(200),
+          "x-device-key-id": keyId,
+        })
+        .passthrough()
+        .parse(request.headers);
+      const input = deviceChallenge.parse(request.body);
+      if (
+        input.operation === "manifest" &&
+        input.bodySha256 !== EMPTY_BODY_SHA256
+      )
+        throw new ApiError(
+          422,
+          "INVALID_BODY_DIGEST",
+          "Manifest challenges require the empty-body digest",
+        );
+      const challenge = randomChallenge();
+      const expiresAt = new Date(Date.now() + 45_000).toISOString();
+      const issued = await app.store.issueDeviceAuthChallenge({
+        screenId: headers["x-screen-id"],
+        keyId: headers["x-device-key-id"],
+        challengeHashSha256: sha256Hex(
+          decodeCanonicalBase64Url(challenge, 32, 32),
+        ),
+        operation: input.operation,
+        requestDigestSha256: input.bodySha256,
+        expiresAt,
+      });
+      return reply.code(201).send({
+        id: issued?.id ?? randomToken(),
+        challenge,
+        expiresAt,
+      });
+    },
+  );
 
   app.post(
     "/pair",
@@ -167,6 +418,71 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (request, reply) => {
+      if (app.config.deviceAuthMode === "proof-v1") {
+        const input = proofClaim.parse(request.body);
+        let enrollment;
+        try {
+          enrollment = proofIdentity(input);
+          decodeCanonicalBase64Url(input.pairingProof.challenge, 16, 512);
+        } catch (error) {
+          if (error instanceof DeviceProofFormatError)
+            throw new ApiError(
+              422,
+              "INVALID_DEVICE_IDENTITY",
+              "Device identity or proof is invalid",
+            );
+          throw error;
+        }
+        if (input.pairingProof.keyId !== enrollment.keyId)
+          throw new ApiError(
+            404,
+            "PAIRING_CODE_INVALID",
+            "Pairing code is invalid or expired",
+          );
+        const paired = await app.store.claimPairingWithCredentialAndAudit(
+          {
+            codeHash: pairingCodeHash(input.code, app.config.pairingCodePepper),
+            pairingAttemptId: input.pairingProof.challengeId,
+            challengeHashSha256: sha256Hex(
+              decodeCanonicalBase64Url(input.pairingProof.challenge, 16, 512),
+            ),
+            transcriptDigestSha256: canonicalPairingDigest(
+              {
+                code: input.code,
+                device: input.device,
+                identity: input.identity,
+              },
+              app.config.pairingCodePepper,
+            ),
+            keyId: input.pairingProof.keyId,
+            device: input.device,
+          },
+          (credential) =>
+            verifyDeviceSignature(
+              credential,
+              input.pairingProof.challenge,
+              input.pairingProof.signature,
+            ),
+          { ipAddress: request.ip, requestId: request.id },
+        );
+        if (!paired.paired)
+          throw new ApiError(
+            404,
+            "PAIRING_CODE_INVALID",
+            "Pairing code is invalid or expired",
+          );
+        return reply.code(201).send({
+          authMode: "proof-v1",
+          screenId: paired.screen.id,
+          credentialId: paired.credential.id,
+          keyId: paired.credential.keyId,
+          apiBaseUrl: apiBaseUrl(request),
+          heartbeatIntervalSeconds: 60,
+          manifestVerificationKey: manifestVerificationKey(
+            app.config.manifestSigningPrivateKey,
+          ),
+        });
+      }
       const input = claim.parse(request.body);
       const token = randomToken();
       const screen = await app.store.claimPairingAndAudit(
@@ -184,9 +500,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(201).send({
         screenId: screen.id,
         deviceToken: token,
-        apiBaseUrl: `${(
-          app.config.publicApiUrl ?? `${request.protocol}://${request.host}`
-        ).replace(/\/+$/, "")}/api/v1/device`,
+        apiBaseUrl: apiBaseUrl(request),
         heartbeatIntervalSeconds: 60,
         manifestVerificationKey: manifestVerificationKey(
           app.config.manifestSigningPrivateKey,
@@ -197,21 +511,74 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
   app.post(
     "/heartbeat",
     {
-      onRequest: [sourceBudget("heartbeat-source", 60), app.authenticateDevice],
+      onRequest: [sourceBudget("heartbeat-source", 60)],
       config: { rateLimit: false },
-      preHandler: async (request) =>
-        enforceRateLimitBudget(
-          app.rateLimitBudget,
-          opaqueRateLimitKey(
-            app.config.pairingCodePepper,
-            "heartbeat-device",
-            request.device!.id,
-          ),
-          30,
-        ),
+      preHandler: deviceProofBudget("heartbeat-device", 30),
     },
     async (request) => {
       const input = heartbeat.parse(request.body);
+      if (app.config.deviceAuthMode === "proof-v1") {
+        const proof = await readDeviceProof(request);
+        if (input.installationId !== proof.authenticated.screen.installationId)
+          throw new ApiError(
+            409,
+            "INSTALLATION_MISMATCH",
+            "Installation identity does not match paired device",
+          );
+        const proofInput = {
+          credentialId: proof.authenticated.credential.id,
+          challengeId: proof.headers["x-device-challenge-id"],
+          challengeHashSha256: sha256Hex(
+            decodeCanonicalBase64Url(
+              proof.headers["x-device-challenge"],
+              16,
+              512,
+            ),
+          ),
+          operation: "heartbeat" as const,
+          requestDigestSha256: canonicalHeartbeatDigest({
+            installationId: input.installationId,
+            playerVersion: input.playerVersion,
+            ...(input.manifestVersion !== undefined
+              ? { manifestVersion: input.manifestVersion }
+              : {}),
+            ...(input.nowPlayingAssetId !== undefined
+              ? { nowPlayingAssetId: input.nowPlayingAssetId }
+              : {}),
+            uptimeSeconds: input.uptimeSeconds,
+            freeStorageBytes: input.freeStorageBytes,
+            networkType: input.networkType,
+            occurredAt: input.occurredAt,
+          }),
+        };
+        const result = await app.store.heartbeatWithDeviceProof(
+          proofInput,
+          {
+            playerVersion: input.playerVersion,
+            ...(input.manifestVersion !== undefined
+              ? { manifestVersion: input.manifestVersion }
+              : {}),
+            ...(input.nowPlayingAssetId !== undefined
+              ? { nowPlayingAssetId: input.nowPlayingAssetId }
+              : {}),
+            uptimeSeconds: input.uptimeSeconds,
+            freeStorageBytes: input.freeStorageBytes,
+            networkType: input.networkType,
+          },
+          (credential) =>
+            verifyDeviceSignature(
+              credential,
+              proof.headers["x-device-challenge"],
+              proof.headers["x-device-signature"],
+            ),
+        );
+        if (!result.authenticated) throw invalidDeviceProof();
+        return {
+          accepted: true,
+          serverTime: new Date().toISOString(),
+          nextHeartbeatSeconds: 60,
+        };
+      }
       if (input.installationId !== request.device?.installationId)
         throw new ApiError(
           409,
@@ -229,21 +596,39 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
   app.get(
     "/manifest",
     {
-      onRequest: [sourceBudget("manifest-source", 120), app.authenticateDevice],
+      onRequest: [sourceBudget("manifest-source", 120)],
       config: { rateLimit: false },
-      preHandler: async (request) =>
-        enforceRateLimitBudget(
-          app.rateLimitBudget,
-          opaqueRateLimitKey(
-            app.config.pairingCodePepper,
-            "manifest-device",
-            request.device!.id,
-          ),
-          60,
-        ),
+      preHandler: deviceProofBudget("manifest-device", 60),
     },
     async (request) => {
-      const screen = request.device!;
+      let screen = request.device!;
+      if (app.config.deviceAuthMode === "proof-v1") {
+        if (request.url.includes("?")) throw invalidDeviceProof();
+        const proof = await readDeviceProof(request);
+        const consumed = await app.store.consumeDeviceAuthChallenge(
+          {
+            credentialId: proof.authenticated.credential.id,
+            challengeId: proof.headers["x-device-challenge-id"],
+            challengeHashSha256: sha256Hex(
+              decodeCanonicalBase64Url(
+                proof.headers["x-device-challenge"],
+                16,
+                512,
+              ),
+            ),
+            operation: "manifest",
+            requestDigestSha256: EMPTY_BODY_SHA256,
+          },
+          (credential) =>
+            verifyDeviceSignature(
+              credential,
+              proof.headers["x-device-challenge"],
+              proof.headers["x-device-signature"],
+            ),
+        );
+        if (!consumed.authenticated) throw invalidDeviceProof();
+        screen = consumed.screen;
+      }
       const generatedDate = new Date();
       const generatedAt = generatedDate.toISOString();
       const emergency = app.config.emergencyPublishingEnabled

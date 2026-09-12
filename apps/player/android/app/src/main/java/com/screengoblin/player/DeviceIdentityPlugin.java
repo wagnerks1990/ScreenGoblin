@@ -13,12 +13,10 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
-import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.ProviderException;
 import java.security.Signature;
@@ -29,8 +27,6 @@ import java.util.regex.Pattern;
 public final class DeviceIdentityPlugin extends Plugin {
     private static final String ANDROID_KEY_STORE = "AndroidKeyStore";
     private static final String KEY_ALIAS = "screengoblin-device-identity-v1";
-    private static final byte[] SIGNING_DOMAIN =
-        "ScreenGoblin device proof v1\0".getBytes(StandardCharsets.UTF_8);
     private static final int MIN_CHALLENGE_BYTES = 16;
     private static final int MAX_CHALLENGE_BYTES = 512;
     private static final Pattern BASE64URL = Pattern.compile("^[A-Za-z0-9_-]+$");
@@ -42,8 +38,8 @@ public final class DeviceIdentityPlugin extends Plugin {
             KeyPair keyPair = getOrCreateKeyPair();
             byte[] publicKey = keyPair.getPublic().getEncoded();
             JSObject result = new JSObject();
-            result.put("publicKeySpki", base64Url(publicKey));
-            result.put("keyId", base64Url(MessageDigest.getInstance("SHA-256").digest(publicKey)));
+            result.put("publicKeySpki", DeviceProofProtocol.base64Url(publicKey));
+            result.put("keyId", DeviceProofProtocol.keyId(publicKey));
             result.put("algorithm", "ES256");
             result.put("securityLevel", securityLevel(keyPair.getPrivate()));
             call.resolve(result);
@@ -67,6 +63,10 @@ public final class DeviceIdentityPlugin extends Plugin {
             call.reject("challenge must be unpadded base64url");
             return;
         }
+        if (!DeviceProofProtocol.base64Url(challenge).equals(encodedChallenge)) {
+            call.reject("challenge must be canonical unpadded base64url");
+            return;
+        }
         if (challenge.length < MIN_CHALLENGE_BYTES || challenge.length > MAX_CHALLENGE_BYTES) {
             call.reject("challenge must decode to between 16 and 512 bytes");
             return;
@@ -76,14 +76,13 @@ public final class DeviceIdentityPlugin extends Plugin {
             KeyPair keyPair = getOrCreateKeyPair();
             Signature signer = Signature.getInstance("SHA256withECDSA");
             signer.initSign(keyPair.getPrivate());
-            signer.update(SIGNING_DOMAIN);
-            signer.update(challenge);
+            signer.update(DeviceProofProtocol.signingInput(challenge));
 
             byte[] publicKey = keyPair.getPublic().getEncoded();
             JSObject result = new JSObject();
-            result.put("signature", base64Url(signer.sign()));
+            result.put("signature", DeviceProofProtocol.base64Url(signer.sign()));
             result.put("signatureFormat", "ES256-DER");
-            result.put("keyId", base64Url(MessageDigest.getInstance("SHA-256").digest(publicKey)));
+            result.put("keyId", DeviceProofProtocol.keyId(publicKey));
             call.resolve(result);
         } catch (Exception exception) {
             call.reject("Unable to sign the device challenge", exception);
@@ -152,7 +151,4 @@ public final class DeviceIdentityPlugin extends Plugin {
         }
     }
 
-    private static String base64Url(byte[] value) {
-        return Base64.encodeToString(value, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
-    }
 }

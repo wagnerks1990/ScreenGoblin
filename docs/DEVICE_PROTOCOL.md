@@ -6,40 +6,86 @@ The Android wrapper creates a non-exportable P-256 signing key in Android
 Keystore, preferring StrongBox when the device advertises it and falling back to
 the platform Keystore provider. It exposes the public SPKI, its SHA-256 key
 fingerprint, and a constrained signing operation; private-key bytes never cross
-into the WebView. This is only the client foundation: the current server does
-not enroll the public key, issue proof challenges, verify signatures, or attest
-the reported hardware security level. The unique bearer credential stored in
-the player WebView's IndexedDB therefore remains authoritative and is not
-platform-protected native storage. Sharing one fleet API key is prohibited.
+into the WebView. The server enrolls that public key and requires a fresh,
+operation-bound proof for manifests and heartbeats. The enrolled public key is
+the production device credential; proof-v1 pairing does not issue a bearer
+token. Sharing one fleet API key is prohibited.
 
-Existing locally stored installation IDs are preserved for prototype upgrade
-compatibility. New Android installs use the public-key fingerprint; browsers
-and PWAs use a persisted random UUID. Pairing codes are short-lived, single-use,
-and stored using a deployment-specific HMAC pepper. Before a real fleet pilot,
-the server must bind the key during enrollment and require fresh, replay-safe
-proof of possession for sensitive device operations.
+Android installation identity is the unpadded base64url SHA-256 fingerprint of
+the canonical public SPKI. The server derives the fingerprint itself and
+requires `installationId`, the claimed `keyId`, and the derived fingerprint to
+match. Browsers and PWAs retain a persisted random UUID and may use bearer
+credentials only in an explicitly enabled localhost development build. Pairing
+codes are short-lived, single-use, and stored using a deployment-specific HMAC
+pepper.
+
+The reported `securityLevel` is descriptive, not trusted attestation. The
+server validates P-256 key structure and possession but does not yet validate an
+Android hardware-attestation chain, verified boot state, application identity,
+or device-management posture. A copied pairing code can therefore be claimed by
+the first attacker-controlled key that completes enrollment.
 
 ## Enrollment
 
 1. An authorized operator creates a six-digit pairing code in the Console/API.
 2. The operator enters that code on the unpaired player.
-3. The player exchanges the code plus installation metadata over TLS.
-4. The server atomically consumes the code and issues a device credential.
-5. The player stores the transitional credential in IndexedDB and begins heartbeats.
+3. The player sends the code, device metadata, and P-256 identity to
+   `POST /api/v1/device/pair/challenge`.
+4. The server validates the canonical key and matching fingerprint, binds a
+   random 32-byte challenge to the pairing code, key, and canonical transcript,
+   and returns its opaque ID and 30-second expiry. Invalid codes receive an
+   indistinguishable response shape but cannot complete pairing.
+5. The player signs the challenge and repeats the exact enrollment fields plus
+   the proof at `POST /api/v1/device/pair`.
+6. The server atomically verifies and consumes the code and challenge, creates
+   the screen and public-key credential, and appends the pairing audit event.
+7. The Player stores only the public credential metadata and pinned manifest
+   verification key in IndexedDB, while the private key remains in Keystore.
 
-Codes expire after ten minutes. Durable distributed limits, operator
-confirmation, safe re-enrollment, rotation, and decommissioning remain release
-gates.
+Codes expire after ten minutes. At most four unconsumed, unexpired pairing
+attempts are retained for the same code and key. The final request is
+idempotently recoverable only when it repeats the identical successfully
+verified transcript and proof, preventing response loss from creating a second
+screen or audit record. Source/code distributed rate limits also apply.
 
-### Android challenge-signing contract (client foundation)
+Operator confirmation, attestation, targeted safe re-enrollment, credential/key
+rotation, and verified decommissioning remain release gates.
+
+### Android challenge-signing contract
 
 `DeviceIdentity.signChallenge` accepts an unpadded base64url value that decodes
 to 16–512 bytes. It signs the UTF-8 domain separator
 `ScreenGoblin device proof v1` followed by a zero byte and the decoded challenge
 using `SHA256withECDSA`. The returned signature is ASN.1 DER encoded and then
-unpadded base64url encoded (`ES256-DER`). A future server verifier must reproduce
-that exact byte sequence, enforce one-time challenge expiry and device binding,
-and reject replays. This operation is currently unused by the bearer-token API.
+unpadded base64url encoded (`ES256-DER`). The server requires strict DER and
+reproduces that exact byte sequence. The native bridge refuses to sign if the
+requested key ID differs from the current Keystore identity.
+
+## Per-operation proof
+
+For each manifest fetch or heartbeat, the Player first posts the intended
+operation and request-body digest to `/api/v1/device/challenges`, identified by
+`X-Screen-Id` and `X-Device-Key-Id`. Manifest uses the SHA-256 of an empty body.
+Heartbeat uses the lowercase hexadecimal SHA-256 of the shared canonical JSON
+body, whose object keys are recursively sorted. There are no query parameters on
+the proof-protected manifest endpoint.
+
+The response contains an opaque challenge ID, a fresh unpadded-base64url 32-byte
+challenge, and a 45-second expiry. The Player signs the raw challenge bytes and
+sends the ID, raw challenge, key ID, `ES256-DER` format, and signature in request
+headers. The API binds all of these to the credential, operation, and body
+digest. It transactionally rechecks active/not-expired/not-revoked credential
+state and allows exactly one valid consumption. Invalid signatures do not burn
+the challenge, but a valid proof cannot be replayed. Heartbeat consumption and
+the state mutation are atomic. Manifest proof is consumed before resolving the
+content response.
+
+At most four live challenges are retained for each credential and operation.
+Validly shaped requests for unknown or revoked credentials receive a dummy
+challenge response to reduce identifier enumeration; that challenge can never
+authorize an operation. Every manifest retry obtains a new challenge and
+signature. Heartbeats are not replayed automatically because a proof and body
+are one-use.
 
 ## Heartbeat
 
@@ -85,4 +131,23 @@ HTTPS polling is the baseline transport. A push channel may reduce latency but p
 
 ## Credential rotation and decommissioning
 
-The schema has a revocation timestamp and authentication honors it, but no operator-facing revoke/rotate/decommission API exists yet. Those workflows and verified local erasure remain release gates. The completed design must redact credentials in telemetry, revoke them immediately on decommissioning, and erase downloaded media and local state on factory reset.
+An `OWNER` or `ADMIN` can invoke
+`POST /api/v1/screens/:id/device-credential/revoke`. The API transactionally
+revalidates the current membership, marks the credential and screen revoked,
+invalidates outstanding challenges, and appends one audit event. Repeated
+revocation is idempotent. A revoked credential cannot obtain a usable challenge
+or authenticate a subsequent online operation.
+
+Revocation is not offline recall. A disconnected player can continue already
+verified cached playback until a signed local playback boundary requires it to
+stop, and the server cannot remotely erase that cache. Targeted re-enrollment,
+key/credential rotation, verified native factory-reset erasure, device-owner
+attestation, fleet decommission evidence, and physical proof of removal remain
+release gates.
+
+## Deployment modes
+
+`DEVICE_AUTH_MODE=proof-v1` is mandatory in production and production
+configuration fails closed for any other value. `development-bearer` exists only
+for non-production browser/PWA work against localhost; it preserves the legacy
+`X-Device-Token` path and must not be used for a pilot or fleet deployment.
