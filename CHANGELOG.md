@@ -8,6 +8,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   explicit system provenance, bounded deterministic identifiers, role-change
   rebundling, and no bootstrap epoch/session changes. The database remains
   latched to `LEGACY`, and request-time grant loading/enforcement remains off.
+- Order logout principal and session locks consistently with membership
+  mutation so concurrent logout and removal complete without a database
+  deadlock while retaining transactional revocation and audit evidence.
 
 - Add the deny-by-default scoped-authorization schema and pure policy
   foundation: tenant-bound flat screen groups, exact organization/location/

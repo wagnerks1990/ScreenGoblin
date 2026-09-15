@@ -1269,22 +1269,27 @@ export class PrismaStore implements DataStore {
     return this.prisma.$transaction(async (tx) => {
       if (audit.actorUserId !== userId)
         return { revoked: false as const, reason: "NOT_FOUND" as const };
+      const [principal] = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT membership."id"
+        FROM "Membership" membership
+        INNER JOIN "User" actor ON actor."id" = membership."userId"
+        WHERE membership."organizationId" = ${organizationId}
+          AND membership."userId" = ${userId}
+          AND actor."disabledAt" IS NULL
+        FOR UPDATE OF membership, actor`;
+      if (!principal)
+        return { revoked: false as const, reason: "NOT_FOUND" as const };
       const [session] = await tx.$queryRaw<
         Array<{ id: string; databaseNow: Date }>
       >`
         SELECT session."id", CURRENT_TIMESTAMP AS "databaseNow"
         FROM "UserSession" session
-        INNER JOIN "Membership" membership
-          ON membership."organizationId" = session."organizationId"
-         AND membership."userId" = session."userId"
-        INNER JOIN "User" actor ON actor."id" = membership."userId"
         WHERE session."tokenHash" = ${tokenHash}
           AND session."userId" = ${userId}
           AND session."organizationId" = ${organizationId}
           AND session."revokedAt" IS NULL
           AND session."expiresAt" > CURRENT_TIMESTAMP
-          AND actor."disabledAt" IS NULL
-        FOR UPDATE OF session, membership, actor`;
+        FOR UPDATE OF session`;
       if (!session)
         return { revoked: false as const, reason: "NOT_FOUND" as const };
       await tx.userSession.update({
