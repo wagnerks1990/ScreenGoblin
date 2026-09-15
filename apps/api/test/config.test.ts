@@ -112,15 +112,6 @@ describe("production configuration", () => {
     ).toMatchObject({ EMERGENCY_FEATURE_ENABLED: false });
   });
 
-  it("refuses to enable deprecated metadata registration in production", () => {
-    expect(() =>
-      loadConfig({ ...base, LEGACY_MEDIA_REGISTRATION_ENABLED: "true" }),
-    ).toThrow(/LEGACY_MEDIA_REGISTRATION_ENABLED/);
-    expect(
-      loadConfig({ ...base, LEGACY_MEDIA_REGISTRATION_ENABLED: "false" }),
-    ).toMatchObject({ LEGACY_MEDIA_REGISTRATION_ENABLED: false });
-  });
-
   it("retains the explicit emergency fixture path outside production", () => {
     expect(
       loadConfig({

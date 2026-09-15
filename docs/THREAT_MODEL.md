@@ -158,11 +158,12 @@ timing differences; database execution, scheduler effects, rate limiting, and
 successful session creation remain data-dependent, so this is not a constant-
 time authentication claim.
 
-The isolated non-production emergency fixture path rechecks current emergency
-capabilities, locks organization-scoped targets, and commits each activation or
-clear with its audit event in one transaction. Production remains hard-disabled
-pending strong re-authentication, distinct-person approval, delivery
-acknowledgement, recovery, and tabletop evidence.
+Emergency activation and clear capabilities are not present in any legacy role
+bundle, so no current authenticated role can invoke the dormant routes even if
+the non-production feature flag is misconfigured. Transactional store fixtures
+remain for future workflow development. Production also remains hard-disabled
+at configuration validation pending strong re-authentication, distinct-person
+approval, delivery acknowledgement, recovery, and tabletop evidence.
 
 Proof-v1 manifest responses additionally sign the one-use challenge ID
 consumed for that request, and the Player requires an exact match before
@@ -248,8 +249,9 @@ Browser upload, sniffing, scanning, decoding, and transcoding remain disabled
 and are not closed by this delivery control. A private quarantine and
 safe-derivative pipeline remains a pre-production gate.
 
-The legacy caller-supplied metadata registration route is now disabled by
-default and production configuration rejects enabling it. The proposed private
+The legacy caller-supplied metadata registration route and configuration switch
+have been removed. No upload, multipart, media-ingestion, or caller-directed
+remote-fetch route is registered. The proposed private
 ingestion state machine, separate quarantine authority, fail-closed scanner,
 reader-visible promotion transaction, deterministic orphan reconciliation, and
 safe-derivative gates are documented in `MEDIA_INGESTION_DESIGN.md`; this design

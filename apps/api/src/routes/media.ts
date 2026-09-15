@@ -1,17 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
-import {
-  MEDIA_MAX_ASSET_BYTES,
-  SUPPORTED_MEDIA_MIME_TYPES,
-} from "@screengoblin/contracts";
 import { z } from "zod";
 import { ApiError, requireRole, sendNotFound } from "../utils/http.js";
 import { opaqueId } from "../utils/validation.js";
-import {
-  hasMediaUrlCredentials,
-  mediaUrlMatchesAllowedOrigin,
-  usesAllowedMediaScheme,
-} from "../utils/media-url.js";
-import { isSupportedMedia } from "../utils/media-policy.js";
 import type { MediaRecord } from "../domain/types.js";
 
 const publicMedia = (media: MediaRecord) => {
@@ -19,21 +9,6 @@ const publicMedia = (media: MediaRecord) => {
   delete result.storageKey;
   return result;
 };
-const body = z
-  .object({
-    name: z.string().trim().min(1).max(180),
-    kind: z.enum(["image", "video", "web", "template"]),
-    mimeType: z.string().min(3).max(120),
-    url: z.url().max(2048),
-    checksumSha256: z
-      .string()
-      .regex(/^[a-fA-F0-9]{64}$/)
-      .transform((value) => value.toLowerCase()),
-    sizeBytes: z.number().int().positive().max(MEDIA_MAX_ASSET_BYTES),
-    durationSeconds: z.number().int().positive().max(86400).optional(),
-    expiresAt: z.iso.datetime().optional(),
-  })
-  .strict();
 const params = z.object({ id: opaqueId });
 export const mediaRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("onRequest", app.authenticate);
@@ -42,67 +17,6 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
       publicMedia,
     ),
   }));
-  app.post("/media", async (request, reply) => {
-    if (!app.config.legacyMediaRegistrationEnabled)
-      throw new ApiError(
-        404,
-        "MEDIA_REGISTRATION_DISABLED",
-        "Legacy media metadata registration is disabled",
-      );
-    requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
-    const input = body.parse(request.body);
-    const mediaUrl = new URL(input.url);
-    if (hasMediaUrlCredentials(mediaUrl))
-      throw new ApiError(
-        422,
-        "MEDIA_URL_CREDENTIALS_NOT_ALLOWED",
-        "Media URLs must not contain credentials",
-      );
-    if (!usesAllowedMediaScheme(mediaUrl))
-      throw new ApiError(
-        422,
-        "MEDIA_URL_NOT_ALLOWED",
-        "Media must use HTTPS or a loopback development URL",
-      );
-    if (
-      !mediaUrlMatchesAllowedOrigin(input.url, app.config.mediaAllowedOrigins)
-    )
-      throw new ApiError(
-        422,
-        "MEDIA_ORIGIN_NOT_ALLOWED",
-        "Media must use an approved content origin",
-      );
-    if (!isSupportedMedia(input.kind, input.mimeType))
-      throw new ApiError(
-        422,
-        "MEDIA_TYPE_NOT_SUPPORTED",
-        input.kind === "web"
-          ? "Web content is disabled"
-          : `Supported ${input.kind} types: ${SUPPORTED_MEDIA_MIME_TYPES[input.kind].join(", ")}`,
-      );
-    if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now())
-      throw new ApiError(
-        422,
-        "MEDIA_EXPIRY_INVALID",
-        "Media expiry must be in the future",
-      );
-    const result = await app.store.createMediaAndAudit(
-      request.user.organizationId,
-      input,
-      {
-        actorUserId: request.user.sub,
-        ipAddress: request.ip,
-        requestId: request.id,
-      },
-    );
-    if (!result.created)
-      throw new ApiError(
-        403,
-        "FORBIDDEN",
-        "You do not have permission to perform this action",
-      );
-    return reply.code(201).send(publicMedia(result.value));
-  });
   app.delete("/media/:id", async (request, reply) => {
     requireRole(request, ["OWNER", "ADMIN", "PUBLISHER"]);
     const { id } = params.parse(request.params);

@@ -528,63 +528,25 @@ describe("atomic audited administrative mutations", () => {
     expect(createdPlaylist.value.items[0]!.durationSeconds).toBe(15);
   });
 
-  it("does not activate or clear emergencies when the audit write fails", async () => {
-    const activationStore = authorized(new RejectingAuditStore());
-    const screen = await activationStore.createScreen("org-a", screenInput);
-    await expect(
-      activationStore.activateEmergencyAndAudit(
-        "org-a",
-        {
-          title: "Drill",
-          message: "Audit rollback drill",
-          backgroundColor: "#C1121F",
-          targetScreenIds: [screen.id],
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        },
-        { actorUserId: actor.id },
-      ),
-    ).rejects.toThrow("audit unavailable");
-    expect(activationStore.emergencies).toEqual([]);
-    expect(activationStore.audits).toEqual([]);
-
-    const clearStore = authorized(new RejectingAuditStore());
-    const emergency = {
-      id: "emergency-to-clear",
-      organizationId: "org-a",
-      title: "Drill",
-      message: "Must remain active",
-      backgroundColor: "#C1121F",
-      targetScreenIds: ["screen-1"],
-      startsAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      createdById: actor.id,
-      createdAt: new Date().toISOString(),
-    };
-    clearStore.emergencies.push(emergency);
-    await expect(
-      clearStore.clearEmergencyAndAudit("org-a", emergency.id, {
-        actorUserId: actor.id,
-      }),
-    ).rejects.toThrow("audit unavailable");
-    expect(clearStore.emergencies[0]?.clearedAt).toBeUndefined();
-    expect(clearStore.audits).toEqual([]);
-  });
-
-  it("rechecks emergency authority and validates every target before writing", async () => {
-    for (const scenario of [
-      "VIEWER",
-      "disabled",
-      "missing",
-      "cross-organization",
-    ] as const) {
+  it("denies every legacy role before emergency state or audit writes", async () => {
+    for (const role of ["OWNER", "ADMIN", "PUBLISHER", "VIEWER"] as const) {
       const store = authorized(new MemoryStore());
+      store.users[0]!.role = role;
       const screen = await store.createScreen("org-a", screenInput);
-      if (scenario === "VIEWER") store.users[0]!.role = "VIEWER";
-      if (scenario === "disabled")
-        store.users[0]!.disabledAt = new Date().toISOString();
-      if (scenario === "cross-organization")
-        store.users[0]!.organizationId = "org-b";
-      const actorUserId = scenario === "missing" ? "missing" : actor.id;
+      const now = new Date().toISOString();
+      const emergency = {
+        id: `contained-${role.toLowerCase()}`,
+        organizationId: "org-a",
+        title: "Contained",
+        message: "Must remain active",
+        backgroundColor: "#C1121F",
+        targetScreenIds: [screen.id],
+        startsAt: now,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        createdById: actor.id,
+        createdAt: now,
+      };
+      store.emergencies.push(emergency);
       await expect(
         store.activateEmergencyAndAudit(
           "org-a",
@@ -595,75 +557,18 @@ describe("atomic audited administrative mutations", () => {
             targetScreenIds: [screen.id],
             expiresAt: new Date(Date.now() + 60_000).toISOString(),
           },
-          { actorUserId },
+          { actorUserId: actor.id },
         ),
       ).resolves.toEqual({ activated: false, reason: "FORBIDDEN" });
-      expect(store.emergencies).toEqual([]);
+      await expect(
+        store.clearEmergencyAndAudit("org-a", emergency.id, {
+          actorUserId: actor.id,
+        }),
+      ).resolves.toEqual({ cleared: false, reason: "FORBIDDEN" });
+      expect(store.emergencies).toEqual([emergency]);
+      expect(store.emergencies[0]?.clearedAt).toBeUndefined();
       expect(store.audits).toEqual([]);
     }
-
-    const store = authorized(new MemoryStore());
-    const local = await store.createScreen("org-a", screenInput);
-    const foreign = await store.createScreen("org-b", screenInput);
-    await expect(
-      store.activateEmergencyAndAudit(
-        "org-a",
-        {
-          title: "Mixed targets",
-          message: "Must fail atomically",
-          backgroundColor: "#C1121F",
-          targetScreenIds: [local.id, foreign.id],
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        },
-        { actorUserId: actor.id },
-      ),
-    ).resolves.toEqual({ activated: false, reason: "INVALID_SCREEN" });
-    expect(store.emergencies).toEqual([]);
-    expect(store.audits).toEqual([]);
-  });
-
-  it("owns emergency targets and records activation and clear atomically", async () => {
-    const store = authorized(new MemoryStore());
-    const screen = await store.createScreen("org-a", screenInput);
-    const targetScreenIds = [screen.id, screen.id];
-    const result = await store.activateEmergencyAndAudit(
-      "org-a",
-      {
-        title: "Drill",
-        message: "Atomic path",
-        backgroundColor: "#C1121F",
-        targetScreenIds,
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      },
-      {
-        actorUserId: actor.id,
-        ipAddress: "192.0.2.20",
-        requestId: "emergency-activate",
-      },
-    );
-    if (!result.activated) throw new Error(result.reason);
-    targetScreenIds.push("mutated");
-    expect(result.emergency.targetScreenIds).toEqual([screen.id]);
-    expect(store.audits[0]).toMatchObject({
-      action: "emergency.activated",
-      entityId: result.emergency.id,
-      ipAddress: "192.0.2.20",
-      requestId: "emergency-activate",
-      metadata: { targetCount: 1 },
-    });
-
-    await expect(
-      store.clearEmergencyAndAudit("org-a", result.emergency.id, {
-        actorUserId: actor.id,
-        requestId: "emergency-clear",
-      }),
-    ).resolves.toMatchObject({ cleared: true });
-    expect(result.emergency.clearedAt).toBeDefined();
-    expect(store.audits[1]).toMatchObject({
-      action: "emergency.cleared",
-      entityId: result.emergency.id,
-      requestId: "emergency-clear",
-    });
   });
 
   it("records request context and the existing action metadata on success", async () => {

@@ -151,6 +151,11 @@ case "$url" in
   */health/live) status=204 ;;
   */health/ready) status=404 ;;
   */media/runtime-smoke.txt) status=404 ;;
+  */api/v1/media|*/api/v1/media-ingestions|*/api/v1/media/uploads)
+    if [[ "$request" == POST ]]; then
+      status=404; body='{"error":{"code":"NOT_FOUND","message":"Route not found"}}'
+    fi
+    ;;
   */api/v1/device/media/*)
     if [[ "$request" == OPTIONS ]]; then
       status=204
@@ -245,7 +250,15 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.match(scriptSource, /export ACME_EMAIL="ops@smoke\.example\.test"/);
     assert.match(scriptSource, /ACME_EMAIL=\$ACME_EMAIL/);
     assert.match(scriptSource, /MEDIA_DELIVERY_SECRET=\$MEDIA_DELIVERY_SECRET/);
-    assert.match(composeSource, /LEGACY_MEDIA_REGISTRATION_ENABLED: "false"/);
+    assert.ok(
+      !composeSource.includes(
+        ["LEGACY", "MEDIA", "REGISTRATION", "ENABLED"].join("_"),
+      ),
+    );
+    assert.match(scriptSource, /media-registration-post-absent/);
+    assert.match(scriptSource, /media-ingestion-post-absent/);
+    assert.match(scriptSource, /media-multipart-post-absent/);
+    assert.match(scriptSource, /"code":"NOT_FOUND"/);
     assert.match(scriptSource, /\/media\/runtime-smoke\.txt" 404/);
     assert.match(scriptSource, /Anonymous MinIO object GET returned/);
     assert.match(scriptSource, /private-media-valid/);

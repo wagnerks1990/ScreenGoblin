@@ -85,7 +85,6 @@ beforeEach(async () => {
     deviceAuthMode: "development-bearer",
     publicApiUrl: "https://signage.example.test",
     mediaAllowedOrigins: ["https://media.example.test"],
-    legacyMediaRegistrationEnabled: true,
   });
   token = issueTestToken(store.users[0]!);
 });
@@ -2466,203 +2465,29 @@ describe("device lifecycle", () => {
 });
 
 describe("media trust boundary", () => {
-  it("hides deprecated metadata registration unless explicitly enabled", async () => {
-    app.config.legacyMediaRegistrationEnabled = false;
+  it.each([
+    ["deprecated metadata registration", "/api/v1/media", "application/json"],
+    ["future ingestion API", "/api/v1/media-ingestions", "application/json"],
+    ["multipart upload", "/api/v1/media/uploads", "multipart/form-data"],
+  ])("does not expose %s", async (_label, url, contentType) => {
     const response = await app.inject({
       method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Caller asserted object",
-        kind: "image",
-        mimeType: "image/png",
-        url: "https://media.example.test/image.png",
-        checksumSha256: "a".repeat(64),
-        sizeBytes: 1,
+      url,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": contentType,
       },
+      payload:
+        contentType === "application/json"
+          ? { url: "http://127.0.0.1/" }
+          : "--boundary--",
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json().error.code).toBe("MEDIA_REGISTRATION_DISABLED");
+    expect(response.json().error).toEqual({
+      code: "NOT_FOUND",
+      message: "Route not found",
+    });
     expect(store.media).toEqual([]);
-  });
-
-  it("accepts only supported kind and MIME pairs and disables web content", async () => {
-    for (const payload of [
-      {
-        name: "Disabled web content",
-        kind: "web",
-        mimeType: "text/html",
-        url: "https://media.example.test/page.html",
-      },
-      {
-        name: "Mismatched image",
-        kind: "image",
-        mimeType: "video/mp4",
-        url: "https://media.example.test/image.mp4",
-      },
-    ]) {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/v1/media",
-        headers: { authorization: `Bearer ${token}` },
-        payload: {
-          ...payload,
-          checksumSha256: "a".repeat(64),
-          sizeBytes: 1,
-        },
-      });
-      expect(response.statusCode).toBe(422);
-      expect(response.json().error.code).toBe("MEDIA_TYPE_NOT_SUPPORTED");
-    }
-    expect(store.media).toEqual([]);
-  });
-
-  it("canonicalizes checksums and requires bounded, unexpired media", async () => {
-    const accepted = await app.inject({
-      method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Canonical image",
-        kind: "image",
-        mimeType: "image/png",
-        url: "https://media.example.test/image.png",
-        checksumSha256: "A".repeat(64),
-        sizeBytes: 128 * 1024 * 1024,
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      },
-    });
-    expect(accepted.statusCode).toBe(201);
-    expect(accepted.json().checksumSha256).toBe("a".repeat(64));
-    expect(accepted.json()).not.toHaveProperty("storageKey");
-    const listed = await app.inject({
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(listed.statusCode).toBe(200);
-    expect(listed.json().data[0]).not.toHaveProperty("storageKey");
-
-    const oversized = await app.inject({
-      method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Oversized image",
-        kind: "image",
-        mimeType: "image/png",
-        url: "https://media.example.test/large.png",
-        checksumSha256: "b".repeat(64),
-        sizeBytes: 128 * 1024 * 1024 + 1,
-      },
-    });
-    expect(oversized.statusCode).toBe(400);
-
-    const expired = await app.inject({
-      method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Expired image",
-        kind: "image",
-        mimeType: "image/png",
-        url: "https://media.example.test/expired.png",
-        checksumSha256: "c".repeat(64),
-        sizeBytes: 1,
-        expiresAt: new Date(Date.now() - 1).toISOString(),
-      },
-    });
-    expect(expired.statusCode).toBe(422);
-    expect(expired.json().error.code).toBe("MEDIA_EXPIRY_INVALID");
-  });
-
-  it("rejects executable and non-HTTPS media URLs", async () => {
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Unsafe web content",
-        kind: "web",
-        mimeType: "text/html",
-        url: "javascript:alert(1)",
-        checksumSha256: "0".repeat(64),
-        sizeBytes: 1,
-      },
-    });
-    expect(response.statusCode).toBe(422);
-    expect(response.json().error.code).toBe("MEDIA_URL_NOT_ALLOWED");
-  });
-
-  it("rejects HTTPS media when no origin has been explicitly allowed", async () => {
-    app.config.mediaAllowedOrigins.length = 0;
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Unlisted image",
-        kind: "image",
-        mimeType: "image/png",
-        url: "https://media.example.test/image.png",
-        checksumSha256: "0".repeat(64),
-        sizeBytes: 1,
-      },
-    });
-    expect(response.statusCode).toBe(422);
-    expect(response.json().error.code).toBe("MEDIA_ORIGIN_NOT_ALLOWED");
-  });
-
-  it("accepts only an exact allowed origin", async () => {
-    const allowed = await app.inject({
-      method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Approved image",
-        kind: "image",
-        mimeType: "image/png",
-        url: "https://media.example.test/assets/image.png?version=1",
-        checksumSha256: "1".repeat(64),
-        sizeBytes: 1,
-      },
-    });
-    expect(allowed.statusCode).toBe(201);
-
-    const sibling = await app.inject({
-      method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Sibling image",
-        kind: "image",
-        mimeType: "image/png",
-        url: "https://sub.media.example.test/image.png",
-        checksumSha256: "2".repeat(64),
-        sizeBytes: 1,
-      },
-    });
-    expect(sibling.statusCode).toBe(422);
-    expect(sibling.json().error.code).toBe("MEDIA_ORIGIN_NOT_ALLOWED");
-  });
-
-  it("rejects embedded credentials even on an allowed origin", async () => {
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/v1/media",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        name: "Credentialed image",
-        kind: "image",
-        mimeType: "image/png",
-        url: "https://user:password@media.example.test/image.png",
-        checksumSha256: "3".repeat(64),
-        sizeBytes: 1,
-      },
-    });
-    expect(response.statusCode).toBe(422);
-    expect(response.json().error.code).toBe(
-      "MEDIA_URL_CREDENTIALS_NOT_ALLOWED",
-    );
   });
 
   it("ignores a legacy unpublished schedule with off-allowlist media", async () => {
@@ -2716,122 +2541,55 @@ describe("media trust boundary", () => {
 });
 
 describe("emergency safety gate", () => {
-  it("is disabled by default", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Lobby",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const r = await app.inject({
-      method: "POST",
-      url: "/api/v1/emergencies",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        title: "Test",
-        message: "This is only a drill",
-        targetScreenIds: [screen.id],
+  it.each(["OWNER", "ADMIN", "PUBLISHER", "VIEWER"] as const)(
+    "denies activation and clear for the legacy %s role even when the feature flag is enabled",
+    async (role) => {
+      app.config.emergencyPublishingEnabled = true;
+      store.users[0]!.role = role;
+      const roleToken = issueTestToken(store.users[0]!);
+      const now = new Date().toISOString();
+      store.emergencies.push({
+        id: "contained-emergency",
+        organizationId: "org-a",
+        title: "Contained",
+        message: "Must remain unchanged",
+        backgroundColor: "#C1121F",
+        targetScreenIds: ["screen-1"],
+        startsAt: now,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      },
-    });
-    expect(r.statusCode).toBe(503);
-    expect(r.json().error.code).toBe("FEATURE_DISABLED");
-  });
-
-  it("activates and clears through the audited emergency boundary", async () => {
-    app.config.emergencyPublishingEnabled = true;
-    const screen = await store.createScreen("org-a", {
-      name: "Lobby",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const activated = await app.inject({
-      method: "POST",
-      url: "/api/v1/emergencies",
-      headers: { authorization: `Bearer ${token}` },
-      payload: {
-        title: "Drill",
-        message: "Atomic emergency test",
-        targetScreenIds: [screen.id, screen.id],
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      },
-    });
-    expect(activated.statusCode).toBe(201);
-    expect(activated.json().targetScreenIds).toEqual([screen.id]);
-    expect(store.audits[0]).toMatchObject({
-      organizationId: "org-a",
-      actorUserId: store.users[0]!.id,
-      action: "emergency.activated",
-      entityType: "emergency",
-      metadata: { targetCount: 1 },
-    });
-
-    const cleared = await app.inject({
-      method: "POST",
-      url: `/api/v1/emergencies/${activated.json().id}/clear`,
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(cleared.statusCode).toBe(200);
-    expect(cleared.json().clearedAt).toBeTypeOf("string");
-    expect(store.audits[1]).toMatchObject({
-      organizationId: "org-a",
-      actorUserId: store.users[0]!.id,
-      action: "emergency.cleared",
-      entityType: "emergency",
-      entityId: activated.json().id,
-    });
-  });
-
-  it("maps emergency authorization, target, and tenant failures safely", async () => {
-    app.config.emergencyPublishingEnabled = true;
-    const local = await store.createScreen("org-a", {
-      name: "Local",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const foreign = await store.createScreen("org-b", {
-      name: "Foreign",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const viewer = issueTestToken(store.users[1]!);
-    const payload = {
-      title: "Denied drill",
-      message: "Must not activate",
-      targetScreenIds: [local.id],
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    };
-    const denied = await app.inject({
-      method: "POST",
-      url: "/api/v1/emergencies",
-      headers: { authorization: `Bearer ${viewer}` },
-      payload,
-    });
-    expect(denied.statusCode).toBe(403);
-
-    const invalidTarget = await app.inject({
-      method: "POST",
-      url: "/api/v1/emergencies",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { ...payload, targetScreenIds: [local.id, foreign.id] },
-    });
-    expect(invalidTarget.statusCode).toBe(422);
-    expect(invalidTarget.json().error.code).toBe("INVALID_SCREEN");
-    expect(store.emergencies).toEqual([]);
-    expect(store.audits).toEqual([]);
-
-    const missingClear = await app.inject({
-      method: "POST",
-      url: "/api/v1/emergencies/foreign-emergency/clear",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(missingClear.statusCode).toBe(404);
-  });
+        createdById: store.users[0]!.id,
+        createdAt: now,
+      });
+      const screen = await store.createScreen("org-a", {
+        name: "Lobby",
+        location: "",
+        orientation: "landscape",
+        resolution: "1920x1080",
+        tags: [],
+      });
+      const activated = await app.inject({
+        method: "POST",
+        url: "/api/v1/emergencies",
+        headers: { authorization: `Bearer ${roleToken}` },
+        payload: {
+          title: "Test",
+          message: "This is only a drill",
+          targetScreenIds: [screen.id],
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      });
+      const cleared = await app.inject({
+        method: "POST",
+        url: "/api/v1/emergencies/contained-emergency/clear",
+        headers: { authorization: `Bearer ${roleToken}` },
+      });
+      expect(activated.statusCode).toBe(403);
+      expect(activated.json().error.code).toBe("FORBIDDEN");
+      expect(cleared.statusCode).toBe(403);
+      expect(cleared.json().error.code).toBe("FORBIDDEN");
+      expect(store.emergencies).toHaveLength(1);
+      expect(store.emergencies[0]?.clearedAt).toBeUndefined();
+      expect(store.audits).toEqual([]);
+    },
+  );
 });

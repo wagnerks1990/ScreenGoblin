@@ -158,7 +158,8 @@ implies otherwise.
 
 Production configuration must reject `EMERGENCY_FEATURE_ENABLED=true` until the
 full emergency acceptance checklist is implemented and evidenced. The
-non-production flag exists only for isolated automated fixtures and must not be
+non-production flag exists only for isolated automated fixtures; no current role
+has activation or clear authority even when it is enabled, and it must not be
 treated as an operational escape hatch.
 
 ## AI boundaries

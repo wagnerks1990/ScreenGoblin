@@ -9,7 +9,9 @@ An unchecked item is a known gap, not an implicit approval.
 - [x] Production startup rejects `EMERGENCY_FEATURE_ENABLED=true`; this
       containment control remains required until every emergency/security gate
       is implemented and signed off. This does not complete those gates or
-      authorize emergency use.
+      authorize emergency use. Legacy role bundles also grant neither emergency
+      activation nor clear authority, including when the non-production flag is
+      forced on.
 - [ ] The pilot owner understands ScreenGoblin is not the authoritative emergency-notification system.
 
 ## Product and reliability
@@ -30,6 +32,9 @@ An unchecked item is a known gap, not an implicit approval.
 - [ ] Device revocation, targeted re-enrollment, credential/key rotation, offline recovery, and verified local media/state erasure pass operational and physical-device tests.
 - [ ] Android hardware/application attestation policy is implemented, or its absence has a named risk owner, compensating controls, and an approved review date.
 - [ ] Upload scanning, type validation, limits, and safe transcoding are enabled.
+      The deprecated metadata-registration route and configuration switch are
+      removed, and no upload/multipart/remote-fetch route exists; this containment
+      does not implement or complete the ingestion gate.
 - [ ] Secrets are in a managed secret store and rotation is rehearsed.
 - [ ] Images are digest-pinned; release artifacts have SBOMs and signatures.
 - [ ] Dependency, CodeQL, container, DAST, and secret scans are clean or exceptions accepted.

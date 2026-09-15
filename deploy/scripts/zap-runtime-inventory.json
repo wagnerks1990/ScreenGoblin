@@ -131,12 +131,6 @@
           "seedPath": "/api/v1/media"
         },
         {
-          "label": "media-create",
-          "method": "POST",
-          "template": "/api/v1/media",
-          "seedPath": "/api/v1/media"
-        },
-        {
           "label": "media-delete",
           "method": "DELETE",
           "template": "/api/v1/media/:id",

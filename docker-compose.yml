@@ -131,7 +131,6 @@ services:
       CORS_ORIGINS: https://${SCREEN_GOBLIN_HOST},https://${PLAYER_HOST},https://localhost,capacitor://localhost
       PUBLIC_API_URL: https://${SCREEN_GOBLIN_HOST}
       MEDIA_ALLOWED_ORIGINS: https://${SCREEN_GOBLIN_HOST}
-      LEGACY_MEDIA_REGISTRATION_ENABLED: "false"
       S3_ENDPOINT: http://minio:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-screengoblin-media}

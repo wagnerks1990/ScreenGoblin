@@ -229,6 +229,7 @@ trap 'exit 130' INT TERM
 assert_status() {
   local host="$1" path="$2" expected="$3" label="$4"
   local request_header="${5:-}" second_request_header="${6:-}" request_method="${7:-}"
+  local request_body="${8:-}"
   local body="$work_dir/${label}.body"
   local headers="$work_dir/${label}.headers"
   local status
@@ -236,6 +237,7 @@ assert_status() {
   [[ -z "$request_header" ]] || request_headers+=(--header "$request_header")
   [[ -z "$second_request_header" ]] || request_headers+=(--header "$second_request_header")
   [[ -z "$request_method" ]] || request_headers+=(--request "$request_method")
+  [[ -z "$request_body" ]] || request_headers+=(--data "$request_body")
   status="$($CURL_BIN --silent --show-error --insecure \
     --resolve "$host:443:127.0.0.1" \
     "${request_headers[@]}" \
@@ -780,6 +782,24 @@ assert_status "$SCREEN_GOBLIN_HOST" "/health/ready" 404 "public-readiness"
 assert_status "$SCREEN_GOBLIN_HOST" "/" 200 "console"
 assert_status "$PLAYER_HOST" "/" 200 "player"
 assert_status "$SCREEN_GOBLIN_HOST" "/media/runtime-smoke.txt" 404 "legacy-media-denied"
+assert_status "$SCREEN_GOBLIN_HOST" "/api/v1/media" 404 \
+  "media-registration-post-absent" "Content-Type: application/json" "" "POST" \
+  '{"url":"http://127.0.0.1/latest/meta-data/"}'
+assert_status "$SCREEN_GOBLIN_HOST" "/api/v1/media-ingestions" 404 \
+  "media-ingestion-post-absent" "Content-Type: application/json" "" "POST" \
+  '{"url":"http://169.254.169.254/latest/meta-data/"}'
+assert_status "$SCREEN_GOBLIN_HOST" "/api/v1/media/uploads" 404 \
+  "media-multipart-post-absent" "Content-Type: multipart/form-data; boundary=absent" "" "POST" \
+  '--absent--'
+for label in \
+  media-registration-post-absent \
+  media-ingestion-post-absent \
+  media-multipart-post-absent; do
+  grep -Fq '"code":"NOT_FOUND"' "$work_dir/$label.body" || {
+    echo "$label did not return the generic route-not-found response" >&2
+    exit 1
+  }
+done
 assert_status "$SCREEN_GOBLIN_HOST" \
   "/api/v1/device/media/$media_asset_id" \
   200 "private-media-valid" "Authorization: MediaCapability $valid_media_capability" \
