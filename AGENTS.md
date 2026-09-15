@@ -24,6 +24,8 @@ ScreenGoblin is an Android-first digital-signage platform with three product sur
 
 `packages/brand/src/tokens.json` is the code-facing design source of truth. Keep the interface professional and dark-first, use non-color status cues, meet WCAG-oriented contrast, and reserve mascot art for onboarding, empty, marketing, and selected success states. Operational errors, offline behavior, player failures, and security copy must remain precise.
 
+`docs/UX_REFERENCE.md` and the SVG files under `packages/brand/reference/` are the approved ScreenGoblin layout and workflow references. Use only ScreenGoblin-specific reference renderings for this repository; never use Herd Store, LabGoblin, RoomGoblin, PatchGoblin, or unrelated project imagery as implementation reference. Renderings are conceptual UX references and must not be treated as evidence that a feature is implemented. SVG is a repository design-artifact format only and does not enable SVG/web content in the Player media pipeline.
+
 ## Current release status
 
 Version `0.1.x` is a constrained prototype. Only a non-PII, non-life-safety pilot on an isolated signage VLAN is permitted. Unsupported controls must be hidden or visibly disabled; demo data must never be silently substituted for failed live data.
