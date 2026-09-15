@@ -26,6 +26,10 @@ test("recovery drill shell remains syntactically valid", () => {
 
 test("recovery drill migrates and restores representative application relations", () => {
   assert.match(script, /npm run prisma:migrate -w @screengoblin\/api/);
+  assert.match(
+    script,
+    /mv apps\/api\/prisma\/migrations\/20260915210000_scoped_authorization_foundation \/tmp\/scoped-authorization-foundation/,
+  );
   assert.match(script, /"_prisma_migrations"/);
   for (const table of [
     "Organization",

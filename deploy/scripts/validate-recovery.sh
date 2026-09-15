@@ -102,7 +102,7 @@ docker build --pull --target build --file "$ROLLBACK_DOCKERFILE" \
 docker run --rm --pull never --network "$network" \
   --env DATABASE_URL="$DATABASE_URL" \
   screengoblin/recovery-migrate:test \
-  sh -c 'mv apps/api/prisma/migrations/20260912162000_targeted_initial_enrollment /tmp/targeted-initial-enrollment && mv apps/api/prisma/migrations/20260912163000_durable_membership_attribution /tmp/durable-membership-attribution && mv apps/api/prisma/migrations/20260915190000_release_approval_foundation /tmp/release-approval-foundation && npm run prisma:migrate -w @screengoblin/api'
+  sh -c 'mv apps/api/prisma/migrations/20260912162000_targeted_initial_enrollment /tmp/targeted-initial-enrollment && mv apps/api/prisma/migrations/20260912163000_durable_membership_attribution /tmp/durable-membership-attribution && mv apps/api/prisma/migrations/20260915190000_release_approval_foundation /tmp/release-approval-foundation && mv apps/api/prisma/migrations/20260915210000_scoped_authorization_foundation /tmp/scoped-authorization-foundation && npm run prisma:migrate -w @screengoblin/api'
 docker exec -i "$pg_container" psql -U screengoblin -d screengoblin \
   -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
 BEGIN;
