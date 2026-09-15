@@ -31,7 +31,8 @@ An unchecked item is a known gap, not an implicit approval.
       Tenant-bound grant/group tables and a pure deny-by-default evaluator are
       present, and exact-membership organization-wide compatibility grants are
       backfilled without session or epoch changes, but a database latch keeps
-      policy in legacy mode. Shadow evidence, scoped read/mutation enforcement, administration,
+      policy in legacy mode. Candidate creation has a non-authoritative bounded
+      comparison canary; remaining shadow evidence, scoped read/mutation enforcement, administration,
       SSO/MFA, and human access review remain incomplete.
 - [ ] Pairing is single-use, short-lived, rate-limited, transcript/key-bound, proof-verified, and audited on representative managed Android hardware.
 - [ ] Device revocation, targeted re-enrollment, credential/key rotation, offline recovery, and verified local media/state erasure pass operational and physical-device tests.

@@ -128,8 +128,10 @@ scope shapes, a closed non-emergency grant vocabulary, role ceilings, and
 deterministic all-target evaluation. A database constraint deliberately keeps
 all organizations in `LEGACY` mode. Exact-membership, system-attributed
 compatibility grants mirror the current non-emergency role ceiling at
-organization scope, but request-time stores and routes do not load or enforce
-them and no resource list is filtered by them. These broad compatibility rows
+organization scope. Successful non-replayed candidate creation performs a
+bounded, failure-isolated comparison inside its transaction and records only a
+sanitized audit summary; legacy authorization still decides the mutation. No
+resource list or other route is filtered or enforced by grants. These broad compatibility rows
 are migration input, not least-privilege evidence. This groundwork is not an
 effective scoped control or completion of the authorization gate.
 

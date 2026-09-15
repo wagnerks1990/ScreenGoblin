@@ -93,8 +93,10 @@ downstream disconnect destroys the upstream object stream.
   scope coverage under a legacy-role ceiling. A database safety latch keeps
   every organization in `LEGACY` mode. Versioned, system-attributed
   organization-scope compatibility grants are exact-membership backfilled and
-  maintained on role changes, but request-time stores do not query or enforce
-  them, resources are not filtered, and these records must not yet be treated
+  maintained on role changes. Successful non-replayed candidate creation loads
+  them only for bounded transaction-local comparison evidence; that result is
+  never authoritative. Other request-time stores do not query them, resources
+  are not filtered, and these records must not yet be treated
   as effective authorization.
 
 - OWNER/ADMIN control screens; PUBLISHER may manage ordinary content and

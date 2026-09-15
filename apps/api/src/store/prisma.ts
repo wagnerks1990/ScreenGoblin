@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { CAPABILITIES } from "@screengoblin/contracts";
+import {
+  CAPABILITIES,
+  type AuthorizationScopeType,
+  type ScopedAuthorizationGrant,
+  type ScopedAuthorizationScreenTarget,
+} from "@screengoblin/contracts";
 import { mediaStorageKey } from "../media/delivery.js";
 import { isApprovedPasswordHash } from "../utils/crypto.js";
 import type {
@@ -78,6 +83,14 @@ import {
   releaseCandidateDigest,
 } from "../releases/canonical.js";
 import { hasCapability } from "../authorization/policy.js";
+import { evaluateScopedAuthorization } from "../authorization/scoped.js";
+import {
+  evaluatedAuthorizationShadow,
+  RELEASE_SHADOW_MAX_GRANTS,
+  RELEASE_SHADOW_MAX_GROUP_EDGES,
+  unavailableAuthorizationShadow,
+  type AuthorizationShadowMetadata,
+} from "../authorization/shadow.js";
 import {
   COMPATIBILITY_GRANT_SYSTEM_KEY,
   compatibilityGrantCapabilities,
@@ -660,11 +673,13 @@ export class PrismaStore implements DataStore {
   ) {
     const [actor] = await tx.$queryRaw<
       Array<{
+        membershipId: string;
         role: string;
         authenticationEpoch: number;
         authorizationEpoch: number;
       }>
-    >`SELECT membership."role"::text AS "role",
+    >`SELECT membership."id" AS "membershipId",
+             membership."role"::text AS "role",
              actor."authenticationEpoch" AS "authenticationEpoch",
              membership."authorizationEpoch" AS "authorizationEpoch"
       FROM "Membership" membership
@@ -674,6 +689,168 @@ export class PrismaStore implements DataStore {
         AND actor."disabledAt" IS NULL
       FOR UPDATE OF membership, actor`;
     return actor;
+  }
+  private async releaseCandidateCreateAuthorizationShadow(
+    tx: Prisma.TransactionClient,
+    input: {
+      organizationId: string;
+      actorUserId: string;
+      actor: {
+        membershipId: string;
+        role: string;
+        authorizationEpoch: number;
+      };
+      screenIds: string[];
+      databaseNow: Date;
+    },
+  ): Promise<AuthorizationShadowMetadata> {
+    const [timeoutSetting] = await tx.$queryRaw<
+      Array<{ statementTimeout: string }>
+    >`SELECT current_setting('statement_timeout') AS "statementTimeout"`;
+    if (!timeoutSetting)
+      throw new Error("Database timeout setting is unavailable");
+    await tx.$executeRaw`SAVEPOINT release_authorization_shadow`;
+    try {
+      await tx.$queryRaw`SELECT set_config('statement_timeout', '250ms', true)`;
+      const screens = await tx.$queryRaw<
+        Array<{ screenId: string; locationId: string | null }>
+      >`
+        SELECT screen."id" AS "screenId", screen."locationId"
+        FROM "Screen" screen
+        WHERE screen."organizationId" = ${input.organizationId}
+          AND screen."id" = ANY(${input.screenIds}::text[])
+        ORDER BY screen."id" ASC
+        FOR SHARE OF screen NOWAIT`;
+      if (screens.length !== input.screenIds.length) {
+        await tx.$queryRaw`SELECT set_config('statement_timeout', ${timeoutSetting.statementTimeout}, true)`;
+        await tx.$executeRaw`RELEASE SAVEPOINT release_authorization_shadow`;
+        return unavailableAuthorizationShadow(
+          "TARGET_UNRESOLVED",
+          input.screenIds.length,
+        );
+      }
+      const groupEdges = await tx.$queryRaw<
+        Array<{ screenId: string; groupId: string }>
+      >`
+        SELECT member."screenId", member."groupId"
+        FROM "ScreenGroupMember" member
+        INNER JOIN "ScreenGroup" screen_group
+          ON screen_group."id" = member."groupId"
+         AND screen_group."organizationId" = member."organizationId"
+         AND screen_group."deletedAt" IS NULL
+        WHERE member."organizationId" = ${input.organizationId}
+          AND member."screenId" = ANY(${input.screenIds}::text[])
+        ORDER BY member."screenId" ASC, member."groupId" ASC
+        LIMIT ${RELEASE_SHADOW_MAX_GROUP_EDGES + 1}
+        FOR SHARE OF member, screen_group NOWAIT`;
+      const locationIds = screens.flatMap(({ locationId }) =>
+        locationId === null ? [] : [locationId],
+      );
+      const groupIds = groupEdges.map(({ groupId }) => groupId);
+      const grants = await tx.$queryRaw<
+        Array<{
+          id: string;
+          capability: string;
+          scopeType: AuthorizationScopeType;
+          scopeId: string | null;
+          startsAt: Date;
+          expiresAt: Date | null;
+          revokedAt: Date | null;
+        }>
+      >`
+        SELECT grant_row."id", grant_row."capability",
+               grant_row."scopeType"::text AS "scopeType",
+               CASE grant_row."scopeType"::text
+                 WHEN 'LOCATION' THEN grant_row."locationId"
+                 WHEN 'SCREEN_GROUP' THEN grant_row."screenGroupId"
+                 WHEN 'SCREEN' THEN grant_row."screenId"
+                 ELSE NULL
+               END AS "scopeId",
+               grant_row."startsAt", grant_row."expiresAt", grant_row."revokedAt"
+        FROM "AccessGrant" grant_row
+        WHERE grant_row."organizationId" = ${input.organizationId}
+          AND grant_row."subjectUserId" = ${input.actorUserId}
+          AND grant_row."subjectMembershipId" = ${input.actor.membershipId}
+          AND grant_row."capability" = ${CAPABILITIES.releaseCandidateCreate}
+          AND grant_row."revokedAt" IS NULL
+          AND grant_row."startsAt" <= ${input.databaseNow}
+          AND (grant_row."expiresAt" IS NULL OR grant_row."expiresAt" > ${input.databaseNow})
+          AND (
+            grant_row."scopeType" = 'ORGANIZATION'::"AuthorizationScopeType"
+            OR grant_row."locationId" = ANY(${locationIds}::text[])
+            OR grant_row."screenGroupId" = ANY(${groupIds}::text[])
+            OR grant_row."screenId" = ANY(${input.screenIds}::text[])
+          )
+        ORDER BY grant_row."id" ASC
+        LIMIT ${RELEASE_SHADOW_MAX_GRANTS + 1}
+        FOR SHARE OF grant_row NOWAIT`;
+      if (
+        groupEdges.length > RELEASE_SHADOW_MAX_GROUP_EDGES ||
+        grants.length > RELEASE_SHADOW_MAX_GRANTS
+      ) {
+        await tx.$queryRaw`SELECT set_config('statement_timeout', ${timeoutSetting.statementTimeout}, true)`;
+        await tx.$executeRaw`RELEASE SAVEPOINT release_authorization_shadow`;
+        return unavailableAuthorizationShadow(
+          "CONTEXT_LIMIT",
+          input.screenIds.length,
+        );
+      }
+      const groupsByScreen = new Map<string, string[]>();
+      for (const edge of groupEdges) {
+        const groupIds = groupsByScreen.get(edge.screenId) ?? [];
+        groupIds.push(edge.groupId);
+        groupsByScreen.set(edge.screenId, groupIds);
+      }
+      const targets: ScopedAuthorizationScreenTarget[] = screens.map(
+        (screen) => ({
+          organizationId: input.organizationId,
+          screenId: screen.screenId,
+          locationId: screen.locationId,
+          screenGroupIds: groupsByScreen.get(screen.screenId) ?? [],
+        }),
+      );
+      const normalizedGrants = grants.map(
+        (grant): ScopedAuthorizationGrant => ({
+          id: grant.id,
+          organizationId: input.organizationId,
+          subjectUserId: input.actorUserId,
+          subjectMembershipId: input.actor.membershipId,
+          capability:
+            grant.capability as ScopedAuthorizationGrant["capability"],
+          scopeType: grant.scopeType,
+          scopeId: grant.scopeId,
+          startsAt: grant.startsAt.toISOString(),
+          expiresAt: grant.expiresAt?.toISOString() ?? null,
+          revokedAt: grant.revokedAt?.toISOString() ?? null,
+        }),
+      );
+      const decision = evaluateScopedAuthorization({
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        membershipId: input.actor.membershipId,
+        role: input.actor.role,
+        authorizationEpoch: input.actor.authorizationEpoch,
+        capability: CAPABILITIES.releaseCandidateCreate,
+        evaluatedAt: input.databaseNow.toISOString(),
+        grants: normalizedGrants,
+        targets,
+      });
+      await tx.$queryRaw`SELECT set_config('statement_timeout', ${timeoutSetting.statementTimeout}, true)`;
+      await tx.$executeRaw`RELEASE SAVEPOINT release_authorization_shadow`;
+      return evaluatedAuthorizationShadow(decision, targets.length);
+    } catch (error) {
+      try {
+        await tx.$executeRaw`ROLLBACK TO SAVEPOINT release_authorization_shadow`;
+        await tx.$executeRaw`RELEASE SAVEPOINT release_authorization_shadow`;
+      } catch {
+        throw error;
+      }
+      if (isRetryableWriteConflict(error)) throw error;
+      return unavailableAuthorizationShadow(
+        "LOAD_FAILED",
+        input.screenIds.length,
+      );
+    }
   }
   private async replaceCompatibilityGrants(
     tx: Prisma.TransactionClient,
@@ -4969,6 +5146,14 @@ export class PrismaStore implements DataStore {
               },
             });
             const response = releaseCandidateDto(candidate);
+            const authorizationShadow =
+              await this.releaseCandidateCreateAuthorizationShadow(tx, {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actor: actor!,
+                screenIds,
+                databaseNow: clock.databaseNow,
+              });
             await tx.auditEvent.create({
               data: {
                 organizationId: org,
@@ -4984,6 +5169,7 @@ export class PrismaStore implements DataStore {
                   releaseDigestSha256,
                   screenCount: screenIds.length,
                   policyVersion: response.policyVersion,
+                  authorizationShadow,
                 },
               },
             });
