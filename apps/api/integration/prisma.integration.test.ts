@@ -635,7 +635,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           scopeType: "ORGANIZATION",
         },
       }),
-    ).rejects.toMatchObject({ code: "P2004" });
+    ).rejects.toThrow(/AccessGrant_creator_shape/);
     await expect(
       prisma.accessGrant.create({
         data: {
@@ -649,7 +649,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           scopeType: "ORGANIZATION",
         },
       }),
-    ).rejects.toMatchObject({ code: "P2004" });
+    ).rejects.toThrow(/AccessGrant_creator_shape/);
     await expect(
       prisma.accessGrant.update({
         where: { id: systemGrant.id },
