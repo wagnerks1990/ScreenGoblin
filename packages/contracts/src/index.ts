@@ -15,6 +15,13 @@ export const SUPPORTED_MEDIA_MIME_TYPES = {
 } as const satisfies Record<ContentKind, readonly string[]>;
 
 export const CAPABILITIES = {
+  authorizationManage: "authorization.manage",
+  screenRead: "screen.read",
+  locationRead: "location.read",
+  mediaRead: "media.read",
+  playlistRead: "playlist.read",
+  scheduleRead: "schedule.read",
+  releaseCandidateRead: "release.candidate.read",
   releaseCandidateCreate: "release.candidate.create",
   releaseCandidateSubmit: "release.candidate.submit",
   releaseApprove: "release.approve",
@@ -25,6 +32,40 @@ export const CAPABILITIES = {
   emergencyActivate: "emergency.activate",
   emergencyClear: "emergency.clear",
 } as const;
+
+export const AUTHORIZATION_SCOPE_TYPES = {
+  organization: "ORGANIZATION",
+  location: "LOCATION",
+  screenGroup: "SCREEN_GROUP",
+  screen: "SCREEN",
+} as const;
+
+export type AuthorizationScopeType =
+  (typeof AUTHORIZATION_SCOPE_TYPES)[keyof typeof AUTHORIZATION_SCOPE_TYPES];
+
+/** A tenant-bound grant input after persistence-layer validation. */
+export interface ScopedAuthorizationGrant {
+  id: string;
+  organizationId: string;
+  subjectUserId: string;
+  /** Exact live membership instance validated by the persistence query. */
+  subjectMembershipId: string;
+  capability: Capability;
+  scopeType: AuthorizationScopeType;
+  /** Absent for ORGANIZATION and required for every narrower scope. */
+  scopeId?: string | null;
+  startsAt: string;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+}
+
+/** Current server-resolved classification of one concrete target screen. */
+export interface ScopedAuthorizationScreenTarget {
+  organizationId: string;
+  screenId: string;
+  locationId?: string | null;
+  screenGroupIds: readonly string[];
+}
 
 export type ReleaseCandidateState =
   "DRAFT" | "IN_REVIEW" | "APPROVED" | "PUBLISHED";

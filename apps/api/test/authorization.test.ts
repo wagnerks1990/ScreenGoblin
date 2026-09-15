@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { CAPABILITIES } from "@screengoblin/contracts";
+import {
+  AUTHORIZATION_SCOPE_TYPES,
+  CAPABILITIES,
+  type Capability,
+  type ScopedAuthorizationGrant,
+  type ScopedAuthorizationScreenTarget,
+} from "@screengoblin/contracts";
 import { randomToken, sha256 } from "../src/utils/crypto.js";
 import { hasCapability } from "../src/authorization/policy.js";
+import { evaluateScopedAuthorization } from "../src/authorization/scoped.js";
 import type { Role } from "../src/domain/types.js";
 import { MemoryStore } from "../src/store/memory.js";
 
@@ -100,6 +107,27 @@ describe("release capability policy", () => {
     expect(hasCapability(role, CAPABILITIES.screenCredentialReenroll)).toBe(
       allowed,
     );
+  });
+
+  it.each(["OWNER", "ADMIN", "PUBLISHER", "VIEWER"] as const)(
+    "grants the non-emergency read ceiling to %s",
+    (role) => {
+      expect(hasCapability(role, CAPABILITIES.screenRead)).toBe(true);
+      expect(hasCapability(role, CAPABILITIES.locationRead)).toBe(true);
+      expect(hasCapability(role, CAPABILITIES.mediaRead)).toBe(true);
+      expect(hasCapability(role, CAPABILITIES.playlistRead)).toBe(true);
+      expect(hasCapability(role, CAPABILITIES.scheduleRead)).toBe(true);
+      expect(hasCapability(role, CAPABILITIES.releaseCandidateRead)).toBe(true);
+    },
+  );
+
+  it.each([
+    ["OWNER", true],
+    ["ADMIN", false],
+    ["PUBLISHER", false],
+    ["VIEWER", false],
+  ] as const)("limits authorization management for %s", (role, allowed) => {
+    expect(hasCapability(role, CAPABILITIES.authorizationManage)).toBe(allowed);
   });
 
   it.each(["OWNER", "ADMIN", "PUBLISHER", "VIEWER"] as const)(
@@ -205,5 +233,476 @@ describe("release capability policy", () => {
       "release.candidate.published",
       "release.published",
     ]);
+  });
+});
+
+const evaluationTime = "2026-09-15T12:00:00.000Z";
+const target = (
+  screenId: string,
+  locationId: string | null = "location-a",
+  screenGroupIds: readonly string[] = ["group-a"],
+): ScopedAuthorizationScreenTarget => ({
+  organizationId: "org-a",
+  screenId,
+  locationId,
+  screenGroupIds,
+});
+const scopedGrant = (
+  overrides: Partial<ScopedAuthorizationGrant> = {},
+): ScopedAuthorizationGrant => ({
+  id: "grant-a",
+  organizationId: "org-a",
+  subjectUserId: "actor",
+  subjectMembershipId: "membership-a",
+  capability: CAPABILITIES.releasePublish,
+  scopeType: AUTHORIZATION_SCOPE_TYPES.organization,
+  startsAt: "2026-09-15T11:00:00.000Z",
+  ...overrides,
+});
+const evaluate = (
+  overrides: Partial<Parameters<typeof evaluateScopedAuthorization>[0]> = {},
+) =>
+  evaluateScopedAuthorization({
+    organizationId: "org-a",
+    actorUserId: "actor",
+    membershipId: "membership-a",
+    role: "PUBLISHER",
+    authorizationEpoch: 3,
+    capability: CAPABILITIES.releasePublish,
+    evaluatedAt: evaluationTime,
+    grants: [scopedGrant()],
+    targets: [target("screen-a")],
+    ...overrides,
+  });
+
+describe("pure scoped authorization policy", () => {
+  it.each([
+    [AUTHORIZATION_SCOPE_TYPES.organization, null],
+    [AUTHORIZATION_SCOPE_TYPES.location, "location-a"],
+    [AUTHORIZATION_SCOPE_TYPES.screenGroup, "group-a"],
+    [AUTHORIZATION_SCOPE_TYPES.screen, "screen-a"],
+  ] as const)("covers a target through a %s grant", (scopeType, scopeId) => {
+    const result = evaluate({
+      grants: [scopedGrant({ scopeType, scopeId })],
+    });
+
+    expect(result).toMatchObject({
+      allowed: true,
+      reason: "ALLOWED",
+      matchingGrantIds: ["grant-a"],
+    });
+    expect(result.evidenceDigestSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("requires every target while permitting a union of narrow grants", () => {
+    const grants = [
+      scopedGrant({
+        id: "grant-location",
+        scopeType: AUTHORIZATION_SCOPE_TYPES.location,
+        scopeId: "location-a",
+      }),
+      scopedGrant({
+        id: "grant-group",
+        scopeType: AUTHORIZATION_SCOPE_TYPES.screenGroup,
+        scopeId: "group-b",
+      }),
+      scopedGrant({
+        id: "grant-screen",
+        scopeType: AUTHORIZATION_SCOPE_TYPES.screen,
+        scopeId: "screen-c",
+      }),
+    ];
+    expect(
+      evaluate({
+        grants,
+        targets: [
+          target("screen-a", "location-a", []),
+          target("screen-b", "location-b", ["group-b"]),
+          target("screen-c", "location-c", []),
+        ],
+      }),
+    ).toMatchObject({
+      allowed: true,
+      matchingGrantIds: ["grant-group", "grant-location", "grant-screen"],
+    });
+    expect(
+      evaluate({
+        grants: grants.slice(0, 2),
+        targets: [
+          target("screen-a", "location-a", []),
+          target("screen-b", "location-b", ["group-b"]),
+          target("screen-c", "location-c", []),
+        ],
+      }),
+    ).toMatchObject({ allowed: false, reason: "SCOPE_DENIED" });
+  });
+
+  it("does not let a location grant cover an unclassified screen", () => {
+    expect(
+      evaluate({
+        grants: [
+          scopedGrant({
+            scopeType: AUTHORIZATION_SCOPE_TYPES.location,
+            scopeId: "location-a",
+          }),
+        ],
+        targets: [target("screen-a", null, [])],
+      }),
+    ).toMatchObject({ allowed: false, reason: "SCOPE_DENIED" });
+    expect(
+      evaluate({
+        grants: [
+          scopedGrant({
+            scopeType: AUTHORIZATION_SCOPE_TYPES.screen,
+            scopeId: "screen-a",
+          }),
+        ],
+        targets: [target("screen-a", null, [])],
+      }),
+    ).toMatchObject({ allowed: true, reason: "ALLOWED" });
+  });
+
+  it.each([
+    ["PUBLISHER", CAPABILITIES.releaseApprove],
+    ["VIEWER", CAPABILITIES.releasePublish],
+    ["ADMIN", CAPABILITIES.authorizationManage],
+    ["SUPERUSER", CAPABILITIES.releasePublish],
+  ] as const)("enforces the %s role ceiling for %s", (role, capability) => {
+    expect(
+      evaluate({
+        role,
+        capability,
+        grants: [scopedGrant({ capability })],
+      }),
+    ).toMatchObject({ allowed: false, reason: "ROLE_CEILING_DENIED" });
+  });
+
+  it("allows a viewer only its read ceiling when scope coverage exists", () => {
+    expect(
+      evaluate({
+        role: "VIEWER",
+        capability: CAPABILITIES.screenRead,
+        grants: [
+          scopedGrant({
+            capability: CAPABILITIES.screenRead,
+            scopeType: AUTHORIZATION_SCOPE_TYPES.screen,
+            scopeId: "screen-a",
+          }),
+        ],
+      }),
+    ).toMatchObject({ allowed: true, reason: "ALLOWED" });
+    expect(
+      evaluate({
+        role: "VIEWER",
+        capability: CAPABILITIES.mediaRead,
+        grants: [scopedGrant({ capability: CAPABILITIES.mediaRead })],
+        targets: [],
+      }),
+    ).toMatchObject({ allowed: true, reason: "ALLOWED" });
+  });
+
+  it("keeps grant administration unavailable to the scoped evaluator", () => {
+    expect(
+      evaluate({
+        role: "OWNER",
+        capability: CAPABILITIES.authorizationManage,
+        grants: [],
+        targets: [],
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reason: "SCOPE_DENIED",
+      matchingGrantIds: [],
+    });
+    expect(
+      evaluate({
+        role: "OWNER",
+        capability: CAPABILITIES.authorizationManage,
+        grants: [],
+        targets: [target("screen-a")],
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reason: "SCOPE_DENIED",
+    });
+  });
+
+  it("allows only an organization grant for organization-scoped reads", () => {
+    const organizationGrant = scopedGrant({
+      capability: CAPABILITIES.mediaRead,
+    });
+    expect(
+      evaluate({
+        capability: CAPABILITIES.mediaRead,
+        grants: [organizationGrant],
+        targets: [],
+      }),
+    ).toMatchObject({ allowed: true, reason: "ALLOWED" });
+    expect(
+      evaluate({
+        capability: CAPABILITIES.mediaRead,
+        grants: [
+          scopedGrant({
+            capability: CAPABILITIES.mediaRead,
+            scopeType: AUTHORIZATION_SCOPE_TYPES.location,
+            scopeId: "location-a",
+          }),
+        ],
+        targets: [],
+      }),
+    ).toMatchObject({ allowed: false, reason: "SCOPE_DENIED" });
+    expect(
+      evaluate({
+        capability: CAPABILITIES.mediaRead,
+        grants: [organizationGrant],
+        targets: [target("screen-a")],
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reason: "ORGANIZATION_SCOPE_REQUIRED",
+    });
+  });
+
+  it("requires at least one concrete target for target-scoped capabilities", () => {
+    expect(evaluate({ targets: [] })).toMatchObject({
+      allowed: false,
+      reason: "TARGETS_REQUIRED",
+    });
+  });
+
+  it("uses inclusive starts and exclusive expiries from the evaluation time", () => {
+    expect(
+      evaluate({
+        evaluatedAt: "2026-09-15T11:00:00.000Z",
+        grants: [
+          scopedGrant({
+            startsAt: "2026-09-15T11:00:00.000Z",
+            expiresAt: "2026-09-15T12:00:00.000Z",
+          }),
+        ],
+      }),
+    ).toMatchObject({ allowed: true });
+    expect(
+      evaluate({
+        grants: [
+          scopedGrant({
+            expiresAt: evaluationTime,
+          }),
+        ],
+      }),
+    ).toMatchObject({ allowed: false, reason: "SCOPE_DENIED" });
+    expect(
+      evaluate({
+        grants: [
+          scopedGrant({
+            startsAt: "2026-09-15T12:00:00.001Z",
+          }),
+        ],
+      }),
+    ).toMatchObject({ allowed: false, reason: "SCOPE_DENIED" });
+  });
+
+  it.each([
+    scopedGrant({ revokedAt: "2026-09-15T11:30:00.000Z" }),
+    scopedGrant({ organizationId: "org-b" }),
+    scopedGrant({ subjectUserId: "someone-else" }),
+    scopedGrant({ subjectMembershipId: "" }),
+    scopedGrant({ subjectMembershipId: "former-membership" }),
+    scopedGrant({ capability: CAPABILITIES.releaseWithdraw }),
+    scopedGrant({ startsAt: "invalid" }),
+    scopedGrant({ startsAt: "2026-09-15T11:00:00Z" }),
+    scopedGrant({ scopeId: "unexpected" }),
+    scopedGrant({
+      scopeType: AUTHORIZATION_SCOPE_TYPES.location,
+      scopeId: null,
+    }),
+  ])("ignores a revoked, foreign, inactive, or malformed grant", (grant) => {
+    expect(evaluate({ grants: [grant] })).toMatchObject({
+      allowed: false,
+      reason: "SCOPE_DENIED",
+      matchingGrantIds: [],
+    });
+  });
+
+  it("fails closed for unknown capability and scope values", () => {
+    expect(
+      evaluate({
+        capability: "release.unknown",
+        grants: [],
+      }),
+    ).toMatchObject({ allowed: false, reason: "UNKNOWN_CAPABILITY" });
+    expect(
+      evaluate({
+        grants: [
+          scopedGrant({
+            scopeType: "UNRECOGNIZED" as ScopedAuthorizationGrant["scopeType"],
+          }),
+        ],
+      }),
+    ).toMatchObject({ allowed: false, reason: "SCOPE_DENIED" });
+  });
+
+  it.each([
+    { evaluatedAt: "not-an-instant" },
+    { authorizationEpoch: -1 },
+    { organizationId: "" },
+    {
+      targets: undefined as unknown as ScopedAuthorizationScreenTarget[],
+    },
+    {
+      targets: [
+        target("screen-a"),
+        target("screen-a", "location-b", ["group-b"]),
+      ],
+    },
+    {
+      targets: [{ ...target("screen-a"), organizationId: "org-b" }],
+    },
+  ])("fails closed for an invalid evaluation context", (override) => {
+    expect(evaluate(override)).toMatchObject({
+      allowed: false,
+      reason: "INVALID_CONTEXT",
+    });
+  });
+
+  it("rejects duplicate active grant identifiers as ambiguous evidence", () => {
+    expect(
+      evaluate({
+        grants: [
+          scopedGrant(),
+          scopedGrant({
+            scopeType: AUTHORIZATION_SCOPE_TYPES.screen,
+            scopeId: "screen-a",
+          }),
+        ],
+      }),
+    ).toMatchObject({ allowed: false, reason: "INVALID_CONTEXT" });
+  });
+
+  it("produces deterministic evidence independent of input ordering", () => {
+    const grants = [
+      scopedGrant({
+        id: "grant-b",
+        scopeType: AUTHORIZATION_SCOPE_TYPES.screen,
+        scopeId: "screen-b",
+      }),
+      scopedGrant({
+        id: "grant-a",
+        scopeType: AUTHORIZATION_SCOPE_TYPES.screen,
+        scopeId: "screen-a",
+      }),
+    ];
+    const first = evaluate({
+      grants,
+      targets: [
+        target("screen-b", "location-b", ["group-z", "group-a"]),
+        target("screen-a", "location-a", []),
+      ],
+    });
+    const second = evaluate({
+      grants: [...grants].reverse(),
+      targets: [
+        target("screen-a", "location-a", []),
+        target("screen-b", "location-b", ["group-a", "group-z"]),
+      ],
+    });
+
+    expect(second).toEqual(first);
+  });
+
+  it("keeps scope evidence stable while the same grant remains active", () => {
+    const grant = scopedGrant({
+      startsAt: "2026-09-15T10:00:00.000Z",
+      expiresAt: "2026-09-15T14:00:00.000Z",
+    });
+    const first = evaluate({
+      evaluatedAt: "2026-09-15T11:00:00.000Z",
+      grants: [grant],
+    });
+    const second = evaluate({
+      evaluatedAt: "2026-09-15T13:00:00.000Z",
+      grants: [grant],
+    });
+
+    expect(first.allowed).toBe(true);
+    expect(second.allowed).toBe(true);
+    expect(second.evidenceDigestSha256).toBe(first.evidenceDigestSha256);
+  });
+
+  it("binds evidence to epoch, current classification, and selected grant", () => {
+    const baseline = evaluate({
+      grants: [
+        scopedGrant({
+          scopeType: AUTHORIZATION_SCOPE_TYPES.location,
+          scopeId: "location-a",
+        }),
+      ],
+    }).evidenceDigestSha256;
+    expect(
+      evaluate({
+        authorizationEpoch: 4,
+        grants: [
+          scopedGrant({
+            scopeType: AUTHORIZATION_SCOPE_TYPES.location,
+            scopeId: "location-a",
+          }),
+        ],
+      }).evidenceDigestSha256,
+    ).not.toBe(baseline);
+    expect(
+      evaluate({
+        grants: [
+          scopedGrant({
+            id: "replacement-grant",
+            scopeType: AUTHORIZATION_SCOPE_TYPES.location,
+            scopeId: "location-a",
+          }),
+        ],
+      }).evidenceDigestSha256,
+    ).not.toBe(baseline);
+    const organizationGrant = scopedGrant();
+    const classified = evaluate({
+      grants: [organizationGrant],
+      targets: [target("screen-a", "location-a", [])],
+    }).evidenceDigestSha256;
+    expect(
+      evaluate({
+        grants: [organizationGrant],
+        targets: [target("screen-a", "location-b", [])],
+      }).evidenceDigestSha256,
+    ).not.toBe(classified);
+  });
+
+  it("keeps a deterministic minimal evidence set when grants overlap", () => {
+    const result = evaluate({
+      grants: [
+        scopedGrant({ id: "z-organization" }),
+        scopedGrant({
+          id: "a-screen",
+          scopeType: AUTHORIZATION_SCOPE_TYPES.screen,
+          scopeId: "screen-a",
+        }),
+      ],
+    });
+    expect(result).toMatchObject({
+      allowed: true,
+      matchingGrantIds: ["a-screen"],
+    });
+  });
+
+  it("does not admit emergency capabilities through any legacy role", () => {
+    for (const role of ["OWNER", "ADMIN", "PUBLISHER", "VIEWER"] as const) {
+      expect(
+        evaluate({
+          role,
+          capability: CAPABILITIES.emergencyActivate,
+          grants: [
+            scopedGrant({
+              capability: CAPABILITIES.emergencyActivate as Capability,
+            }),
+          ],
+        }),
+      ).toMatchObject({ allowed: false, reason: "ROLE_CEILING_DENIED" });
+    }
   });
 });

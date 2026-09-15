@@ -4,6 +4,14 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Add the deny-by-default scoped-authorization schema and pure policy
+  foundation: tenant-bound flat screen groups, exact organization/location/
+  group/screen grant shapes, a closed non-emergency capability vocabulary,
+  role ceilings, all-target evaluation, and deterministic scope evidence. A
+  database safety latch keeps every organization in `LEGACY` mode; no grants
+  are backfilled or enforced yet, and this does not complete the scoped-access
+  release gate.
+
 - Replace direct ordinary schedule publication with an immutable four-step
   release-candidate workflow: create, submit, independently approve, and
   publish. Candidate content, schedule, and organization-wide target snapshots

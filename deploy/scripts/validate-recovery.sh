@@ -386,6 +386,12 @@ INSERT INTO "Location" ("id", "organizationId", "name", "createdAt", "updatedAt"
 VALUES ('recovery-location', 'recovery-org', 'Recovery location', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Screen" ("id", "organizationId", "name", "location", "locationId", "status", "orientation", "resolution", "tags", "createdAt", "updatedAt")
 VALUES ('recovery-screen', 'recovery-org', 'Recovery display', 'CI fixture', 'recovery-location', 'OFFLINE', 'LANDSCAPE', '1920x1080', ARRAY['recovery'], CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "ScreenGroup" ("id", "organizationId", "name", "createdAt", "updatedAt")
+VALUES ('recovery-screen-group', 'recovery-org', 'Recovery group', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "ScreenGroupMember" ("organizationId", "groupId", "screenId", "createdAt")
+VALUES ('recovery-org', 'recovery-screen-group', 'recovery-screen', CURRENT_TIMESTAMP);
+INSERT INTO "AccessGrant" ("id", "organizationId", "subjectUserId", "subjectMembershipId", "capability", "scopeType", "screenGroupId", "createdByUserId", "createdAt")
+VALUES ('recovery-access-grant', 'recovery-org', 'recovery-user', 'recovery-membership', 'screen.read', 'SCREEN_GROUP', 'recovery-screen-group', 'recovery-user', CURRENT_TIMESTAMP);
 INSERT INTO "DeviceKeyTombstone" ("keyId", "firstSeenAt")
 VALUES (repeat('k', 43), CURRENT_TIMESTAMP);
 INSERT INTO "DeviceCredential" ("id", "organizationId", "screenId", "liveScreenId", "liveScreenOrganizationId", "keyId", "publicKeySpki", "algorithm", "securityLevel", "createdAt")
@@ -725,6 +731,9 @@ JOIN \"User\" u ON u.id = m.\"userId\"
 JOIN \"UserSession\" us ON us.\"organizationId\" = m.\"organizationId\" AND us.\"userId\" = m.\"userId\" AND us.\"authenticationEpoch\" = u.\"authenticationEpoch\" AND us.\"authorizationEpoch\" = m.\"authorizationEpoch\"
 JOIN \"Location\" l ON l.\"organizationId\" = o.id
 JOIN \"Screen\" s ON s.\"organizationId\" = o.id
+JOIN \"ScreenGroupMember\" sgm ON sgm.\"organizationId\" = o.id AND sgm.\"screenId\" = s.id
+JOIN \"ScreenGroup\" sg ON sg.id = sgm.\"groupId\" AND sg.\"organizationId\" = o.id
+JOIN \"AccessGrant\" ag ON ag.\"organizationId\" = o.id AND ag.\"subjectUserId\" = m.\"userId\" AND ag.\"subjectMembershipId\" = m.id AND ag.\"screenGroupId\" = sg.id
 JOIN \"PairingCode\" pc ON pc.\"organizationId\" = o.id AND pc.\"targetScreenId\" = s.id AND pc.\"authorizedByUserId\" = u.id AND pc.\"authorizedByMembershipId\" = m.id AND pc.\"authorizedByAuthenticationEpoch\" = u.\"authenticationEpoch\" AND pc.\"authorizedByAuthorizationEpoch\" = m.\"authorizationEpoch\"
 JOIN \"PairingAttempt\" pa ON pa.\"organizationId\" = o.id AND pa.\"pairingCodeId\" = pc.id
 JOIN \"DeviceCredential\" dc ON dc.id = pa.\"boundCredentialId\" AND dc.\"organizationId\" = pa.\"organizationId\" AND dc.\"liveScreenId\" = s.id AND dc.\"liveScreenOrganizationId\" = o.id
@@ -744,6 +753,7 @@ JOIN \"ReleaseCandidatePublication\" rcp ON rcp.\"candidateId\" = rc.id AND rcp.
 JOIN \"AuditEvent\" ae ON ae.\"organizationId\" = o.id AND ae.\"actorUserId\" = u.id AND ae.\"entityId\" = pr.id
 JOIN \"IdempotencyRecord\" ir ON ir.\"organizationId\" = o.id AND ir.\"actorUserId\" = u.id
 WHERE o.id = 'recovery-org'
+  AND o.\"authorizationMode\" = 'LEGACY'
   AND us.\"tokenHash\" = repeat('c', 64)
   AND s.\"locationId\" = l.id
   AND l.name = 'Recovery location'
@@ -794,6 +804,9 @@ SELECT (SELECT count(*) FROM \"ReleaseCandidate\" WHERE \"organizationId\"='reco
      + (SELECT count(*) FROM \"PlaylistItem\" WHERE \"organizationId\"='recovery-org')
      + (SELECT count(*) FROM \"MediaAsset\" WHERE \"organizationId\"='recovery-org')
      + (SELECT count(*) FROM \"MembershipAttribution\" WHERE \"organizationId\"='recovery-org')
+     + (SELECT count(*) FROM \"AccessGrant\" WHERE \"organizationId\"='recovery-org')
+     + (SELECT count(*) FROM \"ScreenGroupMember\" WHERE \"organizationId\"='recovery-org')
+     + (SELECT count(*) FROM \"ScreenGroup\" WHERE \"organizationId\"='recovery-org')
      + (SELECT count(*) FROM \"Screen\" WHERE \"organizationId\"='recovery-org')
      + (SELECT count(*) FROM \"PairingAttempt\" WHERE \"organizationId\"='recovery-org')
      + (SELECT count(*) FROM \"DeviceCredential\" WHERE \"organizationId\"='recovery-org')

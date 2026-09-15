@@ -2,7 +2,11 @@
 
 ## Status
 
-**Design proposal — not fully implemented or approved.** Ordinary release
+**Partially implemented design — not approved.** The database now has additive,
+tenant-constrained flat screen-group and access-grant records, and a pure
+deny-by-default evaluator implements role ceilings plus exact all-target scope
+coverage. A database safety latch keeps every organization in `LEGACY`; grants
+are not backfilled, loaded by runtime stores, exposed, or enforced. Ordinary release
 publication now uses immutable candidates and a different-person approval,
 while publication and withdrawal use a closed, deny-by-default capability
 adapter backed by current organization membership. Only `OWNER`/`ADMIN` may

@@ -87,11 +87,13 @@ downstream disconnect destroys the upstream object stream.
 
 ## Security and scope
 
-- Locations are stable, tenant-bound administrative classifications. Existing
-  screen location labels remain compatible, and assigning a classification is
-  optional. This foundation does not add user grants, filter resources, or
-  change effective organization-role authorization; locations must not yet be
-  treated as authorization scopes.
+- Locations are stable, tenant-bound administrative classifications. The
+  database also contains additive tenant-constrained screen-group and access-
+  grant foundations, and the policy library can evaluate exact all-target
+  scope coverage under a legacy-role ceiling. A database safety latch keeps
+  every organization in `LEGACY` mode: grants are not backfilled, queried, or
+  enforced, resources are not filtered, and these records must not yet be
+  treated as effective authorization.
 
 - OWNER/ADMIN control screens; PUBLISHER may manage ordinary content and
   schedules; VIEWER is read-only. No legacy role grants emergency activation or

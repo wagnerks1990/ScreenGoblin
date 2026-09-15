@@ -122,6 +122,15 @@ identity-administration routes currently expose the internal lifecycle methods.
 External IdP, SSO, MFA, and step-up authentication remain separate
 pre-production requirements.
 
+The database and shared policy library contain an additive scoped-
+authorization foundation: tenant-constrained flat screen groups, exact grant
+scope shapes, a closed non-emergency grant vocabulary, role ceilings, and
+deterministic all-target evaluation. A database constraint deliberately keeps
+all organizations in `LEGACY` mode. Runtime stores and routes do not load or
+enforce these grants, no compatibility grants are backfilled, and no resource
+list is filtered by them. This groundwork is not an effective least-privilege
+control or completion of the authorization gate.
+
 Published releases and release assignments reference guarded, tenant-scoped
 membership-attribution tombstones instead of live memberships. Removing a
 creator can therefore revoke sessions and enrollment authority without

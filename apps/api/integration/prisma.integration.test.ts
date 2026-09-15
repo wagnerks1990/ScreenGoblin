@@ -546,6 +546,224 @@ afterAll(async () => {
 });
 
 describe("PrismaStore PostgreSQL integration", () => {
+  it("keeps the scoped-authorization foundation tenant-bound and latched to legacy", async () => {
+    const organization = await createOrganization("scoped-foundation");
+    const foreignOrganization = await createOrganization(
+      "scoped-foundation-foreign",
+    );
+    const actor = await createUser(
+      `scoped-foundation-${randomUUID()}@example.test`,
+    );
+    const membership = await prisma.membership.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        role: "PUBLISHER",
+      },
+    });
+    const foreignMembership = await prisma.membership.create({
+      data: {
+        organizationId: foreignOrganization.id,
+        userId: actor.id,
+        role: "PUBLISHER",
+      },
+    });
+    const [screen, foreignScreen] = await Promise.all([
+      prisma.screen.create({
+        data: { organizationId: organization.id, name: "Scoped screen" },
+      }),
+      prisma.screen.create({
+        data: {
+          organizationId: foreignOrganization.id,
+          name: "Foreign screen",
+        },
+      }),
+    ]);
+    const group = await prisma.screenGroup.create({
+      data: { organizationId: organization.id, name: "Lobby group" },
+    });
+    await prisma.screenGroupMember.create({
+      data: {
+        organizationId: organization.id,
+        groupId: group.id,
+        screenId: screen.id,
+      },
+    });
+    await expect(
+      prisma.accessGrant.create({
+        data: {
+          organizationId: organization.id,
+          subjectUserId: actor.id,
+          createdByUserId: actor.id,
+          capability: "release.publish",
+          scopeType: "SCREEN_GROUP",
+          screenGroupId: group.id,
+        },
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    const grant = await prisma.accessGrant.create({
+      data: {
+        organizationId: organization.id,
+        subjectUserId: actor.id,
+        subjectMembershipId: membership.id,
+        createdByUserId: actor.id,
+        capability: "release.publish",
+        scopeType: "SCREEN_GROUP",
+        screenGroupId: group.id,
+      },
+    });
+
+    expect(
+      await prisma.organization.findUniqueOrThrow({
+        where: { id: organization.id },
+        select: { authorizationMode: true },
+      }),
+    ).toEqual({ authorizationMode: "LEGACY" });
+    await expect(
+      prisma.organization.update({
+        where: { id: organization.id },
+        data: { authorizationMode: "SHADOW" },
+      }),
+    ).rejects.toMatchObject({ code: "P2004" });
+    await expect(
+      prisma.screenGroupMember.create({
+        data: {
+          organizationId: organization.id,
+          groupId: group.id,
+          screenId: foreignScreen.id,
+        },
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    await expect(
+      prisma.accessGrant.create({
+        data: {
+          organizationId: organization.id,
+          subjectUserId: actor.id,
+          subjectMembershipId: membership.id,
+          createdByUserId: actor.id,
+          capability: "emergency.activate",
+          scopeType: "ORGANIZATION",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2004" });
+    await expect(
+      prisma.accessGrant.create({
+        data: {
+          organizationId: organization.id,
+          subjectUserId: actor.id,
+          subjectMembershipId: foreignMembership.id,
+          createdByUserId: actor.id,
+          capability: "release.withdraw",
+          scopeType: "ORGANIZATION",
+        },
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    await expect(
+      prisma.accessGrant.create({
+        data: {
+          organizationId: organization.id,
+          subjectUserId: actor.id,
+          subjectMembershipId: membership.id,
+          createdByUserId: actor.id,
+          capability: "release.publish",
+          scopeType: "SCREEN",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2004" });
+    await expect(
+      prisma.accessGrant.create({
+        data: {
+          organizationId: organization.id,
+          subjectUserId: actor.id,
+          subjectMembershipId: membership.id,
+          createdByUserId: actor.id,
+          capability: grant.capability,
+          scopeType: grant.scopeType,
+          screenGroupId: group.id,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
+    await expect(
+      prisma.accessGrant.update({
+        where: { id: grant.id },
+        data: { capability: "release.withdraw" },
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    await expect(
+      prisma.accessGrant.update({
+        where: { id: grant.id },
+        data: { scopeType: "ORGANIZATION", screenGroupId: null },
+      }),
+    ).rejects.toBeInstanceOf(Error);
+
+    await prisma.membership.delete({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+    });
+    await expect(
+      prisma.accessGrant.findUniqueOrThrow({ where: { id: grant.id } }),
+    ).resolves.toMatchObject({
+      subjectMembershipId: null,
+      revokedAt: expect.any(Date),
+    });
+    const replacementMembership = await prisma.membership.create({
+      data: {
+        organizationId: organization.id,
+        userId: actor.id,
+        role: "PUBLISHER",
+      },
+    });
+    await expect(
+      prisma.accessGrant.update({
+        where: { id: grant.id },
+        data: { subjectMembershipId: replacementMembership.id },
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    await expect(
+      prisma.accessGrant.update({
+        where: { id: grant.id },
+        data: { revokedAt: null },
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    await expect(
+      prisma.accessGrant.create({
+        data: {
+          organizationId: organization.id,
+          subjectUserId: actor.id,
+          subjectMembershipId: replacementMembership.id,
+          createdByUserId: actor.id,
+          capability: grant.capability,
+          scopeType: grant.scopeType,
+          screenGroupId: group.id,
+        },
+      }),
+    ).resolves.toMatchObject({
+      subjectMembershipId: replacementMembership.id,
+    });
+    await expect(
+      prisma.screenGroup.delete({ where: { id: group.id } }),
+    ).rejects.toBeInstanceOf(Error);
+
+    await prisma.organization.delete({ where: { id: organization.id } });
+    await expect(
+      Promise.all([
+        prisma.screenGroup.count({
+          where: { organizationId: organization.id },
+        }),
+        prisma.screenGroupMember.count({
+          where: { organizationId: organization.id },
+        }),
+        prisma.accessGrant.count({
+          where: { organizationId: organization.id },
+        }),
+      ]),
+    ).resolves.toEqual([0, 0, 0]);
+  });
+
   it("bounds audit rows and preserves deterministic equal-time reads", async () => {
     const organization = await createOrganization("audit-bounds");
     const createdAt = new Date("2026-09-12T12:00:00.000Z");
