@@ -9,6 +9,10 @@ import {
 import { randomToken, sha256 } from "../src/utils/crypto.js";
 import { hasCapability } from "../src/authorization/policy.js";
 import { evaluateScopedAuthorization } from "../src/authorization/scoped.js";
+import {
+  COMPATIBILITY_GRANT_CAPABILITIES,
+  compatibilityGrantId,
+} from "../src/authorization/compatibility.js";
 import type { Role } from "../src/domain/types.js";
 import { MemoryStore } from "../src/store/memory.js";
 
@@ -79,6 +83,59 @@ async function releaseFixture(role: Role) {
 }
 
 describe("release capability policy", () => {
+  it("keeps compatibility grants equal to every grantable legacy ceiling", () => {
+    const excluded = new Set<Capability>([
+      CAPABILITIES.authorizationManage,
+      CAPABILITIES.emergencyActivate,
+      CAPABILITIES.emergencyClear,
+    ]);
+    for (const role of ["OWNER", "ADMIN", "PUBLISHER", "VIEWER"] as const) {
+      const expected = Object.values(CAPABILITIES).filter(
+        (capability) =>
+          !excluded.has(capability) && hasCapability(role, capability),
+      );
+      expect([...COMPATIBILITY_GRANT_CAPABILITIES[role]].sort()).toEqual(
+        expected.sort(),
+      );
+    }
+  });
+
+  it("creates bounded deterministic compatibility grant identifiers", () => {
+    const first = compatibilityGrantId(
+      "organization-å",
+      "membership-ß",
+      7,
+      CAPABILITIES.releasePublish,
+    );
+    expect(first).toMatch(/^compat-v1:[0-9a-f]{64}$/);
+    expect(first).toBe(
+      compatibilityGrantId(
+        "organization-å",
+        "membership-ß",
+        7,
+        CAPABILITIES.releasePublish,
+      ),
+    );
+    expect(
+      compatibilityGrantId(
+        "organization-å",
+        "membership-ß",
+        8,
+        CAPABILITIES.releasePublish,
+      ),
+    ).not.toBe(first);
+    expect(
+      compatibilityGrantId(
+        "upgrade-enrollment-org",
+        "upgrade-attribution-membership-ß",
+        0,
+        CAPABILITIES.releasePublish,
+      ),
+    ).toBe(
+      "compat-v1:eb14738b547e26112db9f97321f7b884449e99ae2a8c08f05564305d0e706770",
+    );
+  });
+
   it.each([
     ["OWNER", true],
     ["ADMIN", true],

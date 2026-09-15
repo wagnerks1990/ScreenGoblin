@@ -91,9 +91,11 @@ downstream disconnect destroys the upstream object stream.
   database also contains additive tenant-constrained screen-group and access-
   grant foundations, and the policy library can evaluate exact all-target
   scope coverage under a legacy-role ceiling. A database safety latch keeps
-  every organization in `LEGACY` mode: grants are not backfilled, queried, or
-  enforced, resources are not filtered, and these records must not yet be
-  treated as effective authorization.
+  every organization in `LEGACY` mode. Versioned, system-attributed
+  organization-scope compatibility grants are exact-membership backfilled and
+  maintained on role changes, but request-time stores do not query or enforce
+  them, resources are not filtered, and these records must not yet be treated
+  as effective authorization.
 
 - OWNER/ADMIN control screens; PUBLISHER may manage ordinary content and
   schedules; VIEWER is read-only. No legacy role grants emergency activation or

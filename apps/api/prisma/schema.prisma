@@ -97,6 +97,11 @@ enum AuthorizationScopeType {
   SCREEN
 }
 
+enum AccessGrantCreatorKind {
+  USER
+  SYSTEM
+}
+
 model Organization {
   id                     String                  @id @default(cuid())
   name                   String
@@ -330,11 +335,13 @@ model AccessGrant {
   startsAt            DateTime               @default(now())
   expiresAt           DateTime?
   revokedAt           DateTime?
-  createdByUserId     String
+  creatorKind         AccessGrantCreatorKind @default(USER)
+  createdByUserId     String?
+  createdBySystemKey  String?
   createdAt           DateTime               @default(now())
   organization        Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   subject             MembershipAttribution  @relation("AccessGrantSubjectAttribution", fields: [organizationId, subjectUserId], references: [organizationId, userId], onDelete: NoAction)
-  createdBy           MembershipAttribution  @relation("AccessGrantCreatorAttribution", fields: [organizationId, createdByUserId], references: [organizationId, userId], onDelete: NoAction)
+  createdBy           MembershipAttribution? @relation("AccessGrantCreatorAttribution", fields: [organizationId, createdByUserId], references: [organizationId, userId], onDelete: NoAction)
   location            Location?              @relation(fields: [locationId, organizationId], references: [id, organizationId], onDelete: NoAction)
   screenGroup         ScreenGroup?           @relation(fields: [screenGroupId, organizationId], references: [id, organizationId], onDelete: NoAction)
   screen              Screen?                @relation(fields: [screenId, organizationId], references: [id, organizationId], onDelete: NoAction)

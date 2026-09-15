@@ -4,12 +4,20 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Add an idempotent, exact-membership compatibility-grant backfill with
+  explicit system provenance, bounded deterministic identifiers, role-change
+  rebundling, and no bootstrap epoch/session changes. The database remains
+  latched to `LEGACY`, and request-time grant loading/enforcement remains off.
+- Order logout principal and session locks consistently with membership
+  mutation so concurrent logout and removal complete without a database
+  deadlock while retaining transactional revocation and audit evidence.
+
 - Add the deny-by-default scoped-authorization schema and pure policy
   foundation: tenant-bound flat screen groups, exact organization/location/
   group/screen grant shapes, a closed non-emergency capability vocabulary,
   role ceilings, all-target evaluation, and deterministic scope evidence. A
-  database safety latch keeps every organization in `LEGACY` mode; no grants
-  are backfilled or enforced yet, and this does not complete the scoped-access
+  database safety latch keeps every organization in `LEGACY` mode; grants are
+  not enforced yet, and this does not complete the scoped-access
   release gate.
 
 - Replace direct ordinary schedule publication with an immutable four-step

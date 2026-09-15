@@ -612,6 +612,50 @@ describe("PrismaStore PostgreSQL integration", () => {
         screenGroupId: group.id,
       },
     });
+    const systemGrant = await prisma.accessGrant.create({
+      data: {
+        organizationId: organization.id,
+        subjectUserId: actor.id,
+        subjectMembershipId: membership.id,
+        creatorKind: "SYSTEM",
+        createdBySystemKey: "legacy-role-backfill-v1",
+        capability: "release.withdraw",
+        scopeType: "SCREEN",
+        screenId: screen.id,
+      },
+    });
+    await expect(
+      prisma.accessGrant.create({
+        data: {
+          organizationId: organization.id,
+          subjectUserId: actor.id,
+          subjectMembershipId: membership.id,
+          creatorKind: "SYSTEM",
+          capability: "release.approve",
+          scopeType: "ORGANIZATION",
+        },
+      }),
+    ).rejects.toThrow(/AccessGrant_creator_shape/);
+    await expect(
+      prisma.accessGrant.create({
+        data: {
+          organizationId: organization.id,
+          subjectUserId: actor.id,
+          subjectMembershipId: membership.id,
+          creatorKind: "USER",
+          createdByUserId: actor.id,
+          createdBySystemKey: "legacy-role-backfill-v1",
+          capability: "release.approve",
+          scopeType: "ORGANIZATION",
+        },
+      }),
+    ).rejects.toThrow(/AccessGrant_creator_shape/);
+    await expect(
+      prisma.accessGrant.update({
+        where: { id: systemGrant.id },
+        data: { createdBySystemKey: "changed-system" },
+      }),
+    ).rejects.toBeInstanceOf(Error);
 
     expect(
       await prisma.organization.findUniqueOrThrow({
@@ -4313,6 +4357,29 @@ describe("PrismaStore PostgreSQL integration", () => {
         },
       }),
     ).resolves.toMatchObject({ role: "OWNER", authorizationEpoch: 2 });
+    await expect(
+      prisma.accessGrant.count({
+        where: {
+          organizationId: alpha.id,
+          subjectUserId: actor.id,
+          creatorKind: "SYSTEM",
+          createdBySystemKey: "legacy-role-backfill-v1",
+          scopeType: "ORGANIZATION",
+          revokedAt: null,
+        },
+      }),
+    ).resolves.toBe(13);
+    await expect(
+      prisma.accessGrant.count({
+        where: {
+          organizationId: alpha.id,
+          subjectUserId: actor.id,
+          creatorKind: "SYSTEM",
+          createdBySystemKey: "legacy-role-backfill-v1",
+          revokedAt: { not: null },
+        },
+      }),
+    ).resolves.toBe(6);
 
     const betaAfterResetHash = "6".repeat(64);
     await expect(

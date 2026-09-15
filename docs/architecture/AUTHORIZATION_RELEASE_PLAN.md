@@ -5,8 +5,10 @@
 **Partially implemented design — not approved.** The database now has additive,
 tenant-constrained flat screen-group and access-grant records, and a pure
 deny-by-default evaluator implements role ceilings plus exact all-target scope
-coverage. A database safety latch keeps every organization in `LEGACY`; grants
-are not backfilled, loaded by runtime stores, exposed, or enforced. Ordinary release
+coverage. A database safety latch keeps every organization in `LEGACY`;
+system-attributed organization-scope compatibility grants now mirror the
+non-emergency legacy role ceiling, but they are not loaded by request-time
+stores, exposed, or enforced. Ordinary release
 publication now uses immutable candidates and a different-person approval,
 while publication and withdrawal use a closed, deny-by-default capability
 adapter backed by current organization membership. Only `OWNER`/`ADMIN` may
@@ -52,7 +54,13 @@ Unknown capabilities fail closed. Capabilities should be referenced through shar
 | `PUBLISHER`  | Content editing plus candidate create/submit/publish capabilities, but no approval                           | No longer organization-wide after enforced scoped grants are established                                      |
 | `VIEWER`     | Read-only content, schedule, screen, fleet health within assigned scopes                                     | No mutations                                                                                                  |
 
-The migration must materialize explicit grants equivalent to intended existing access before enforcement. It must not infer emergency, destructive fleet, or cross-location authority from legacy roles.
+The compatibility migration materializes organization-scope grants equivalent
+to current non-emergency access, binds them to exact Membership instances, and
+attributes the migration to `legacy-role-backfill-v1` rather than a human
+owner. The bootstrap does not change authorization epochs or sessions. Later
+role changes revoke and replace only this system bundle inside the existing
+epoch/session-invalidating transaction. It does not infer emergency or
+`authorization.manage` authority.
 
 ## Resource scopes and grants
 
@@ -203,7 +211,7 @@ without removing fields until the oldest supported console/player is migrated.
 
 ## Shadow-to-enforced rollout
 
-1. **Schema foundation:** introduce scope/release tables, tenant composite constraints, idempotency and outbox. First-class Location records and optional screen classification are implemented with no authorization behavior change; per-user grants and filtering remain unimplemented. Backfill and verify with no behavior change.
+1. **Schema foundation:** introduce scope/release tables, tenant composite constraints, idempotency and outbox. First-class Location records, optional screen classification, and exact-membership system compatibility grants are implemented with no authorization behavior change. The compatibility rows are organization-wide migration input; custom least-privilege administration, request-time grant loading, and filtering remain unimplemented.
 2. **Policy shadow:** compute the proposed capability decision beside the legacy role decision. Enforce legacy result, record privacy-safe mismatch metrics with decision IDs, and alert on unexpected grants/denials.
 3. **Grant preview:** expose administrator read-only effective-access reports. Have organization owners validate publisher/viewer scopes; do not auto-grant emergency or destructive fleet capabilities.
 4. **Dual-write releases:** ordinary publishing creates immutable records while existing delivery remains compatible. Compare generated manifests/digests and repair transaction boundaries.

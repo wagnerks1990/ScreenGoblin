@@ -1,6 +1,11 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { hash } from "bcryptjs";
+import {
+  COMPATIBILITY_GRANT_SYSTEM_KEY,
+  compatibilityGrantCapabilities,
+  compatibilityGrantId,
+} from "../src/authorization/compatibility.js";
 const prisma = new PrismaClient();
 const required = (name: string) => {
   const value = process.env[name]?.trim();
@@ -49,15 +54,39 @@ if (existing) {
     `Bootstrap owner ${email} already exists; no credentials changed.`,
   );
 } else {
-  await prisma.user.create({
-    data: {
-      email,
-      name: administratorName,
-      passwordHash,
-      memberships: {
-        create: { organizationId: organization.id, role: "OWNER" },
+  await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: {
+        email,
+        name: administratorName,
+        passwordHash,
+        memberships: {
+          create: { organizationId: organization.id, role: "OWNER" },
+        },
       },
-    },
+      include: { memberships: true },
+    });
+    const membership = created.memberships.find(
+      (candidate) => candidate.organizationId === organization.id,
+    );
+    if (!membership) throw new Error("Bootstrap membership was not created");
+    await tx.accessGrant.createMany({
+      data: compatibilityGrantCapabilities("OWNER").map((capability) => ({
+        id: compatibilityGrantId(
+          organization.id,
+          membership.id,
+          membership.authorizationEpoch,
+          capability,
+        ),
+        organizationId: organization.id,
+        subjectUserId: created.id,
+        subjectMembershipId: membership.id,
+        capability,
+        scopeType: "ORGANIZATION",
+        creatorKind: "SYSTEM",
+        createdBySystemKey: COMPATIBILITY_GRANT_SYSTEM_KEY,
+      })),
+    });
   });
   console.log(`Created bootstrap organization owner ${email}.`);
 }
