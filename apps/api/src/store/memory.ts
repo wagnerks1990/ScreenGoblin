@@ -29,6 +29,9 @@ import type {
   ScreenEnrollmentRequestResult,
   PlaylistRecord,
   PublishedReleaseRecord,
+  ReleaseCandidateIdempotencyInput,
+  ReleaseCandidateRecord,
+  ReleaseCandidateResult,
   ReleaseAssignmentRecord,
   ReleaseAuditContext,
   ReleasePublicationPolicy,
@@ -55,6 +58,7 @@ import {
   DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
   LOGIN_FAILURE_RETENTION_MS,
+  RELEASE_CANDIDATE_RESPONSE_RETENTION_MS,
 } from "../domain/types.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
 import {
@@ -63,8 +67,11 @@ import {
   canonicalReleaseSnapshot,
   canonicalUtcInstant,
   hasValidStoredAssignmentDigest,
+  hasValidStoredReleaseDigest,
   ReleaseSnapshotError,
   releaseSnapshotDigest,
+  canonicalReleaseCandidateSnapshot,
+  releaseCandidateDigest,
 } from "../releases/canonical.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { mediaPublicationFailure } from "../utils/media-policy.js";
@@ -78,6 +85,7 @@ const id = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
 
 export class MemoryStore implements DataStore {
+  constructor() {}
   users: SessionUser[] = [];
   userSessions: UserSessionRecord[] = [];
   loginFailures: LoginFailureRecord[] = [];
@@ -88,6 +96,16 @@ export class MemoryStore implements DataStore {
   schedules: ScheduleRecord[] = [];
   releases: PublishedReleaseRecord[] = [];
   releaseAssignments: ReleaseAssignmentRecord[] = [];
+  releaseCandidates: ReleaseCandidateRecord[] = [];
+  releaseCandidateIdempotencyRecords: Array<{
+    organizationId: string;
+    operation: "create" | "submit" | "approve" | "publish";
+    keyHash: string;
+    actorUserId: string;
+    requestDigestSha256: string;
+    expiresAt: string;
+    response?: ReleaseCandidateRecord;
+  }> = [];
   idempotencyRecords: SchedulePublicationIdempotencyRecord[] = [];
   screenEnrollmentIdempotencyRecords: Array<{
     operation: "create" | "activate";
@@ -131,6 +149,18 @@ export class MemoryStore implements DataStore {
   }
   private compactExpiredIdempotencyResponses(timestamp: string) {
     for (const record of this.idempotencyRecords
+      .filter(
+        (candidate) =>
+          candidate.response !== undefined && candidate.expiresAt <= timestamp,
+      )
+      .sort(
+        (a, b) =>
+          a.expiresAt.localeCompare(b.expiresAt) ||
+          a.keyHash.localeCompare(b.keyHash),
+      )
+      .slice(0, DATABASE_MAINTENANCE_BATCH_SIZE))
+      delete record.response;
+    for (const record of this.releaseCandidateIdempotencyRecords
       .filter(
         (candidate) =>
           candidate.response !== undefined && candidate.expiresAt <= timestamp,
@@ -2700,6 +2730,642 @@ export class MemoryStore implements DataStore {
     );
     return n !== this.schedules.length;
   }
+  private releaseCandidateReplay(
+    org: string,
+    operation: "create" | "submit" | "approve" | "publish",
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+    timestamp: string,
+  ): ReleaseCandidateResult | undefined {
+    const existing = this.releaseCandidateIdempotencyRecords.find(
+      (record) =>
+        record.organizationId === org &&
+        record.operation === operation &&
+        record.keyHash === idempotency.keyHash,
+    );
+    if (!existing) return undefined;
+    if (
+      existing.actorUserId !== audit.actorUserId ||
+      existing.requestDigestSha256 !== idempotency.requestDigestSha256
+    )
+      return { completed: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+    if (existing.expiresAt <= timestamp)
+      return { completed: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
+    if (!existing.response)
+      return { completed: false, reason: "IDEMPOTENCY_KEY_EXPIRED" };
+    const live = this.releaseCandidates.find(
+      (candidate) =>
+        candidate.organizationId === org &&
+        candidate.id === existing.response!.id,
+    );
+    const expectedState = {
+      create: "DRAFT",
+      submit: "IN_REVIEW",
+      approve: "APPROVED",
+      publish: "PUBLISHED",
+    } as const;
+    if (
+      !live ||
+      existing.response.organizationId !== org ||
+      existing.response.state !== expectedState[operation] ||
+      existing.response.digestSha256 !== live.digestSha256 ||
+      !this.hasValidCandidateDigest(live) ||
+      ((operation === "approve" || operation === "publish") &&
+        (!live.approval ||
+          live.approval.candidateDigestSha256 !== live.digestSha256)) ||
+      (operation === "publish" &&
+        (!live.scheduleId || !live.assignmentId || live.state !== "PUBLISHED"))
+    )
+      throw new Error("Idempotent candidate response references are invalid");
+    return {
+      completed: true,
+      candidate: structuredClone(existing.response),
+      replayed: true,
+    };
+  }
+  private rememberReleaseCandidate(
+    org: string,
+    operation: "create" | "submit" | "approve" | "publish",
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+    candidate: ReleaseCandidateRecord,
+    timestamp: string,
+  ) {
+    this.releaseCandidateIdempotencyRecords.push({
+      organizationId: org,
+      operation,
+      keyHash: idempotency.keyHash,
+      actorUserId: audit.actorUserId,
+      requestDigestSha256: idempotency.requestDigestSha256,
+      expiresAt: new Date(
+        Date.parse(timestamp) + RELEASE_CANDIDATE_RESPONSE_RETENTION_MS,
+      ).toISOString(),
+      response: structuredClone(candidate),
+    });
+  }
+  private candidateActor(org: string, userId: string) {
+    return this.users.find(
+      (candidate) =>
+        candidate.id === userId &&
+        candidate.organizationId === org &&
+        !candidate.disabledAt,
+    );
+  }
+  private hasValidCandidateDigest(candidate: ReleaseCandidateRecord) {
+    try {
+      return (
+        candidate.policyVersion === 1 &&
+        candidate.digestSha256 ===
+          releaseCandidateDigest(
+            canonicalReleaseCandidateSnapshot({
+              releaseDigestSha256: candidate.releaseDigestSha256,
+              schedule: candidate.schedule,
+              screenIds: candidate.screenIds,
+              expiresAt: candidate.expiresAt,
+            }),
+          )
+      );
+    } catch {
+      return false;
+    }
+  }
+  async listReleaseCandidates(org: string) {
+    return this.releaseCandidates
+      .filter((candidate) => candidate.organizationId === org)
+      .sort(
+        (left, right) =>
+          right.createdAt.localeCompare(left.createdAt) ||
+          right.id.localeCompare(left.id),
+      )
+      .map((candidate) => structuredClone(candidate));
+  }
+  async getReleaseCandidate(org: string, candidateId: string) {
+    const candidate = this.releaseCandidates.find(
+      (record) => record.organizationId === org && record.id === candidateId,
+    );
+    return candidate ? structuredClone(candidate) : null;
+  }
+  async createReleaseCandidateAndAudit(
+    org: string,
+    data: SchedulePublicationInput & { expiresAt: string },
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult> {
+    if (
+      !/^[0-9a-f]{64}$/.test(idempotency.keyHash) ||
+      !/^[0-9a-f]{64}$/.test(idempotency.requestDigestSha256)
+    )
+      throw new Error("Canonical candidate idempotency hashes are required");
+    const actor = this.candidateActor(org, audit.actorUserId);
+    if (!hasCapability(actor?.role, CAPABILITIES.releaseCandidateCreate))
+      return { completed: false, reason: "FORBIDDEN" };
+    const timestamp = now();
+    const replay = this.releaseCandidateReplay(
+      org,
+      "create",
+      audit,
+      idempotency,
+      timestamp,
+    );
+    if (replay) return replay;
+    if (
+      data.expiresAt <= timestamp ||
+      Date.parse(data.expiresAt) > Date.parse(timestamp) + 7 * 24 * 60 * 60_000
+    )
+      return { completed: false, reason: "EXPIRED" };
+    const expired = this.releaseCandidates
+      .filter(
+        (candidate) =>
+          candidate.organizationId === org &&
+          (candidate.state === "DRAFT" ||
+            candidate.state === "IN_REVIEW" ||
+            candidate.state === "APPROVED") &&
+          Date.parse(candidate.expiresAt) <=
+            Date.parse(timestamp) - RELEASE_CANDIDATE_RESPONSE_RETENTION_MS,
+      )
+      .sort(
+        (left, right) =>
+          left.expiresAt.localeCompare(right.expiresAt) ||
+          left.id.localeCompare(right.id),
+      )
+      .slice(0, 20);
+    if (expired.length > 0) {
+      const expiredIds = new Set(
+        expired.map(({ id: candidateId }) => candidateId),
+      );
+      const releaseIds = new Set(expired.map(({ releaseId }) => releaseId));
+      this.releaseCandidates = this.releaseCandidates.filter(
+        ({ id: candidateId }) => !expiredIds.has(candidateId),
+      );
+      this.releases = this.releases.filter(
+        (release) =>
+          !releaseIds.has(release.id) ||
+          this.releaseCandidates.some(
+            (candidate) => candidate.releaseId === release.id,
+          ) ||
+          this.releaseAssignments.some(
+            (assignment) => assignment.releaseId === release.id,
+          ),
+      );
+      this.auditRecords.push(
+        this.buildAuditRecord({
+          organizationId: org,
+          actorUserId: audit.actorUserId,
+          actorType: "user",
+          action: "release.candidate.expired_pruned",
+          entityType: "release_candidate",
+          metadata: { count: expired.length },
+        }),
+      );
+    }
+    const screenIds = [...new Set(data.screenIds)].sort();
+    if (screenIds.length === 0 || screenIds.length > 1000)
+      return { completed: false, reason: "SCREEN_NOT_FOUND" };
+    if (
+      this.releaseCandidates.filter(
+        (candidate) =>
+          candidate.organizationId === org &&
+          candidate.state !== "PUBLISHED" &&
+          candidate.expiresAt > timestamp,
+      ).length >= 100
+    )
+      return { completed: false, reason: "RELEASE_TOO_LARGE" };
+    if (
+      this.releaseCandidates.filter(
+        (candidate) =>
+          candidate.organizationId === org && candidate.state !== "PUBLISHED",
+      ).length >= 1000
+    )
+      return { completed: false, reason: "RELEASE_TOO_LARGE" };
+    const playlist = this.playlists.find(
+      (candidate) =>
+        candidate.organizationId === org && candidate.id === data.playlistId,
+    );
+    if (!playlist) return { completed: false, reason: "PLAYLIST_NOT_FOUND" };
+    if (
+      screenIds.some(
+        (screenId) =>
+          !this.screens.some(
+            (screen) => screen.organizationId === org && screen.id === screenId,
+          ),
+      )
+    )
+      return { completed: false, reason: "SCREEN_NOT_FOUND" };
+    const assets = playlist.items.flatMap((item) => {
+      const asset = this.media.find(
+        (candidate) =>
+          candidate.organizationId === org && candidate.id === item.assetId,
+      );
+      return asset ? [asset] : [];
+    });
+    if (
+      assets.some(
+        (asset) =>
+          !mediaUrlMatchesAllowedOrigin(asset.url, policy.mediaAllowedOrigins),
+      )
+    )
+      return { completed: false, reason: "ASSET_NOT_ALLOWED" };
+    const mediaFailure = mediaPublicationFailure(assets, new Date(timestamp));
+    if (mediaFailure) return { completed: false, reason: mediaFailure };
+    let releaseSnapshot;
+    try {
+      releaseSnapshot = canonicalReleaseSnapshot(playlist, assets);
+    } catch (error) {
+      if (error instanceof ReleaseSnapshotError)
+        return { completed: false, reason: error.reason };
+      throw error;
+    }
+    const releaseDigestSha256 = releaseSnapshotDigest(releaseSnapshot);
+    let release = this.releases.find(
+      (candidate) =>
+        candidate.organizationId === org &&
+        candidate.digestSha256 === releaseDigestSha256,
+    );
+    if (!release) {
+      release = {
+        id: id(),
+        organizationId: org,
+        sourcePlaylistId: releaseSnapshot.sourcePlaylistId,
+        sourcePlaylistUpdatedAt: releaseSnapshot.sourcePlaylistUpdatedAt,
+        playlistName: releaseSnapshot.playlistName,
+        playlistDescription: releaseSnapshot.playlistDescription,
+        digestSha256: releaseDigestSha256,
+        items: releaseSnapshot.items,
+        createdById: audit.actorUserId,
+        createdAt: timestamp,
+      };
+    }
+    const schedule = {
+      name: data.name,
+      priority: data.priority,
+      startsAt: canonicalUtcInstant(data.startsAt),
+      ...(data.endsAt ? { endsAt: canonicalUtcInstant(data.endsAt) } : {}),
+      timezone: data.timezone,
+      daysOfWeek: [...data.daysOfWeek],
+      ...(data.dailyStartMinutes !== undefined
+        ? { dailyStartMinutes: data.dailyStartMinutes }
+        : {}),
+      ...(data.dailyEndMinutes !== undefined
+        ? { dailyEndMinutes: data.dailyEndMinutes }
+        : {}),
+      enabled: data.enabled,
+    };
+    const snapshot = canonicalReleaseCandidateSnapshot({
+      releaseDigestSha256,
+      schedule,
+      screenIds,
+      expiresAt: data.expiresAt,
+    });
+    const candidate: ReleaseCandidateRecord = {
+      id: id(),
+      organizationId: org,
+      releaseId: release.id,
+      releaseDigestSha256,
+      sourcePlaylistId: data.playlistId,
+      state: "DRAFT",
+      digestSha256: releaseCandidateDigest(snapshot),
+      authorUserId: audit.actorUserId,
+      items: structuredClone(releaseSnapshot.items),
+      schedule: snapshot.schedule,
+      screenIds: snapshot.screenIds,
+      policyVersion: snapshot.policyVersion,
+      expiresAt: snapshot.expiresAt,
+      createdAt: timestamp,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "release.candidate.created",
+      entityType: "release_candidate",
+      entityId: candidate.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        digestSha256: candidate.digestSha256,
+        releaseDigestSha256,
+        screenCount: screenIds.length,
+        policyVersion: candidate.policyVersion,
+      },
+    });
+    if (!this.releases.includes(release)) this.releases.push(release);
+    this.releaseCandidates.push(candidate);
+    this.auditRecords.push(auditRecord);
+    this.rememberReleaseCandidate(
+      org,
+      "create",
+      audit,
+      idempotency,
+      candidate,
+      timestamp,
+    );
+    this.compactExpiredIdempotencyResponses(timestamp);
+    return { completed: true, candidate };
+  }
+  async submitReleaseCandidateAndAudit(
+    org: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult> {
+    return this.transitionReleaseCandidate(
+      org,
+      "submit",
+      candidateId,
+      expectedDigestSha256,
+      audit,
+      idempotency,
+    );
+  }
+  async approveReleaseCandidateAndAudit(
+    org: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult> {
+    return this.transitionReleaseCandidate(
+      org,
+      "approve",
+      candidateId,
+      expectedDigestSha256,
+      audit,
+      idempotency,
+    );
+  }
+  private async transitionReleaseCandidate(
+    org: string,
+    operation: "submit" | "approve",
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult> {
+    if (
+      !/^[0-9a-f]{64}$/.test(expectedDigestSha256) ||
+      !/^[0-9a-f]{64}$/.test(idempotency.keyHash) ||
+      !/^[0-9a-f]{64}$/.test(idempotency.requestDigestSha256)
+    )
+      throw new Error("Canonical candidate hashes are required");
+    const actor = this.candidateActor(org, audit.actorUserId);
+    const capability =
+      operation === "submit"
+        ? CAPABILITIES.releaseCandidateSubmit
+        : CAPABILITIES.releaseApprove;
+    if (!hasCapability(actor?.role, capability))
+      return { completed: false, reason: "FORBIDDEN" };
+    const timestamp = now();
+    const replay = this.releaseCandidateReplay(
+      org,
+      operation,
+      audit,
+      idempotency,
+      timestamp,
+    );
+    if (replay) return replay;
+    const candidate = this.releaseCandidates.find(
+      (record) => record.organizationId === org && record.id === candidateId,
+    );
+    if (!candidate) return { completed: false, reason: "NOT_FOUND" };
+    if (
+      candidate.digestSha256 !== expectedDigestSha256 ||
+      !this.hasValidCandidateDigest(candidate)
+    )
+      return { completed: false, reason: "STALE_DIGEST" };
+    if (candidate.expiresAt <= timestamp) {
+      return { completed: false, reason: "EXPIRED" };
+    }
+    const updated = structuredClone(candidate);
+    if (operation === "submit") {
+      if (candidate.authorUserId !== audit.actorUserId)
+        return { completed: false, reason: "FORBIDDEN" };
+      if (candidate.state !== "DRAFT")
+        return { completed: false, reason: "INVALID_STATE" };
+      updated.state = "IN_REVIEW";
+      updated.submittedAt = timestamp;
+    } else {
+      if (candidate.authorUserId === audit.actorUserId)
+        return { completed: false, reason: "AUTHOR_CANNOT_APPROVE" };
+      if (candidate.state !== "IN_REVIEW")
+        return { completed: false, reason: "INVALID_STATE" };
+      updated.state = "APPROVED";
+      updated.approvedAt = timestamp;
+      updated.approval = {
+        id: id(),
+        organizationId: org,
+        candidateId: candidate.id,
+        candidateDigestSha256: candidate.digestSha256,
+        approverUserId: audit.actorUserId,
+        authenticationEpoch: actor!.authenticationEpoch,
+        authorizationEpoch: actor!.authorizationEpoch,
+        approvedAt: timestamp,
+      };
+    }
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action:
+        operation === "submit"
+          ? "release.candidate.submitted"
+          : "release.candidate.approved",
+      entityType: "release_candidate",
+      entityId: candidate.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: { digestSha256: candidate.digestSha256 },
+    });
+    Object.assign(candidate, updated);
+    this.auditRecords.push(auditRecord);
+    this.rememberReleaseCandidate(
+      org,
+      operation,
+      audit,
+      idempotency,
+      updated,
+      timestamp,
+    );
+    this.compactExpiredIdempotencyResponses(timestamp);
+    return { completed: true, candidate: structuredClone(updated) };
+  }
+  async publishReleaseCandidateAndAudit(
+    org: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult> {
+    if (
+      !/^[0-9a-f]{64}$/.test(expectedDigestSha256) ||
+      !/^[0-9a-f]{64}$/.test(idempotency.keyHash) ||
+      !/^[0-9a-f]{64}$/.test(idempotency.requestDigestSha256)
+    )
+      throw new Error("Canonical candidate hashes are required");
+    const actor = this.candidateActor(org, audit.actorUserId);
+    if (!hasCapability(actor?.role, CAPABILITIES.releasePublish))
+      return { completed: false, reason: "FORBIDDEN" };
+    const timestamp = now();
+    const replay = this.releaseCandidateReplay(
+      org,
+      "publish",
+      audit,
+      idempotency,
+      timestamp,
+    );
+    if (replay) return replay;
+    const candidate = this.releaseCandidates.find(
+      (record) => record.organizationId === org && record.id === candidateId,
+    );
+    if (!candidate) return { completed: false, reason: "NOT_FOUND" };
+    if (
+      candidate.digestSha256 !== expectedDigestSha256 ||
+      !this.hasValidCandidateDigest(candidate)
+    )
+      return { completed: false, reason: "STALE_DIGEST" };
+    if (candidate.expiresAt <= timestamp) {
+      return { completed: false, reason: "EXPIRED" };
+    }
+    if (candidate.state !== "APPROVED" || !candidate.approval)
+      return { completed: false, reason: "INVALID_STATE" };
+    if (candidate.approval.candidateDigestSha256 !== candidate.digestSha256)
+      return { completed: false, reason: "APPROVAL_STALE" };
+    const approver = this.candidateActor(
+      org,
+      candidate.approval.approverUserId,
+    );
+    if (
+      !hasCapability(approver?.role, CAPABILITIES.releaseApprove) ||
+      approver?.authenticationEpoch !==
+        candidate.approval.authenticationEpoch ||
+      approver.authorizationEpoch !== candidate.approval.authorizationEpoch
+    )
+      return { completed: false, reason: "APPROVAL_STALE" };
+    const release = this.releases.find(
+      (record) =>
+        record.organizationId === org && record.id === candidate.releaseId,
+    );
+    if (
+      !release ||
+      release.digestSha256 !== candidate.releaseDigestSha256 ||
+      !hasValidStoredReleaseDigest(release)
+    )
+      return { completed: false, reason: "STALE_DIGEST" };
+    const frozenAssets = release.items.map((item) => item.asset);
+    if (
+      frozenAssets.some(
+        (asset) =>
+          !mediaUrlMatchesAllowedOrigin(asset.url, policy.mediaAllowedOrigins),
+      )
+    )
+      return { completed: false, reason: "ASSET_NOT_ALLOWED" };
+    const mediaFailure = mediaPublicationFailure(
+      frozenAssets,
+      new Date(timestamp),
+    );
+    if (mediaFailure) return { completed: false, reason: mediaFailure };
+    if (
+      candidate.screenIds.some(
+        (screenId) =>
+          !this.screens.some(
+            (screen) => screen.organizationId === org && screen.id === screenId,
+          ),
+      )
+    )
+      return { completed: false, reason: "SCREEN_NOT_FOUND" };
+    const scheduleId = id();
+    const assignmentId = id();
+    const assignmentDigest = assignmentSnapshotDigest(
+      canonicalAssignmentSnapshot({
+        releaseDigestSha256: candidate.releaseDigestSha256,
+        state: "ASSIGNED",
+        schedule: candidate.schedule,
+        screenIds: candidate.screenIds,
+      }),
+    );
+    const schedule: ScheduleRecord = {
+      id: scheduleId,
+      organizationId: org,
+      playlistId: candidate.sourcePlaylistId,
+      ...candidate.schedule,
+      screenIds: [...candidate.screenIds],
+      releaseId: release.id,
+      assignmentId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const assignment: ReleaseAssignmentRecord = {
+      id: assignmentId,
+      organizationId: org,
+      releaseId: release.id,
+      scheduleId,
+      screenIds: [...candidate.screenIds],
+      state: "ASSIGNED",
+      schedule: structuredClone(candidate.schedule),
+      digestSha256: assignmentDigest,
+      createdById: audit.actorUserId,
+      createdAt: timestamp,
+    };
+    const publishedCandidate = {
+      ...structuredClone(candidate),
+      state: "PUBLISHED" as const,
+      publishedAt: timestamp,
+      scheduleId,
+      assignmentId,
+    };
+    const auditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "release.candidate.published",
+      entityType: "release_candidate",
+      entityId: candidate.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        digestSha256: candidate.digestSha256,
+        releaseDigestSha256: candidate.releaseDigestSha256,
+        scheduleId,
+        assignmentId,
+        assignmentDigestSha256: assignmentDigest,
+      },
+    });
+    const releaseAuditRecord = this.buildAuditRecord({
+      organizationId: org,
+      actorUserId: audit.actorUserId,
+      actorType: "user",
+      action: "release.published",
+      entityType: "published_release",
+      entityId: release.id,
+      ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+      ...(audit.requestId ? { requestId: audit.requestId } : {}),
+      metadata: {
+        candidateId: candidate.id,
+        candidateDigestSha256: candidate.digestSha256,
+        digestSha256: candidate.releaseDigestSha256,
+        scheduleId,
+        assignmentId,
+        assignmentDigestSha256: assignmentDigest,
+      },
+    });
+    Object.assign(candidate, publishedCandidate);
+    this.schedules.push(schedule);
+    this.releaseAssignments.push(assignment);
+    this.auditRecords.push(auditRecord);
+    this.auditRecords.push(releaseAuditRecord);
+    this.rememberReleaseCandidate(
+      org,
+      "publish",
+      audit,
+      idempotency,
+      publishedCandidate,
+      timestamp,
+    );
+    this.compactExpiredIdempotencyResponses(timestamp);
+    return { completed: true, candidate: structuredClone(publishedCandidate) };
+  }
   async publishScheduleAndAudit(
     org: string,
     data: SchedulePublicationInput,
@@ -2707,6 +3373,11 @@ export class MemoryStore implements DataStore {
     policy: ReleasePublicationPolicy,
     idempotency: SchedulePublicationIdempotencyInput,
   ): Promise<SchedulePublicationResult> {
+    const directPublicationDisabled: boolean = true;
+    if (directPublicationDisabled)
+      return { published: false, reason: "FORBIDDEN" };
+    /* c8 ignore start -- unreachable legacy implementation retained only as
+       migration reference until the next schema contraction. */
     if (
       !/^[0-9a-f]{64}$/.test(idempotency.keyHash) ||
       !/^[0-9a-f]{64}$/.test(idempotency.requestDigestSha256)
@@ -2955,6 +3626,7 @@ export class MemoryStore implements DataStore {
     });
   }
 
+  /* c8 ignore stop */
   async withdrawScheduleAndAudit(
     org: string,
     scheduleId: string,

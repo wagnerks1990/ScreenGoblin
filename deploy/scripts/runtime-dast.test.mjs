@@ -96,8 +96,45 @@ test("runtime DAST remains pinned, isolated, blocking, and checksum-bound", () =
   assert.match(runtime, /ERROR <class/);
   assert.match(runtime, /grep -Eo/);
   assert.doesNotMatch(runtime, /"\$scan_log" \| LC_ALL/);
-  assert.equal(inventory.surfaces["console-api"].routes.length, 43);
+  assert.equal(inventory.surfaces["console-api"].routes.length, 49);
   assert.equal(inventory.surfaces.player.routes.length, 1);
+  assert.deepEqual(
+    inventory.surfaces["console-api"].routes
+      .filter(({ label }) => label.startsWith("release-candidates-"))
+      .map(({ label, method, template }) => ({ label, method, template })),
+    [
+      {
+        label: "release-candidates-list",
+        method: "GET",
+        template: "/api/v1/release-candidates",
+      },
+      {
+        label: "release-candidates-item",
+        method: "GET",
+        template: "/api/v1/release-candidates/:id",
+      },
+      {
+        label: "release-candidates-create",
+        method: "POST",
+        template: "/api/v1/release-candidates",
+      },
+      {
+        label: "release-candidates-submit",
+        method: "POST",
+        template: "/api/v1/release-candidates/:id/submit",
+      },
+      {
+        label: "release-candidates-approve",
+        method: "POST",
+        template: "/api/v1/release-candidates/:id/approve",
+      },
+      {
+        label: "release-candidates-publish",
+        method: "POST",
+        template: "/api/v1/release-candidates/:id/publish",
+      },
+    ],
+  );
   assert.match(runtime, /TRACE/);
   assert.match(runtime, /malformed-auth/);
   assert.match(runtime, /SHA256SUMS/);

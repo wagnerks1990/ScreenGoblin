@@ -71,7 +71,16 @@ re-enrollment grants, advances the credential generation, and appends the audit
 event in the same transaction. Repeating an already-completed revocation is
 idempotent and does not append a second audit event.
 
-Ordinary release publication and withdrawal use a closed, deny-by-default capability adapter. The API checks the capability at the route boundary, and the transactional store re-evaluates the actor's current organization membership and capability before writing release state or audit history. For compatibility, `OWNER`, `ADMIN`, and `PUBLISHER` currently receive `release.publish` and `release.withdraw`; `VIEWER` receives neither. This adapter does not yet provide resource scopes, custom grants, or reviewer/publisher separation.
+Ordinary release publication and withdrawal use a closed, deny-by-default
+capability adapter. The API checks the exact capability at the route boundary,
+and the transactional store re-evaluates live organization membership and
+authority before writing state or audit history. For compatibility, `OWNER`,
+`ADMIN`, and `PUBLISHER` can create, submit, publish, and withdraw; only `OWNER`
+and `ADMIN` can approve a candidate they did not author. `VIEWER` receives none
+of those capabilities. The approver must differ
+from the candidate author. The publisher may be the author, approver, or a third
+authorized user. This is an interim organization-wide policy, not resource-
+scoped custom grants or MFA/re-authentication.
 
 No public media metadata creation, upload, multipart, or media-ingestion route
 exists. Pre-provisioned internal fixture metadata remains subject to manifest
@@ -91,33 +100,60 @@ Mutable management responses use `Cache-Control: no-store`. Published media may 
 
 ## Ordinary release publication
 
-`POST /schedules` atomically freezes playlist metadata, ordered item and asset
-playback facts, target screen IDs, and the scheduling window into an immutable
-release assignment. It also writes the required audit event in the same
-transaction. The existing schedule response remains compatible and adds
-`releaseId` and `assignmentId`. Repeating an identical active assignment returns
-the existing records. Publication fails without partial records when a source
-or target is missing, the playlist is empty, an asset is expired, unsupported,
-malformed, larger than 128 MiB, outside the exact-origin policy, or the release
-would exceed 512 MiB.
+Direct `POST /schedules` publication is disabled and always returns `410
+DIRECT_PUBLICATION_DISABLED`. Clients must use this sequence, with a distinct
+canonical lowercase UUIDv4 `Idempotency-Key` on every mutation:
 
-Publication requires an `Idempotency-Key` containing a canonical lowercase
-UUIDv4. The server stores only a domain- and organization-bound SHA-256
-fingerprint, never the raw header. A committed retry by the same currently
-authorized actor with the same canonical request returns the original `201`
-schedule body, including after that schedule has been withdrawn; replay never
-creates an assignment or audit event. Reusing the key for another payload or
-actor returns `409 IDEMPOTENCY_KEY_REUSED`. A fresh key represents a deliberate
-new publication intent and may reactivate unchanged content after withdrawal.
-Validation and authorization failures do not consume a key.
+1. `POST /release-candidates` freezes playlist metadata, ordered item and asset
+   playback facts, exact screen IDs, schedule window, policy version, and an
+   `expiresAt` no more than seven days ahead. It returns `201` with a `DRAFT`
+   candidate and its canonical `digestSha256`.
+2. `POST /release-candidates/:id/submit` with that digest moves the author's
+   unchanged candidate to `IN_REVIEW`.
+3. `POST /release-candidates/:id/approve` with the same digest moves it to
+   `APPROVED`. Only a current `OWNER` or `ADMIN` may approve, and the approver
+   must be a different active user from the author.
+4. `POST /release-candidates/:id/publish` with the same digest revalidates the
+   candidate, approval and approver epochs, live authorities, release/assets,
+   and exact targets, then atomically creates the schedule, immutable assignment,
+   publication provenance, and audit record. It returns `PUBLISHED` with
+   `scheduleId` and `assignmentId`.
 
-Response bodies remain replayable for 30 days. Presenting that key after expiry
-compacts its body to a permanent tenant-bound command tombstone; an
-expired key returns `409 IDEMPOTENCY_KEY_EXPIRED` and is never reusable. A
-dormant key can retain an expired response body until it is presented again,
-but tenant deletion removes both ledger and content. A replayed `201` describes
-the historical command result, not current assignment state; clients must read
-current schedule or manifest state after recovery.
+`GET /release-candidates` and `GET /release-candidates/:id` let an authenticated
+member review only its current organization. Responses include the immutable
+ordered item facts needed for a meaningful human decision: asset ID/name,
+kind/MIME, configured source URL, checksum, byte size, optional expiry,
+creation time, item position, and duration. They do not include object-storage
+keys, media capabilities, session/device credentials, or signing material.
+
+Each transition body is exactly `{ "digestSha256": "<64 lowercase hex>" }`.
+Candidate creation uses the former schedule fields plus `expiresAt`. Publication
+fails without partial records when state, digest, approval, actor, source,
+target, media, or expiry policy is invalid. A candidate is immutable except for
+the ordered `DRAFT -> IN_REVIEW -> APPROVED -> PUBLISHED` state transitions.
+
+The server stores only operation-, domain-, and organization-bound key
+fingerprints, never raw idempotency headers. A same-key, same-actor, same-request
+retry returns the exact response snapshot originally committed for that
+operation, even after the candidate advances; it does not rerun or reinterpret
+the transition. Another actor, a changed request, or a compacted/expired key
+returns `409`. Response snapshots are retained for 30 days and then compacted
+to permanent non-reusable tombstones. At most 100 unexpired non-published
+candidates may be active per organization, with at most 1,000 retained
+non-published candidates. Candidate creation garbage-collects bounded batches
+of expired, never-published draft/review/approved candidates only after the
+30-day replay window; published evidence is never removed, and audit events plus
+idempotency tombstones remain after pruning.
+
+The schema migration marks preexisting assignments `approvalRequired=false` so
+they remain playable as explicitly grandfathered history. Every newly assigned
+release requires matching approved-candidate publication provenance. New
+approved assignments also retain the canonical digest expected for their one
+possible withdrawal; the deferred history guard rejects a withdrawal whose
+digest, scalar snapshot, or exact target bindings differ from that predecessor.
+New unapproved `ASSIGNED` inserts fail. Publication atomically writes an exact
+candidate/publication/assignment triangle; deferred composite foreign keys
+reject partial or cross-wired graphs at commit.
 
 `DELETE /schedules/:id` appends an immutable withdrawal assignment and its audit event instead of deleting release history. It is idempotent after the first withdrawal. `GET /schedules` excludes a schedule when its deterministic latest assignment is withdrawn, while retaining its immutable database history. Ordinary device manifests are selected exclusively from frozen release and assignment snapshots; later source edits or deletion attempts cannot rewrite an already published release.
 

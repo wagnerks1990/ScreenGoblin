@@ -141,6 +141,93 @@ export const schedulePublicationKeyHash = (
     )
     .digest("hex");
 
+export interface CanonicalReleaseCandidateSnapshot {
+  schemaVersion: 1;
+  releaseDigestSha256: string;
+  schedule: FrozenScheduleSnapshot;
+  screenIds: string[];
+  policyVersion: 1;
+  expiresAt: string;
+}
+
+export function canonicalReleaseCandidateSnapshot(input: {
+  releaseDigestSha256: string;
+  schedule: FrozenScheduleSnapshot;
+  screenIds: readonly string[];
+  expiresAt: string;
+}): CanonicalReleaseCandidateSnapshot {
+  return {
+    schemaVersion: 1,
+    releaseDigestSha256: input.releaseDigestSha256,
+    schedule: {
+      name: input.schedule.name,
+      priority: input.schedule.priority,
+      startsAt: canonicalUtcInstant(input.schedule.startsAt),
+      ...(input.schedule.endsAt
+        ? { endsAt: canonicalUtcInstant(input.schedule.endsAt) }
+        : {}),
+      timezone: input.schedule.timezone,
+      daysOfWeek: [...new Set(input.schedule.daysOfWeek)].sort((a, b) => a - b),
+      ...(input.schedule.dailyStartMinutes !== undefined
+        ? { dailyStartMinutes: input.schedule.dailyStartMinutes }
+        : {}),
+      ...(input.schedule.dailyEndMinutes !== undefined
+        ? { dailyEndMinutes: input.schedule.dailyEndMinutes }
+        : {}),
+      enabled: input.schedule.enabled,
+    },
+    screenIds: [...new Set(input.screenIds)].sort(),
+    policyVersion: 1,
+    expiresAt: canonicalUtcInstant(input.expiresAt),
+  };
+}
+
+export const releaseCandidateDigest = (
+  snapshot: CanonicalReleaseCandidateSnapshot,
+): string =>
+  createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+
+export const releaseCandidateKeyHash = (
+  organizationId: string,
+  operation: "create" | "submit" | "approve" | "publish",
+  key: string,
+): string =>
+  createHash("sha256")
+    .update(
+      `screengoblin:release-candidate:${operation}:idempotency:v1\0${organizationId}\0${key}`,
+    )
+    .digest("hex");
+
+export const releaseCandidateCommandDigest = (
+  operation: "submit" | "approve" | "publish",
+  candidateId: string,
+  expectedDigestSha256: string,
+): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify({
+        schemaVersion: 1,
+        operation,
+        candidateId,
+        expectedDigestSha256,
+      }),
+    )
+    .digest("hex");
+
+export const releaseCandidateCreateCommandDigest = (
+  input: SchedulePublicationInput & { expiresAt: string },
+): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify({
+        schemaVersion: 1,
+        operation: "create",
+        schedule: canonicalSchedulePublicationRequest(input),
+        expiresAt: canonicalUtcInstant(input.expiresAt),
+      }),
+    )
+    .digest("hex");
+
 export function canonicalStoredReleaseSnapshot(
   release: PublishedReleaseRecord,
 ): CanonicalReleaseSnapshot {

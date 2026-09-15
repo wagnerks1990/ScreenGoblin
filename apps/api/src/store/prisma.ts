@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { CAPABILITIES } from "@screengoblin/contracts";
 import { mediaStorageKey } from "../media/delivery.js";
@@ -35,6 +36,9 @@ import type {
   ScreenEnrollmentRequestResult,
   PlaylistRecord,
   PublishedReleaseRecord,
+  ReleaseCandidateIdempotencyInput,
+  ReleaseCandidateRecord,
+  ReleaseCandidateResult,
   ReleaseAssignmentRecord,
   ReleaseAuditContext,
   ReleasePublicationPolicy,
@@ -59,6 +63,7 @@ import {
   DEVICE_ENROLLMENT_AUTHORITY_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
   LOGIN_FAILURE_RETENTION_MS,
+  RELEASE_CANDIDATE_RESPONSE_RETENTION_MS,
 } from "../domain/types.js";
 import {
   assignmentSnapshotDigest,
@@ -66,8 +71,11 @@ import {
   canonicalReleaseSnapshot,
   canonicalUtcInstant,
   hasValidStoredAssignmentDigest,
+  hasValidStoredReleaseDigest,
   ReleaseSnapshotError,
   releaseSnapshotDigest,
+  canonicalReleaseCandidateSnapshot,
+  releaseCandidateDigest,
 } from "../releases/canonical.js";
 import { hasCapability } from "../authorization/policy.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
@@ -261,37 +269,113 @@ const publishedReleaseDto = (
 
 const releaseAssignmentDto = (
   x: Record<string, unknown>,
-): ReleaseAssignmentRecord => ({
-  id: String(x.id),
-  organizationId: String(x.organizationId),
-  releaseId: String(x.releaseId),
-  scheduleId: String(x.scheduleId),
-  screenIds: ((x.targets ?? []) as Array<{ screenId: string }>)
-    .map((target) => target.screenId)
-    .sort(),
-  state: String(x.state) as ReleaseAssignmentRecord["state"],
-  schedule: {
-    name: String(x.scheduleName),
-    priority: enumLower<ScheduleRecord["priority"]>(String(x.priority)),
-    startsAt: iso(x.startsAt as Date)!,
-    ...(x.endsAt ? { endsAt: iso(x.endsAt as Date) } : {}),
-    timezone: String(x.timezone),
-    daysOfWeek: [...(x.daysOfWeek as number[])],
-    ...(x.dailyStartMinutes != null
-      ? { dailyStartMinutes: Number(x.dailyStartMinutes) }
+): ReleaseAssignmentRecord => {
+  const state = String(x.state);
+  if (state !== "ASSIGNED" && state !== "WITHDRAWN")
+    throw new Error(
+      "Internal release assignment state cannot cross the DTO boundary",
+    );
+  return {
+    id: String(x.id),
+    organizationId: String(x.organizationId),
+    releaseId: String(x.releaseId),
+    scheduleId: String(x.scheduleId),
+    screenIds: ((x.targets ?? []) as Array<{ screenId: string }>)
+      .map((target) => target.screenId)
+      .sort(),
+    state,
+    schedule: {
+      name: String(x.scheduleName),
+      priority: enumLower<ScheduleRecord["priority"]>(String(x.priority)),
+      startsAt: iso(x.startsAt as Date)!,
+      ...(x.endsAt ? { endsAt: iso(x.endsAt as Date) } : {}),
+      timezone: String(x.timezone),
+      daysOfWeek: [...(x.daysOfWeek as number[])],
+      ...(x.dailyStartMinutes != null
+        ? { dailyStartMinutes: Number(x.dailyStartMinutes) }
+        : {}),
+      ...(x.dailyEndMinutes != null
+        ? { dailyEndMinutes: Number(x.dailyEndMinutes) }
+        : {}),
+      enabled: Boolean(x.enabled),
+    },
+    digestSha256: String(x.digestSha256),
+    ...(x.previousAssignmentId
+      ? { previousAssignmentId: String(x.previousAssignmentId) }
       : {}),
-    ...(x.dailyEndMinutes != null
-      ? { dailyEndMinutes: Number(x.dailyEndMinutes) }
+    createdById: String(x.createdById),
+    createdAt: iso(x.createdAt as Date)!,
+  };
+};
+
+const releaseCandidateDto = (
+  x: Record<string, unknown>,
+): ReleaseCandidateRecord => {
+  const approval = x.approval as Record<string, unknown> | null | undefined;
+  const publication = x.publication as
+    Record<string, unknown> | null | undefined;
+  return {
+    id: String(x.id),
+    organizationId: String(x.organizationId),
+    releaseId: String(x.releaseId),
+    releaseDigestSha256: String(
+      (x.release as Record<string, unknown> | undefined)?.digestSha256 ??
+        x.releaseDigestSha256,
+    ),
+    sourcePlaylistId: String(
+      (x.release as Record<string, unknown> | undefined)?.sourcePlaylistId ??
+        x.sourcePlaylistId,
+    ),
+    state: String(x.state) as ReleaseCandidateRecord["state"],
+    digestSha256: String(x.digestSha256),
+    authorUserId: String(x.authorUserId),
+    items: publishedReleaseDto(x.release as Record<string, unknown>).items,
+    schedule: {
+      name: String(x.scheduleName),
+      priority: enumLower<ScheduleRecord["priority"]>(String(x.priority)),
+      startsAt: iso(x.startsAt as Date)!,
+      ...(x.endsAt ? { endsAt: iso(x.endsAt as Date) } : {}),
+      timezone: String(x.timezone),
+      daysOfWeek: [...(x.daysOfWeek as number[])],
+      ...(x.dailyStartMinutes != null
+        ? { dailyStartMinutes: Number(x.dailyStartMinutes) }
+        : {}),
+      ...(x.dailyEndMinutes != null
+        ? { dailyEndMinutes: Number(x.dailyEndMinutes) }
+        : {}),
+      enabled: Boolean(x.enabled),
+    },
+    screenIds: ((x.targets ?? []) as Array<{ screenId: string }>)
+      .map(({ screenId }) => screenId)
+      .sort(),
+    policyVersion: Number(x.policyVersion),
+    expiresAt: iso(x.expiresAt as Date)!,
+    ...(x.submittedAt ? { submittedAt: iso(x.submittedAt as Date) } : {}),
+    ...(x.approvedAt ? { approvedAt: iso(x.approvedAt as Date) } : {}),
+    ...(x.publishedAt ? { publishedAt: iso(x.publishedAt as Date) } : {}),
+    ...(publication
+      ? {
+          scheduleId: String(publication.scheduleId),
+          assignmentId: String(publication.assignmentId),
+        }
       : {}),
-    enabled: Boolean(x.enabled),
-  },
-  digestSha256: String(x.digestSha256),
-  ...(x.previousAssignmentId
-    ? { previousAssignmentId: String(x.previousAssignmentId) }
-    : {}),
-  createdById: String(x.createdById),
-  createdAt: iso(x.createdAt as Date)!,
-});
+    ...(approval
+      ? {
+          approval: {
+            id: String(approval.id),
+            organizationId: String(approval.organizationId),
+            candidateId: String(approval.candidateId),
+            candidateDigestSha256: String(approval.candidateDigestSha256),
+            approverUserId: String(approval.approverUserId),
+            authenticationEpoch: Number(approval.authenticationEpoch),
+            authorizationEpoch: Number(approval.authorizationEpoch),
+            approvedAt: iso(approval.approvedAt as Date)!,
+          },
+        }
+      : {}),
+    createdAt: iso(x.createdAt as Date)!,
+  };
+};
 
 const verifiedReleaseAssignmentDtos = (x: Record<string, unknown>) => {
   try {
@@ -304,6 +388,84 @@ const verifiedReleaseAssignmentDtos = (x: Record<string, unknown>) => {
     return undefined;
   }
 };
+
+const hasPublishedAssignmentProvenance = (
+  assignment: Record<string, unknown>,
+) => {
+  if (!assignment.approvalRequired) return true;
+  const publication = assignment.finalPublication as
+    Record<string, unknown> | null | undefined;
+  const candidate = publication?.publishedCandidate as
+    Record<string, unknown> | null | undefined;
+  const targets = (assignment.targets ?? []) as Array<Record<string, unknown>>;
+  return (
+    assignment.candidatePublicationId != null &&
+    publication?.id === assignment.candidatePublicationId &&
+    publication.assignmentId === assignment.id &&
+    candidate?.state === "PUBLISHED" &&
+    candidate.publicationId === assignment.candidatePublicationId &&
+    targets.length > 0 &&
+    targets.every(
+      (target) =>
+        target.liveScreenId === target.screenId &&
+        target.liveScreenOrganizationId === assignment.organizationId,
+    )
+  );
+};
+
+const targetSnapshotKey = (target: Record<string, unknown>) =>
+  JSON.stringify([
+    String(target.screenId),
+    target.liveScreenId == null ? null : String(target.liveScreenId),
+    target.liveScreenOrganizationId == null
+      ? null
+      : String(target.liveScreenOrganizationId),
+  ]);
+
+const isValidWithdrawalSuccessor = (
+  previous: Record<string, unknown>,
+  successor: Record<string, unknown>,
+) => {
+  if (
+    previous.state !== "ASSIGNED" ||
+    successor.state !== "WITHDRAWN" ||
+    successor.previousAssignmentId !== previous.id ||
+    successor.organizationId !== previous.organizationId ||
+    successor.releaseId !== previous.releaseId ||
+    successor.scheduleId !== previous.scheduleId
+  )
+    return false;
+  const previousVerified = verifiedReleaseAssignmentDtos(previous);
+  const successorVerified = verifiedReleaseAssignmentDtos(successor);
+  if (!previousVerified || !successorVerified) return false;
+  const expectedDigest = assignmentSnapshotDigest(
+    canonicalAssignmentSnapshot({
+      releaseDigestSha256: previousVerified.release.digestSha256,
+      state: "WITHDRAWN",
+      schedule: previousVerified.assignment.schedule,
+      screenIds: previousVerified.assignment.screenIds,
+      previousAssignmentId: previousVerified.assignment.id,
+    }),
+  );
+  if (successorVerified.assignment.digestSha256 !== expectedDigest)
+    return false;
+  const previousTargets = (
+    (previous.targets ?? []) as Array<Record<string, unknown>>
+  )
+    .map(targetSnapshotKey)
+    .sort();
+  const successorTargets = (
+    (successor.targets ?? []) as Array<Record<string, unknown>>
+  )
+    .map(targetSnapshotKey)
+    .sort();
+  return JSON.stringify(previousTargets) === JSON.stringify(successorTargets);
+};
+
+const hasValidWithdrawalSuccessor = (assignment: Record<string, unknown>) =>
+  ((assignment.nextAssignments ?? []) as Array<Record<string, unknown>>).some(
+    (successor) => isValidWithdrawalSuccessor(assignment, successor),
+  );
 
 const pairingDto = (x: {
   id: string;
@@ -486,6 +648,28 @@ export class PrismaStore implements DataStore {
       FOR UPDATE OF membership, actor`;
     return actor?.role;
   }
+  private async lockReleaseActor(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    actorUserId: string,
+  ) {
+    const [actor] = await tx.$queryRaw<
+      Array<{
+        role: string;
+        authenticationEpoch: number;
+        authorizationEpoch: number;
+      }>
+    >`SELECT membership."role"::text AS "role",
+             actor."authenticationEpoch" AS "authenticationEpoch",
+             membership."authorizationEpoch" AS "authorizationEpoch"
+      FROM "Membership" membership
+      INNER JOIN "User" actor ON actor."id" = membership."userId"
+      WHERE membership."organizationId" = ${organizationId}
+        AND membership."userId" = ${actorUserId}
+        AND actor."disabledAt" IS NULL
+      FOR UPDATE OF membership, actor`;
+    return actor;
+  }
   private async pruneOldDeviceAuthChallenges(
     tx: Prisma.TransactionClient,
     databaseNow: Date,
@@ -524,6 +708,102 @@ export class PrismaStore implements DataStore {
       SET "responseBody" = NULL
       FROM compactable
       WHERE record."id" = compactable."id"`;
+  }
+  private async verifiedReleaseCandidateReplay(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    operation: "create" | "submit" | "approve" | "publish",
+    responseBody: Prisma.JsonValue,
+  ) {
+    if (
+      !responseBody ||
+      Array.isArray(responseBody) ||
+      typeof responseBody !== "object"
+    )
+      return undefined;
+    const response = responseBody as unknown as ReleaseCandidateRecord;
+    const expectedState = {
+      create: "DRAFT",
+      submit: "IN_REVIEW",
+      approve: "APPROVED",
+      publish: "PUBLISHED",
+    } as const;
+    if (
+      typeof response.id !== "string" ||
+      response.organizationId !== organizationId ||
+      response.state !== expectedState[operation] ||
+      !lowercaseSha256.test(response.digestSha256 ?? "")
+    )
+      return undefined;
+    const candidate = await tx.releaseCandidate.findFirst({
+      where: { id: response.id, organizationId },
+      include: {
+        targets: true,
+        release: { include: { items: { orderBy: { position: "asc" } } } },
+        approval: true,
+        publication: true,
+      },
+    });
+    if (!candidate) return undefined;
+    const live = releaseCandidateDto(candidate);
+    const liveStateRank = {
+      DRAFT: 0,
+      IN_REVIEW: 1,
+      APPROVED: 2,
+      PUBLISHED: 3,
+    } as const;
+    if (
+      liveStateRank[live.state] < liveStateRank[expectedState[operation]] ||
+      (operation !== "create" && !live.submittedAt) ||
+      ((operation === "approve" || operation === "publish") && !live.approvedAt)
+    )
+      return undefined;
+    const operationResponse = { ...live };
+    if (operation === "create") {
+      operationResponse.state = "DRAFT";
+      delete operationResponse.submittedAt;
+      delete operationResponse.approvedAt;
+      delete operationResponse.publishedAt;
+      delete operationResponse.scheduleId;
+      delete operationResponse.assignmentId;
+      delete operationResponse.approval;
+    } else if (operation === "submit") {
+      operationResponse.state = "IN_REVIEW";
+      delete operationResponse.approvedAt;
+      delete operationResponse.publishedAt;
+      delete operationResponse.scheduleId;
+      delete operationResponse.assignmentId;
+      delete operationResponse.approval;
+    } else if (operation === "approve") {
+      operationResponse.state = "APPROVED";
+      delete operationResponse.publishedAt;
+      delete operationResponse.scheduleId;
+      delete operationResponse.assignmentId;
+    }
+    const release = publishedReleaseDto(candidate.release);
+    const validCandidateDigest =
+      live.digestSha256 ===
+      releaseCandidateDigest(
+        canonicalReleaseCandidateSnapshot({
+          releaseDigestSha256: live.releaseDigestSha256,
+          schedule: live.schedule,
+          screenIds: live.screenIds,
+          expiresAt: live.expiresAt,
+        }),
+      );
+    if (
+      live.digestSha256 !== response.digestSha256 ||
+      !isDeepStrictEqual(responseBody, operationResponse) ||
+      !validCandidateDigest ||
+      !hasValidStoredReleaseDigest(release) ||
+      ((operation === "approve" || operation === "publish") &&
+        (!live.approval ||
+          live.approval.candidateDigestSha256 !== live.digestSha256)) ||
+      (operation === "publish" &&
+        (!live.scheduleId || !live.assignmentId || live.state !== "PUBLISHED"))
+    )
+      return undefined;
+    return operationResponse;
   }
   private async lockLocationForClassification(
     tx: Prisma.TransactionClient,
@@ -4197,20 +4477,44 @@ export class PrismaStore implements DataStore {
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       include: {
         targets: true,
-        releaseAssignments: {
-          where: {
-            organizationId: org,
-            nextAssignments: { none: {} },
+        releaseAssignments: { take: 1, select: { id: true } },
+      },
+    });
+    if (schedules.length === 0) return [];
+    const assignments = await this.prisma.releaseAssignment.findMany({
+      where: {
+        organizationId: org,
+        scheduleId: { in: schedules.map(({ id }) => id) },
+        state: "ASSIGNED",
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      include: {
+        targets: true,
+        release: { include: { items: { orderBy: { position: "asc" } } } },
+        finalPublication: { include: { publishedCandidate: true } },
+        nextAssignments: {
+          include: {
+            targets: true,
+            release: { include: { items: { orderBy: { position: "asc" } } } },
           },
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          take: 1,
-          select: { state: true },
         },
       },
     });
+    const activeScheduleIds = new Set(
+      assignments
+        .filter(
+          (assignment) =>
+            hasPublishedAssignmentProvenance(assignment) &&
+            verifiedReleaseAssignmentDtos(assignment) &&
+            !hasValidWithdrawalSuccessor(assignment),
+        )
+        .map(({ scheduleId }) => scheduleId),
+    );
     return schedules
       .filter(
-        (schedule) => schedule.releaseAssignments[0]?.state !== "WITHDRAWN",
+        (schedule) =>
+          schedule.releaseAssignments.length === 0 ||
+          activeScheduleIds.has(schedule.id),
       )
       .map((schedule) => scheduleDto(schedule));
   }
@@ -4252,6 +4556,936 @@ export class PrismaStore implements DataStore {
     });
     return r.count > 0;
   }
+  async listReleaseCandidates(org: string) {
+    const candidates = await this.prisma.releaseCandidate.findMany({
+      where: { organizationId: org },
+      include: {
+        targets: true,
+        release: { include: { items: { orderBy: { position: "asc" } } } },
+        approval: true,
+        publication: true,
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    return candidates.map((candidate) => releaseCandidateDto(candidate));
+  }
+
+  async getReleaseCandidate(org: string, candidateId: string) {
+    const candidate = await this.prisma.releaseCandidate.findFirst({
+      where: { id: candidateId, organizationId: org },
+      include: {
+        targets: true,
+        release: { include: { items: { orderBy: { position: "asc" } } } },
+        approval: true,
+        publication: true,
+      },
+    });
+    return candidate ? releaseCandidateDto(candidate) : null;
+  }
+
+  async createReleaseCandidateAndAudit(
+    org: string,
+    data: SchedulePublicationInput & { expiresAt: string },
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult> {
+    if (
+      !lowercaseSha256.test(idempotency.keyHash) ||
+      !lowercaseSha256.test(idempotency.requestDigestSha256)
+    )
+      throw new Error("Canonical candidate idempotency hashes are required");
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const actor = await this.lockReleaseActor(
+              tx,
+              org,
+              audit.actorUserId,
+            );
+            if (
+              !hasCapability(actor?.role, CAPABILITIES.releaseCandidateCreate)
+            )
+              return { completed: false, reason: "FORBIDDEN" };
+            const [clock] = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
+              SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+            if (!clock) throw new Error("Database clock is unavailable");
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`candidate-idempotency:${org}:create:${idempotency.keyHash}`}, 0))`;
+            const existing = await tx.idempotencyRecord.findUnique({
+              where: {
+                organizationId_operation_keyHash: {
+                  organizationId: org,
+                  operation: "RELEASE_CANDIDATE_CREATE",
+                  keyHash: idempotency.keyHash,
+                },
+              },
+            });
+            if (existing) {
+              if (
+                existing.actorUserId !== audit.actorUserId ||
+                existing.requestDigestSha256 !== idempotency.requestDigestSha256
+              )
+                return { completed: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+              if (
+                existing.expiresAt <= clock.databaseNow ||
+                existing.responseBody === null
+              )
+                return {
+                  completed: false,
+                  reason: "IDEMPOTENCY_KEY_EXPIRED",
+                };
+              const replay = await this.verifiedReleaseCandidateReplay(
+                tx,
+                org,
+                "create",
+                existing.responseBody,
+              );
+              if (!replay)
+                throw new Error(
+                  "Idempotent candidate response references are invalid",
+                );
+              return { completed: true, candidate: replay, replayed: true };
+            }
+            const expiry = new Date(data.expiresAt);
+            if (
+              expiry <= clock.databaseNow ||
+              expiry.getTime() >
+                clock.databaseNow.getTime() + 7 * 24 * 60 * 60_000
+            )
+              return { completed: false, reason: "EXPIRED" };
+            const expired = await tx.releaseCandidate.findMany({
+              where: {
+                organizationId: org,
+                state: { in: ["DRAFT", "IN_REVIEW", "APPROVED"] },
+                expiresAt: {
+                  lte: new Date(
+                    clock.databaseNow.getTime() -
+                      RELEASE_CANDIDATE_RESPONSE_RETENTION_MS,
+                  ),
+                },
+                publication: null,
+              },
+              select: { id: true, releaseId: true },
+              orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+              take: 20,
+            });
+            if (expired.length > 0) {
+              const expiredIds = expired.map(
+                ({ id: candidateId }) => candidateId,
+              );
+              const releaseIds = expired.map(({ releaseId }) => releaseId);
+              await tx.$executeRaw`UPDATE "IdempotencyRecord"
+                SET "responseBody"=NULL
+                WHERE "organizationId"=${org}
+                  AND "operation"::text IN ('RELEASE_CANDIDATE_CREATE','RELEASE_CANDIDATE_SUBMIT','RELEASE_CANDIDATE_APPROVE')
+                  AND "responseBody"->>'id' = ANY(${expiredIds}::text[])`;
+              for (const expiredCandidate of expired) {
+                await tx.$executeRaw`SELECT set_config('screengoblin.candidate_gc_id', ${expiredCandidate.id}, true)`;
+                await tx.releaseCandidate.delete({
+                  where: { id: expiredCandidate.id },
+                });
+              }
+              await tx.publishedRelease.deleteMany({
+                where: {
+                  organizationId: org,
+                  id: { in: releaseIds },
+                  candidates: { none: {} },
+                  assignments: { none: {} },
+                },
+              });
+              await tx.auditEvent.create({
+                data: {
+                  organizationId: org,
+                  actorUserId: audit.actorUserId,
+                  actorType: "user",
+                  action: "release.candidate.expired_pruned",
+                  entityType: "release_candidate",
+                  metadata: { count: expired.length },
+                },
+              });
+            }
+            const screenIds = [...new Set(data.screenIds)].sort();
+            if (screenIds.length === 0 || screenIds.length > 1000)
+              return { completed: false, reason: "SCREEN_NOT_FOUND" };
+            const outstanding = await tx.releaseCandidate.count({
+              where: {
+                organizationId: org,
+                state: { not: "PUBLISHED" },
+                expiresAt: { gt: clock.databaseNow },
+              },
+            });
+            if (outstanding >= 100)
+              return { completed: false, reason: "RELEASE_TOO_LARGE" };
+            const retained = await tx.releaseCandidate.count({
+              where: {
+                organizationId: org,
+                state: { not: "PUBLISHED" },
+              },
+            });
+            if (retained >= 1000)
+              return { completed: false, reason: "RELEASE_TOO_LARGE" };
+            const playlist = await tx.playlist.findFirst({
+              where: { id: data.playlistId, organizationId: org },
+              include: {
+                items: {
+                  orderBy: [{ position: "asc" }, { id: "asc" }],
+                  include: { asset: true },
+                },
+              },
+            });
+            if (!playlist)
+              return { completed: false, reason: "PLAYLIST_NOT_FOUND" };
+            const screens = await tx.screen.findMany({
+              where: { organizationId: org, id: { in: screenIds } },
+              select: { id: true },
+            });
+            if (screens.length !== screenIds.length)
+              return { completed: false, reason: "SCREEN_NOT_FOUND" };
+            const playlistRecord = playlistDto(playlist);
+            const assets = playlist.items.map((item) => mediaDto(item.asset));
+            if (
+              assets.some(
+                (asset) =>
+                  !mediaUrlMatchesAllowedOrigin(
+                    asset.url,
+                    policy.mediaAllowedOrigins,
+                  ),
+              )
+            )
+              return { completed: false, reason: "ASSET_NOT_ALLOWED" };
+            const mediaFailure = mediaPublicationFailure(
+              assets,
+              clock.databaseNow,
+            );
+            if (mediaFailure) return { completed: false, reason: mediaFailure };
+            let releaseSnapshot;
+            try {
+              releaseSnapshot = canonicalReleaseSnapshot(
+                playlistRecord,
+                assets,
+              );
+            } catch (error) {
+              if (error instanceof ReleaseSnapshotError)
+                return { completed: false, reason: error.reason };
+              throw error;
+            }
+            const releaseDigestSha256 = releaseSnapshotDigest(releaseSnapshot);
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`release:${org}:${releaseDigestSha256}`}, 0))`;
+            let release = await tx.publishedRelease.findUnique({
+              where: {
+                organizationId_digestSha256: {
+                  organizationId: org,
+                  digestSha256: releaseDigestSha256,
+                },
+              },
+              include: { items: { orderBy: { position: "asc" } } },
+            });
+            if (!release) {
+              release = await tx.publishedRelease.create({
+                data: {
+                  organizationId: org,
+                  sourcePlaylistId: releaseSnapshot.sourcePlaylistId,
+                  sourcePlaylistName: releaseSnapshot.playlistName,
+                  sourcePlaylistDescription:
+                    releaseSnapshot.playlistDescription,
+                  sourcePlaylistUpdatedAt: new Date(
+                    releaseSnapshot.sourcePlaylistUpdatedAt,
+                  ),
+                  digestSha256: releaseDigestSha256,
+                  createdById: audit.actorUserId,
+                  items: {
+                    create: releaseSnapshot.items.map((item) => ({
+                      sourcePlaylistItemId: item.id,
+                      sourceAssetId: item.asset.id,
+                      assetName: item.asset.name,
+                      assetKind: item.asset.kind.toUpperCase() as
+                        "IMAGE" | "VIDEO" | "WEB" | "TEMPLATE",
+                      assetMimeType: item.asset.mimeType,
+                      assetUrl: item.asset.url,
+                      assetStorageKey:
+                        item.asset.storageKey ??
+                        mediaStorageKey(
+                          org,
+                          item.asset.id,
+                          item.asset.checksumSha256,
+                        ),
+                      assetChecksumSha256: item.asset.checksumSha256,
+                      assetSizeBytes: BigInt(item.asset.sizeBytes),
+                      assetCreatedAt: new Date(item.asset.createdAt),
+                      assetExpiresAt: item.asset.expiresAt
+                        ? new Date(item.asset.expiresAt)
+                        : null,
+                      position: item.position,
+                      durationSeconds: item.durationSeconds,
+                    })),
+                  },
+                },
+                include: { items: { orderBy: { position: "asc" } } },
+              });
+            }
+            const schedule = {
+              name: data.name,
+              priority: data.priority,
+              startsAt: canonicalUtcInstant(data.startsAt),
+              ...(data.endsAt
+                ? { endsAt: canonicalUtcInstant(data.endsAt) }
+                : {}),
+              timezone: data.timezone,
+              daysOfWeek: [...new Set(data.daysOfWeek)].sort((a, b) => a - b),
+              ...(data.dailyStartMinutes !== undefined
+                ? { dailyStartMinutes: data.dailyStartMinutes }
+                : {}),
+              ...(data.dailyEndMinutes !== undefined
+                ? { dailyEndMinutes: data.dailyEndMinutes }
+                : {}),
+              enabled: data.enabled,
+            };
+            const candidateSnapshot = canonicalReleaseCandidateSnapshot({
+              releaseDigestSha256,
+              schedule,
+              screenIds,
+              expiresAt: expiry.toISOString(),
+            });
+            const candidate = await tx.releaseCandidate.create({
+              data: {
+                organizationId: org,
+                releaseId: release.id,
+                digestSha256: releaseCandidateDigest(candidateSnapshot),
+                authorUserId: audit.actorUserId,
+                scheduleName: candidateSnapshot.schedule.name,
+                priority: candidateSnapshot.schedule.priority.toUpperCase() as
+                  "NORMAL" | "CAMPAIGN" | "PRIORITY",
+                startsAt: new Date(candidateSnapshot.schedule.startsAt),
+                endsAt: candidateSnapshot.schedule.endsAt
+                  ? new Date(candidateSnapshot.schedule.endsAt)
+                  : null,
+                timezone: candidateSnapshot.schedule.timezone,
+                daysOfWeek: candidateSnapshot.schedule.daysOfWeek,
+                dailyStartMinutes:
+                  candidateSnapshot.schedule.dailyStartMinutes ?? null,
+                dailyEndMinutes:
+                  candidateSnapshot.schedule.dailyEndMinutes ?? null,
+                enabled: candidateSnapshot.schedule.enabled,
+                expiresAt: expiry,
+                targets: {
+                  create: screenIds.map((screenId) => ({
+                    screenId,
+                    liveScreenId: screenId,
+                    liveScreenOrganizationId: org,
+                  })),
+                },
+              },
+              include: {
+                targets: true,
+                release: {
+                  include: { items: { orderBy: { position: "asc" } } },
+                },
+                approval: true,
+                publication: true,
+              },
+            });
+            const response = releaseCandidateDto(candidate);
+            await tx.auditEvent.create({
+              data: {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actorType: "user",
+                action: "release.candidate.created",
+                entityType: "release_candidate",
+                entityId: candidate.id,
+                ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                metadata: {
+                  digestSha256: response.digestSha256,
+                  releaseDigestSha256,
+                  screenCount: screenIds.length,
+                  policyVersion: response.policyVersion,
+                },
+              },
+            });
+            await tx.idempotencyRecord.create({
+              data: {
+                organizationId: org,
+                operation: "RELEASE_CANDIDATE_CREATE",
+                keyHash: idempotency.keyHash,
+                actorUserId: audit.actorUserId,
+                requestDigestSha256: idempotency.requestDigestSha256,
+                statusCode: 201,
+                responseBody: JSON.parse(JSON.stringify(response)),
+                expiresAt: new Date(
+                  clock.databaseNow.getTime() +
+                    RELEASE_CANDIDATE_RESPONSE_RETENTION_MS,
+                ),
+              },
+            });
+            await this.compactExpiredIdempotencyResponses(
+              tx,
+              clock.databaseNow,
+            );
+            return { completed: true, candidate: response };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (attempt < 2 && isRetryableWriteConflict(error)) continue;
+        throw error;
+      }
+    }
+    throw new Error("Candidate creation retry budget exhausted");
+  }
+
+  async submitReleaseCandidateAndAudit(
+    org: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ) {
+    return this.transitionReleaseCandidateAndAudit(
+      org,
+      "submit",
+      candidateId,
+      expectedDigestSha256,
+      audit,
+      idempotency,
+    );
+  }
+
+  async approveReleaseCandidateAndAudit(
+    org: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ) {
+    return this.transitionReleaseCandidateAndAudit(
+      org,
+      "approve",
+      candidateId,
+      expectedDigestSha256,
+      audit,
+      idempotency,
+    );
+  }
+
+  private async transitionReleaseCandidateAndAudit(
+    org: string,
+    operation: "submit" | "approve",
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult> {
+    if (
+      !lowercaseSha256.test(expectedDigestSha256) ||
+      !lowercaseSha256.test(idempotency.keyHash) ||
+      !lowercaseSha256.test(idempotency.requestDigestSha256)
+    )
+      throw new Error("Canonical candidate hashes are required");
+    const capability =
+      operation === "submit"
+        ? CAPABILITIES.releaseCandidateSubmit
+        : CAPABILITIES.releaseApprove;
+    const prismaOperation =
+      operation === "submit"
+        ? "RELEASE_CANDIDATE_SUBMIT"
+        : "RELEASE_CANDIDATE_APPROVE";
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const actor = await this.lockReleaseActor(
+              tx,
+              org,
+              audit.actorUserId,
+            );
+            if (!hasCapability(actor?.role, capability))
+              return { completed: false, reason: "FORBIDDEN" };
+            const [clock] = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
+              SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+            if (!clock) throw new Error("Database clock is unavailable");
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`candidate-idempotency:${org}:${operation}:${idempotency.keyHash}`}, 0))`;
+            const existing = await tx.idempotencyRecord.findUnique({
+              where: {
+                organizationId_operation_keyHash: {
+                  organizationId: org,
+                  operation: prismaOperation,
+                  keyHash: idempotency.keyHash,
+                },
+              },
+            });
+            if (existing) {
+              if (
+                existing.actorUserId !== audit.actorUserId ||
+                existing.requestDigestSha256 !== idempotency.requestDigestSha256
+              )
+                return { completed: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+              if (
+                existing.expiresAt <= clock.databaseNow ||
+                existing.responseBody === null
+              )
+                return {
+                  completed: false,
+                  reason: "IDEMPOTENCY_KEY_EXPIRED",
+                };
+              const replay = await this.verifiedReleaseCandidateReplay(
+                tx,
+                org,
+                operation,
+                existing.responseBody,
+              );
+              if (!replay)
+                throw new Error(
+                  "Idempotent candidate response references are invalid",
+                );
+              return { completed: true, candidate: replay, replayed: true };
+            }
+            await tx.$queryRaw`SELECT "id" FROM "ReleaseCandidate"
+              WHERE "id" = ${candidateId} AND "organizationId" = ${org}
+              FOR UPDATE`;
+            const candidate = await tx.releaseCandidate.findFirst({
+              where: { id: candidateId, organizationId: org },
+              include: {
+                targets: true,
+                release: {
+                  include: { items: { orderBy: { position: "asc" } } },
+                },
+                approval: true,
+                publication: true,
+              },
+            });
+            if (!candidate) return { completed: false, reason: "NOT_FOUND" };
+            const record = releaseCandidateDto(candidate);
+            const validDigest =
+              record.policyVersion === 1 &&
+              record.digestSha256 ===
+                releaseCandidateDigest(
+                  canonicalReleaseCandidateSnapshot({
+                    releaseDigestSha256: record.releaseDigestSha256,
+                    schedule: record.schedule,
+                    screenIds: record.screenIds,
+                    expiresAt: record.expiresAt,
+                  }),
+                );
+            if (
+              record.digestSha256 !== expectedDigestSha256 ||
+              !validDigest ||
+              !hasValidStoredReleaseDigest(
+                publishedReleaseDto(candidate.release),
+              )
+            )
+              return { completed: false, reason: "STALE_DIGEST" };
+            if (candidate.expiresAt <= clock.databaseNow)
+              return { completed: false, reason: "EXPIRED" };
+            if (operation === "submit") {
+              if (candidate.authorUserId !== audit.actorUserId)
+                return { completed: false, reason: "FORBIDDEN" };
+              if (candidate.state !== "DRAFT")
+                return { completed: false, reason: "INVALID_STATE" };
+              await tx.releaseCandidate.update({
+                where: { id: candidate.id },
+                data: { state: "IN_REVIEW", submittedAt: clock.databaseNow },
+              });
+            } else {
+              if (candidate.authorUserId === audit.actorUserId)
+                return {
+                  completed: false,
+                  reason: "AUTHOR_CANNOT_APPROVE",
+                };
+              if (candidate.state !== "IN_REVIEW")
+                return { completed: false, reason: "INVALID_STATE" };
+              await tx.releaseApproval.create({
+                data: {
+                  organizationId: org,
+                  candidateId: candidate.id,
+                  candidateDigestSha256: candidate.digestSha256,
+                  approverUserId: audit.actorUserId,
+                  authenticationEpoch: actor!.authenticationEpoch,
+                  authorizationEpoch: actor!.authorizationEpoch,
+                  approvedAt: clock.databaseNow,
+                },
+              });
+              await tx.releaseCandidate.update({
+                where: { id: candidate.id },
+                data: { state: "APPROVED", approvedAt: clock.databaseNow },
+              });
+            }
+            await tx.auditEvent.create({
+              data: {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actorType: "user",
+                action:
+                  operation === "submit"
+                    ? "release.candidate.submitted"
+                    : "release.candidate.approved",
+                entityType: "release_candidate",
+                entityId: candidate.id,
+                ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                metadata: { digestSha256: candidate.digestSha256 },
+              },
+            });
+            const updated = await tx.releaseCandidate.findUniqueOrThrow({
+              where: { id: candidate.id },
+              include: {
+                targets: true,
+                release: {
+                  include: { items: { orderBy: { position: "asc" } } },
+                },
+                approval: true,
+                publication: true,
+              },
+            });
+            const response = releaseCandidateDto(updated);
+            await tx.idempotencyRecord.create({
+              data: {
+                organizationId: org,
+                operation: prismaOperation,
+                keyHash: idempotency.keyHash,
+                actorUserId: audit.actorUserId,
+                requestDigestSha256: idempotency.requestDigestSha256,
+                statusCode: 200,
+                responseBody: JSON.parse(JSON.stringify(response)),
+                expiresAt: new Date(
+                  clock.databaseNow.getTime() +
+                    RELEASE_CANDIDATE_RESPONSE_RETENTION_MS,
+                ),
+              },
+            });
+            await this.compactExpiredIdempotencyResponses(
+              tx,
+              clock.databaseNow,
+            );
+            return { completed: true, candidate: response };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (attempt < 2 && isRetryableWriteConflict(error)) continue;
+        throw error;
+      }
+    }
+    throw new Error("Candidate transition retry budget exhausted");
+  }
+
+  async publishReleaseCandidateAndAudit(
+    org: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult> {
+    if (
+      !lowercaseSha256.test(expectedDigestSha256) ||
+      !lowercaseSha256.test(idempotency.keyHash) ||
+      !lowercaseSha256.test(idempotency.requestDigestSha256)
+    )
+      throw new Error("Canonical candidate hashes are required");
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const actor = await this.lockReleaseActor(
+              tx,
+              org,
+              audit.actorUserId,
+            );
+            if (!hasCapability(actor?.role, CAPABILITIES.releasePublish))
+              return { completed: false, reason: "FORBIDDEN" };
+            const [clock] = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
+              SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+            if (!clock) throw new Error("Database clock is unavailable");
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`candidate-idempotency:${org}:publish:${idempotency.keyHash}`}, 0))`;
+            const existing = await tx.idempotencyRecord.findUnique({
+              where: {
+                organizationId_operation_keyHash: {
+                  organizationId: org,
+                  operation: "RELEASE_CANDIDATE_PUBLISH",
+                  keyHash: idempotency.keyHash,
+                },
+              },
+            });
+            if (existing) {
+              if (
+                existing.actorUserId !== audit.actorUserId ||
+                existing.requestDigestSha256 !== idempotency.requestDigestSha256
+              )
+                return { completed: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+              if (
+                existing.expiresAt <= clock.databaseNow ||
+                existing.responseBody === null
+              )
+                return {
+                  completed: false,
+                  reason: "IDEMPOTENCY_KEY_EXPIRED",
+                };
+              const replay = await this.verifiedReleaseCandidateReplay(
+                tx,
+                org,
+                "publish",
+                existing.responseBody,
+              );
+              if (!replay)
+                throw new Error(
+                  "Idempotent candidate response references are invalid",
+                );
+              return { completed: true, candidate: replay, replayed: true };
+            }
+            await tx.$queryRaw`SELECT "id" FROM "ReleaseCandidate"
+              WHERE "id" = ${candidateId} AND "organizationId" = ${org}
+              FOR UPDATE`;
+            const candidate = await tx.releaseCandidate.findFirst({
+              where: { id: candidateId, organizationId: org },
+              include: {
+                targets: true,
+                release: {
+                  include: { items: { orderBy: { position: "asc" } } },
+                },
+                approval: true,
+                publication: true,
+              },
+            });
+            if (!candidate) return { completed: false, reason: "NOT_FOUND" };
+            const record = releaseCandidateDto(candidate);
+            const validDigest =
+              record.policyVersion === 1 &&
+              record.digestSha256 ===
+                releaseCandidateDigest(
+                  canonicalReleaseCandidateSnapshot({
+                    releaseDigestSha256: record.releaseDigestSha256,
+                    schedule: record.schedule,
+                    screenIds: record.screenIds,
+                    expiresAt: record.expiresAt,
+                  }),
+                );
+            if (
+              record.digestSha256 !== expectedDigestSha256 ||
+              !validDigest ||
+              !hasValidStoredReleaseDigest(
+                publishedReleaseDto(candidate.release),
+              )
+            )
+              return { completed: false, reason: "STALE_DIGEST" };
+            const frozenRelease = publishedReleaseDto(candidate.release);
+            const frozenAssets = frozenRelease.items.map((item) => item.asset);
+            if (
+              frozenAssets.some(
+                (asset) =>
+                  !mediaUrlMatchesAllowedOrigin(
+                    asset.url,
+                    policy.mediaAllowedOrigins,
+                  ),
+              )
+            )
+              return { completed: false, reason: "ASSET_NOT_ALLOWED" };
+            const mediaFailure = mediaPublicationFailure(
+              frozenAssets,
+              clock.databaseNow,
+            );
+            if (mediaFailure) return { completed: false, reason: mediaFailure };
+            if (candidate.expiresAt <= clock.databaseNow)
+              return { completed: false, reason: "EXPIRED" };
+            if (candidate.state !== "APPROVED" || !candidate.approval)
+              return { completed: false, reason: "INVALID_STATE" };
+            const approver = await this.lockReleaseActor(
+              tx,
+              org,
+              candidate.approval.approverUserId,
+            );
+            if (
+              candidate.approval.approverUserId === candidate.authorUserId ||
+              candidate.approval.candidateDigestSha256 !==
+                candidate.digestSha256 ||
+              !hasCapability(approver?.role, CAPABILITIES.releaseApprove) ||
+              approver?.authenticationEpoch !==
+                candidate.approval.authenticationEpoch ||
+              approver.authorizationEpoch !==
+                candidate.approval.authorizationEpoch
+            )
+              return { completed: false, reason: "APPROVAL_STALE" };
+            if (
+              candidate.targets.length === 0 ||
+              candidate.targets.some(
+                (target) =>
+                  target.liveScreenId === null ||
+                  target.liveScreenOrganizationId !== org,
+              )
+            )
+              return { completed: false, reason: "SCREEN_NOT_FOUND" };
+            const schedule = await tx.schedule.create({
+              data: {
+                organizationId: org,
+                playlistId: candidate.release.sourcePlaylistId,
+                name: candidate.scheduleName,
+                priority: candidate.priority,
+                startsAt: candidate.startsAt,
+                endsAt: candidate.endsAt,
+                timezone: candidate.timezone,
+                daysOfWeek: candidate.daysOfWeek,
+                dailyStartMinutes: candidate.dailyStartMinutes,
+                dailyEndMinutes: candidate.dailyEndMinutes,
+                enabled: candidate.enabled,
+                targets: {
+                  create: candidate.targets.map(({ screenId }) => ({
+                    screenId,
+                  })),
+                },
+              },
+              include: { targets: true },
+            });
+            const assignmentDigest = assignmentSnapshotDigest(
+              canonicalAssignmentSnapshot({
+                releaseDigestSha256: record.releaseDigestSha256,
+                state: "ASSIGNED",
+                schedule: record.schedule,
+                screenIds: record.screenIds,
+              }),
+            );
+            const assignmentId = randomUUID();
+            const publicationId = randomUUID();
+            const expectedWithdrawalDigestSha256 = assignmentSnapshotDigest(
+              canonicalAssignmentSnapshot({
+                releaseDigestSha256: record.releaseDigestSha256,
+                state: "WITHDRAWN",
+                schedule: record.schedule,
+                screenIds: record.screenIds,
+                previousAssignmentId: assignmentId,
+              }),
+            );
+            const assignment = await tx.releaseAssignment.create({
+              data: {
+                id: assignmentId,
+                organizationId: org,
+                releaseId: candidate.releaseId,
+                scheduleId: schedule.id,
+                state: "ASSIGNED",
+                digestSha256: assignmentDigest,
+                createdById: audit.actorUserId,
+                scheduleName: candidate.scheduleName,
+                priority: candidate.priority,
+                startsAt: candidate.startsAt,
+                endsAt: candidate.endsAt,
+                timezone: candidate.timezone,
+                daysOfWeek: candidate.daysOfWeek,
+                dailyStartMinutes: candidate.dailyStartMinutes,
+                dailyEndMinutes: candidate.dailyEndMinutes,
+                enabled: candidate.enabled,
+                approvalRequired: true,
+                candidatePublicationId: publicationId,
+                expectedWithdrawalDigestSha256,
+                targets: {
+                  create: candidate.targets.map(({ screenId }) => ({
+                    screenId,
+                    liveScreenId: screenId,
+                    liveScreenOrganizationId: org,
+                  })),
+                },
+              },
+            });
+            await tx.releaseCandidate.update({
+              where: { id: candidate.id },
+              data: {
+                state: "PUBLISHED",
+                publicationId,
+                publishedAt: clock.databaseNow,
+              },
+            });
+            await tx.releaseCandidatePublication.create({
+              data: {
+                id: publicationId,
+                organizationId: org,
+                candidateId: candidate.id,
+                scheduleId: schedule.id,
+                assignmentId: assignment.id,
+                publisherUserId: audit.actorUserId,
+                publishedAt: clock.databaseNow,
+              },
+            });
+            await tx.auditEvent.create({
+              data: {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actorType: "user",
+                action: "release.candidate.published",
+                entityType: "release_candidate",
+                entityId: candidate.id,
+                ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                metadata: {
+                  digestSha256: candidate.digestSha256,
+                  releaseDigestSha256: record.releaseDigestSha256,
+                  scheduleId: schedule.id,
+                  assignmentId: assignment.id,
+                  assignmentDigestSha256: assignmentDigest,
+                },
+              },
+            });
+            await tx.auditEvent.create({
+              data: {
+                organizationId: org,
+                actorUserId: audit.actorUserId,
+                actorType: "user",
+                action: "release.published",
+                entityType: "published_release",
+                entityId: candidate.releaseId,
+                ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+                ...(audit.requestId ? { requestId: audit.requestId } : {}),
+                metadata: {
+                  candidateId: candidate.id,
+                  candidateDigestSha256: candidate.digestSha256,
+                  digestSha256: record.releaseDigestSha256,
+                  scheduleId: schedule.id,
+                  assignmentId: assignment.id,
+                  assignmentDigestSha256: assignmentDigest,
+                },
+              },
+            });
+            const updated = await tx.releaseCandidate.findUniqueOrThrow({
+              where: { id: candidate.id },
+              include: {
+                targets: true,
+                release: {
+                  include: { items: { orderBy: { position: "asc" } } },
+                },
+                approval: true,
+                publication: true,
+              },
+            });
+            const response = releaseCandidateDto(updated);
+            await tx.idempotencyRecord.create({
+              data: {
+                organizationId: org,
+                operation: "RELEASE_CANDIDATE_PUBLISH",
+                keyHash: idempotency.keyHash,
+                actorUserId: audit.actorUserId,
+                requestDigestSha256: idempotency.requestDigestSha256,
+                statusCode: 200,
+                responseBody: JSON.parse(JSON.stringify(response)),
+                expiresAt: new Date(
+                  clock.databaseNow.getTime() +
+                    RELEASE_CANDIDATE_RESPONSE_RETENTION_MS,
+                ),
+              },
+            });
+            await this.compactExpiredIdempotencyResponses(
+              tx,
+              clock.databaseNow,
+            );
+            return { completed: true, candidate: response };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (attempt < 2 && isRetryableWriteConflict(error)) continue;
+        throw error;
+      }
+    }
+    throw new Error("Candidate publication retry budget exhausted");
+  }
+
   async publishScheduleAndAudit(
     org: string,
     data: SchedulePublicationInput,
@@ -4259,6 +5493,11 @@ export class PrismaStore implements DataStore {
     policy: ReleasePublicationPolicy,
     idempotency: SchedulePublicationIdempotencyInput,
   ): Promise<SchedulePublicationResult> {
+    const directPublicationDisabled: boolean = true;
+    if (directPublicationDisabled)
+      return { published: false, reason: "FORBIDDEN" };
+    /* c8 ignore start -- unreachable legacy implementation retained only as
+       migration reference until the next schema contraction. */
     if (
       !lowercaseSha256.test(idempotency.keyHash) ||
       !lowercaseSha256.test(idempotency.requestDigestSha256)
@@ -4563,6 +5802,7 @@ export class PrismaStore implements DataStore {
                 dailyStartMinutes: frozenSchedule.dailyStartMinutes ?? null,
                 dailyEndMinutes: frozenSchedule.dailyEndMinutes ?? null,
                 enabled: frozenSchedule.enabled,
+                approvalRequired: true,
                 targets: {
                   create: screenIds.map((screenId) => ({
                     screenId,
@@ -4616,6 +5856,7 @@ export class PrismaStore implements DataStore {
       }
     }
     throw new Error("Publication retry budget exhausted");
+    /* c8 ignore stop */
   }
   async withdrawScheduleAndAudit(
     org: string,
@@ -4654,6 +5895,8 @@ export class PrismaStore implements DataStore {
           if (!previous) return { withdrawn: false, reason: "NOT_FOUND" };
           if (previous.state === "WITHDRAWN")
             return { withdrawn: false, reason: "ALREADY_WITHDRAWN" };
+          if (previous.state !== "ASSIGNED")
+            return { withdrawn: false, reason: "NOT_FOUND" };
 
           const previousDto = releaseAssignmentDto(previous);
           const digestSha256 = assignmentSnapshotDigest(
@@ -4742,15 +5985,29 @@ export class PrismaStore implements DataStore {
       where: {
         organizationId: org,
         scheduleId: { in: [...new Set(targetedScheduleIds)] },
-        nextAssignments: { none: {} },
+        state: "ASSIGNED",
       },
       include: {
         targets: true,
         release: { include: { items: { orderBy: { position: "asc" } } } },
+        finalPublication: {
+          include: { publishedCandidate: true },
+        },
+        nextAssignments: {
+          include: {
+            targets: true,
+            release: { include: { items: { orderBy: { position: "asc" } } } },
+          },
+        },
       },
     });
     const instant = new Date(at);
     return assignments.flatMap((assignment) => {
+      if (
+        !hasPublishedAssignmentProvenance(assignment) ||
+        hasValidWithdrawalSuccessor(assignment)
+      )
+        return [];
       const verified = verifiedReleaseAssignmentDtos(assignment);
       if (!verified) return [];
       const { assignment: assignmentDto, release: releaseDto } = verified;
@@ -4793,14 +6050,27 @@ export class PrismaStore implements DataStore {
       where: {
         id: input.assignmentId,
         organizationId: input.organizationId,
-        nextAssignments: { none: {} },
       },
       include: {
         targets: true,
         release: { include: { items: { orderBy: { position: "asc" } } } },
+        finalPublication: {
+          include: { publishedCandidate: true },
+        },
+        nextAssignments: {
+          include: {
+            targets: true,
+            release: { include: { items: { orderBy: { position: "asc" } } } },
+          },
+        },
       },
     });
     if (!assignment) return false;
+    if (
+      !hasPublishedAssignmentProvenance(assignment) ||
+      hasValidWithdrawalSuccessor(assignment)
+    )
+      return false;
     const verified = verifiedReleaseAssignmentDtos(assignment);
     if (!verified) return false;
     const { assignment: assignmentDto, release: releaseDto } = verified;

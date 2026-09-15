@@ -348,7 +348,7 @@ describe("identity lifecycle session boundaries", () => {
         },
       ],
     });
-    const publication = await store.publishScheduleAndAudit(
+    const publication = await store.createReleaseCandidateAndAudit(
       "org-a",
       {
         playlistId: playlist.id,
@@ -359,12 +359,36 @@ describe("identity lifecycle session boundaries", () => {
         daysOfWeek: [],
         enabled: true,
         screenIds: [screen.id],
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
       },
       { actorUserId: creator.id },
       { mediaAllowedOrigins: ["https://media.example.test"] },
       { keyHash: "b".repeat(64), requestDigestSha256: "c".repeat(64) },
     );
-    if (!publication.published) throw new Error("publication fixture failed");
+    if (!publication.completed) throw new Error("candidate fixture failed");
+    await store.submitReleaseCandidateAndAudit(
+      "org-a",
+      publication.candidate.id,
+      publication.candidate.digestSha256,
+      { actorUserId: creator.id },
+      { keyHash: "d".repeat(64), requestDigestSha256: "e".repeat(64) },
+    );
+    await store.approveReleaseCandidateAndAudit(
+      "org-a",
+      publication.candidate.id,
+      publication.candidate.digestSha256,
+      { actorUserId: "owner" },
+      { keyHash: "f".repeat(64), requestDigestSha256: "0".repeat(64) },
+    );
+    const published = await store.publishReleaseCandidateAndAudit(
+      "org-a",
+      publication.candidate.id,
+      publication.candidate.digestSha256,
+      { actorUserId: creator.id },
+      { mediaAllowedOrigins: ["https://media.example.test"] },
+      { keyHash: "1".repeat(64), requestDigestSha256: "2".repeat(64) },
+    );
+    if (!published.completed) throw new Error("publication fixture failed");
 
     await expect(
       store.removeMembershipAndAudit("org-a", creator.id, {

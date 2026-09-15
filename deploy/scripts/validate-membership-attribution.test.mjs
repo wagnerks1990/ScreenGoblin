@@ -86,7 +86,7 @@ test("publication revalidation locks the live membership and user", () => {
     new URL("../../apps/api/src/store/prisma.ts", import.meta.url),
     "utf8",
   );
-  const start = prismaStore.indexOf("async publishScheduleAndAudit(");
+  const start = prismaStore.indexOf("async publishReleaseCandidateAndAudit(");
   const end = prismaStore.indexOf("async withdrawScheduleAndAudit(", start);
   assert.ok(start >= 0 && end > start);
   const publication = prismaStore.slice(start, end);

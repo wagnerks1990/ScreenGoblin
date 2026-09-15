@@ -52,7 +52,7 @@ function authorized<T extends MemoryStore>(store: T): T {
 }
 
 describe("atomic audited administrative mutations", () => {
-  it("does not compact Memory publication responses on audit or replay-integrity failure", async () => {
+  it("fails the retired direct publication path closed without compacting history", async () => {
     const store = authorized(new ToggleRejectingAuditStore());
     const screen = await store.createScreen("org-a", screenInput);
     const media = await store.createMedia("org-a", mediaInput);
@@ -104,7 +104,7 @@ describe("atomic audited administrative mutations", () => {
       expiresAt: "2020-01-02T00:00:00.000Z",
     };
     store.idempotencyRecords.push(expiredResponse);
-    store.rejectAudit = true;
+    const before = structuredClone(expiredResponse);
     await expect(
       store.publishScheduleAndAudit(
         "org-a",
@@ -113,40 +113,9 @@ describe("atomic audited administrative mutations", () => {
         { mediaAllowedOrigins: ["https://media.example.test"] },
         { keyHash: "3".repeat(64), requestDigestSha256: "4".repeat(64) },
       ),
-    ).rejects.toThrow("audit unavailable");
-    expect(expiredResponse.response).toBeDefined();
+    ).resolves.toEqual({ published: false, reason: "FORBIDDEN" });
+    expect(expiredResponse).toEqual(before);
     expect(store.schedules).toEqual([]);
-
-    store.rejectAudit = false;
-    const idempotency = {
-      keyHash: "5".repeat(64),
-      requestDigestSha256: "6".repeat(64),
-    };
-    const published = await store.publishScheduleAndAudit(
-      "org-a",
-      input,
-      { actorUserId: actor.id },
-      { mediaAllowedOrigins: ["https://media.example.test"] },
-      idempotency,
-    );
-    if (!published.published) throw new Error("publication fixture failed");
-    const replayFailureSentinel = {
-      ...structuredClone(expiredResponse),
-      keyHash: "7".repeat(64),
-      response: structuredClone(published.schedule),
-    };
-    store.idempotencyRecords.push(replayFailureSentinel);
-    store.releases = [];
-    await expect(
-      store.publishScheduleAndAudit(
-        "org-a",
-        input,
-        { actorUserId: actor.id },
-        { mediaAllowedOrigins: ["https://media.example.test"] },
-        idempotency,
-      ),
-    ).rejects.toThrow("Idempotent publication references are missing");
-    expect(replayFailureSentinel.response).toBeDefined();
   });
 
   it("keeps Memory device replacement and revocation mutations audit-atomic", async () => {

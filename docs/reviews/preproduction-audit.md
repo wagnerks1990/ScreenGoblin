@@ -9,9 +9,12 @@
 
 **Not ready for a pre-production pilot yet.** The concept and ADR establish the correct high-level boundaries—organization scoping, unique device credentials, complete-manifest activation, last-known-good playback, expiring commands, and explicit emergency expiry—but the product does not yet enforce or provide evidence for all of them. The P0 gates below must pass before a school network or real screen is connected.
 
-The highest-risk omissions are:
+The highest-risk omissions are (with the first item partially remediated by the
+coordinated-downtime release-candidate cutover, but not closed operationally):
 
-1. no first-class draft/review/approve/publish/rollback lifecycle;
+1. no complete Console/rejection/rollback/scoped-grant release lifecycle; the
+   API now enforces immutable draft/submit/independent-approve/publish for
+   ordinary organization-wide candidates, while direct publication fails closed;
 2. organization-wide roles without building/location scope or separate emergency/device-control permissions;
 3. bearer-style device enrollment without proof-of-possession, rotation, replay protection, or attestation state;
 4. emergency records without approval, acknowledgement, delivery/render status, or safe partial-failure handling;

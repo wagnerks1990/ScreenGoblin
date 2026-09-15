@@ -67,6 +67,11 @@ An unchecked item is a known gap, not an implicit approval.
 
 ## Governance and release
 
+- [ ] The ordinary release-candidate workflow is operationally accepted and its
+      Console UX, scoped grants, MFA/re-authentication, retention monitoring, and
+      human evidence have been validated. The API now blocks direct publication
+      and enforces distinct author/approver identities, but that engineering
+      control alone does not complete this gate.
 - [ ] Terms, privacy notice, retention policy, license inventory, and support ownership are approved.
 - [ ] Protected branch requires review and passing CI/security checks.
 - [ ] Release version, immutable image digest, APK signature, and change log are recorded.

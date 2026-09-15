@@ -283,8 +283,42 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.ok(
       scriptSource.indexOf("private-media-withdrawn") > withdrawalMutation,
     );
+    assert.match(
+      scriptSource,
+      /BEGIN;\s+INSERT INTO "ReleaseAssignment"[^;]+VALUES \('compose-media-withdrawal'[^;]+;\s+INSERT INTO "ReleaseAssignmentTarget"[^;]+VALUES \('\$media_org_id', 'compose-media-withdrawal'[^;]+;\s+COMMIT;/,
+    );
     assert.match(scriptSource, /releaseSnapshotDigest/);
     assert.match(scriptSource, /canonicalAssignmentSnapshot/);
+    assert.doesNotMatch(scriptSource, /PENDING_APPROVAL/);
+    assert.match(scriptSource, /readonly media_publication_id/);
+    assert.match(scriptSource, /INSERT INTO "ReleaseCandidate"/);
+    assert.match(scriptSource, /INSERT INTO "ReleaseApproval"/);
+    assert.match(
+      scriptSource,
+      /SET "state"='APPROVED',[\s\S]*"approvedAt"=\(SELECT "approvedAt" FROM "ReleaseApproval" WHERE "id"='\$media_approval_id'\)/,
+    );
+    assert.match(scriptSource, /INSERT INTO "ReleaseCandidatePublication"/);
+    assert.match(
+      scriptSource,
+      /"approvalRequired", "candidatePublicationId"[\s\S]*'ASSIGNED'[\s\S]*true, '\$media_publication_id'/,
+    );
+    assert.match(
+      scriptSource,
+      /"state"='PUBLISHED', "publishedAt"=CURRENT_TIMESTAMP, "publicationId"='\$media_publication_id'/,
+    );
+    assert.ok(
+      scriptSource.indexOf(
+        `UPDATE "ReleaseCandidate" SET "state"='PUBLISHED'`,
+      ) <
+        scriptSource.indexOf(
+          `VALUES ('$media_publication_id', '$media_org_id', '$media_candidate_id'`,
+        ),
+      "candidate finalization must precede publication evidence insertion",
+    );
+    assert.match(
+      scriptSource,
+      /BEGIN;\s+INSERT INTO "ReleaseAssignment"[\s\S]*INSERT INTO "ReleaseCandidatePublication"[\s\S]*COMMIT;/,
+    );
     assert.doesNotMatch(scriptSource, /repeat\('[abc]', 64\)/);
     const commands = readFileSync(f.commandLog, "utf8");
     assert.match(commands, /up --detach --wait --wait-timeout 180/);

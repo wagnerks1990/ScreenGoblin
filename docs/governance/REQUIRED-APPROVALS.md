@@ -21,7 +21,16 @@
 
 ## Approval validity rules
 
-- Requester and required approver must be distinct people for two-person actions. A role label or shared account is insufficient.
+- For the implemented ordinary release-candidate workflow, the candidate author
+  and approver must be distinct people, and only a current `OWNER` or `ADMIN`
+  may approve. A `PUBLISHER` may create, submit, publish, and withdraw but cannot
+  approve. The later publisher may be the author,
+  the approver, or a third authorized person; therefore the guaranteed two-person
+  property is author-versus-approver, not three-person separation. A role label,
+  shared account, AI, service identity, or repeated session is insufficient.
+- The current implementation applies this rule organization-wide. It does not
+  yet establish location, group, or screen-scoped grants, MFA/re-authentication,
+  emergency approval, or completion of the production go/no-go record.
 - Approval binds to an immutable digest of the revision, target selector expansion, schedule/expiry, policy result, and release candidate. Any material change invalidates approval.
 - Approval must be explicit, time-bounded, authenticated, auditable, and made after viewing the exact proposed effect.
 - Absence, timeout, service failure, stale approval, conflict, or ambiguity fails closed.
