@@ -126,6 +126,12 @@ kind/MIME, configured source URL, checksum, byte size, optional expiry,
 creation time, item position, and duration. They do not include object-storage
 keys, media capabilities, session/device credentials, or signing material.
 
+`GET /schedules` includes `withdrawable: true` only when the server verifies a
+current assigned publication with intact candidate/publication/assignment
+provenance and no valid withdrawal successor. Only those records are safe for a
+Console withdrawal affordance; opaque `releaseId` or `assignmentId` values alone
+must not be interpreted as current state.
+
 Each transition body is exactly `{ "digestSha256": "<64 lowercase hex>" }`.
 Candidate creation uses the former schedule fields plus `expiresAt`. Publication
 fails without partial records when state, digest, approval, actor, source,

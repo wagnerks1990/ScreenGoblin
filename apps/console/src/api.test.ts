@@ -1,10 +1,78 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "./api";
+import type {
+  ManagementReleaseCandidate,
+  ReleaseCandidateCreateRequest,
+} from "@screengoblin/contracts";
+import { AmbiguousMutationError, ApiRequestError, api } from "./api";
 
 beforeEach(() => window.sessionStorage.clear());
 afterEach(() => vi.unstubAllGlobals());
 
+const candidateInput: ReleaseCandidateCreateRequest = {
+  playlistId: "playlist-1",
+  name: "Morning rotation",
+  priority: "normal",
+  startsAt: "2030-01-01T08:00:00.000Z",
+  timezone: "UTC",
+  daysOfWeek: [1, 2, 3, 4, 5],
+  enabled: true,
+  screenIds: ["screen-1"],
+  expiresAt: "2030-01-02T08:00:00.000Z",
+};
+
+const candidate: ManagementReleaseCandidate = {
+  id: "candidate/1",
+  state: "DRAFT",
+  digestSha256: "a".repeat(64),
+  releaseId: "release-1",
+  releaseDigestSha256: "b".repeat(64),
+  sourcePlaylistId: "playlist-1",
+  authorUserId: "user-1",
+  items: [],
+  schedule: {
+    name: candidateInput.name,
+    priority: candidateInput.priority,
+    startsAt: candidateInput.startsAt,
+    timezone: candidateInput.timezone,
+    daysOfWeek: candidateInput.daysOfWeek,
+    enabled: candidateInput.enabled,
+  },
+  screenIds: candidateInput.screenIds,
+  policyVersion: 1,
+  expiresAt: candidateInput.expiresAt,
+  createdAt: "2030-01-01T00:00:00.000Z",
+};
+
 describe("authenticated live data boundary", () => {
+  it.each([
+    [
+      "missing id",
+      {
+        name: "Owner",
+        email: "o@example.test",
+        role: "OWNER",
+        organizationId: "org",
+      },
+    ],
+    [
+      "invalid role",
+      {
+        id: "user",
+        name: "Owner",
+        email: "o@example.test",
+        role: "ROOT",
+        organizationId: "org",
+      },
+    ],
+    ["wrong primitive", "owner"],
+    ["array", []],
+  ])("fails cached principal affordances closed for %s", (_label, value) => {
+    window.sessionStorage.setItem("sg_session_user", JSON.stringify(value));
+
+    expect(api.currentUser()).toBeUndefined();
+    expect(window.sessionStorage.getItem("sg_session_user")).toBeNull();
+  });
+
   it("never substitutes demo data after a live session fails", async () => {
     window.sessionStorage.setItem("sg_access_token", "live-token");
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
@@ -149,6 +217,7 @@ describe("authenticated live data boundary", () => {
           JSON.stringify({
             accessToken: "live-token",
             user: {
+              id: "user-operator",
               name: "Operator",
               email: "operator@example.test",
               role: "ADMIN",
@@ -163,6 +232,7 @@ describe("authenticated live data boundary", () => {
     await api.login("operator@example.test", "valid-password");
 
     expect(api.hasLiveSession()).toBe(true);
+    expect(api.currentUser()?.id).toBe("user-operator");
     expect(api.currentUser()?.email).toBe("operator@example.test");
   });
 
@@ -343,5 +413,207 @@ describe("authenticated live data boundary", () => {
       method: "POST",
       body: JSON.stringify({ reason: "Replace failed player" }),
     });
+  });
+});
+
+describe("release approval API", () => {
+  beforeEach(() =>
+    window.sessionStorage.setItem("sg_access_token", "publisher-token"),
+  );
+
+  it("reads the tenant candidate collection and an encoded candidate ID", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [candidate] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(candidate), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.releaseCandidates()).resolves.toEqual([candidate]);
+    await expect(api.releaseCandidate("candidate/1")).resolves.toEqual(
+      candidate,
+    );
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/release-candidates",
+      "/api/v1/release-candidates/candidate%2F1",
+    ]);
+  });
+
+  it("sends exact caller-owned idempotency keys for create and every transition", async () => {
+    const key = "00000000-0000-4000-8000-000000000001";
+    const fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify(candidate), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createReleaseCandidate(candidateInput, key);
+    await api.submitReleaseCandidate(
+      "candidate/1",
+      { digestSha256: candidate.digestSha256 },
+      key,
+    );
+    await api.approveReleaseCandidate(
+      "candidate/1",
+      { digestSha256: candidate.digestSha256 },
+      key,
+    );
+    await api.publishReleaseCandidate(
+      "candidate/1",
+      { digestSha256: candidate.digestSha256 },
+      key,
+    );
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/release-candidates",
+      "/api/v1/release-candidates/candidate%2F1/submit",
+      "/api/v1/release-candidates/candidate%2F1/approve",
+      "/api/v1/release-candidates/candidate%2F1/publish",
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify(candidateInput),
+    });
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.headers).toMatchObject({
+        Authorization: "Bearer publisher-token",
+        "Idempotency-Key": key,
+      });
+    }
+    for (const [, init] of fetchMock.mock.calls.slice(1))
+      expect(init?.body).toBe(
+        JSON.stringify({ digestSha256: candidate.digestSha256 }),
+      );
+  });
+
+  it("preserves structured API status and error code for rejected commands", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "AUTHOR_CANNOT_APPROVE",
+              message: "Release candidate rejected",
+            },
+          }),
+          { status: 409, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = api.approveReleaseCandidate(
+      candidate.id,
+      { digestSha256: candidate.digestSha256 },
+      "00000000-0000-4000-8000-000000000002",
+    );
+    await expect(result).rejects.toMatchObject({
+      name: "ApiRequestError",
+      message: "Release candidate rejected",
+      status: 409,
+      code: "AUTHOR_CANNOT_APPROVE",
+    } satisfies Partial<ApiRequestError>);
+  });
+
+  it("reports an interrupted command as ambiguous and retains its retry key", async () => {
+    const key = "00000000-0000-4000-8000-000000000003";
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    const error = await api
+      .publishReleaseCandidate(
+        candidate.id,
+        { digestSha256: candidate.digestSha256 },
+        key,
+      )
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: "AmbiguousMutationError",
+      operation: "Release candidate publish",
+      idempotencyKey: key,
+    } satisfies Partial<AmbiguousMutationError>);
+    expect(error).toBeInstanceOf(AmbiguousMutationError);
+    expect((error as Error).message).toContain("same idempotency key");
+  });
+
+  it.each([408, 500, 502, 503, 504])(
+    "treats HTTP %i as an ambiguous mutation outcome",
+    async (status) => {
+      const key = "00000000-0000-4000-8000-000000000099";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(new Response(null, { status })),
+      );
+
+      await expect(
+        api.createReleaseCandidate(candidateInput, key),
+      ).rejects.toMatchObject({
+        name: "AmbiguousMutationError",
+        idempotencyKey: key,
+      });
+    },
+  );
+
+  it("times out interrupted release mutations as ambiguous outcomes", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          (_url: RequestInfo | URL, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () =>
+                reject(new DOMException("aborted", "AbortError")),
+              );
+            }),
+        ),
+      );
+      const result = api.submitReleaseCandidate(
+        candidate.id,
+        { digestSha256: candidate.digestSha256 },
+        "00000000-0000-4000-8000-000000000004",
+      );
+      const assertion = expect(result).rejects.toBeInstanceOf(
+        AmbiguousMutationError,
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("withdraws an encoded schedule and treats transport failure as ambiguous", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockRejectedValueOnce(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.withdrawSchedule("schedule/1")).resolves.toBeUndefined();
+    const error = await api
+      .withdrawSchedule("schedule/2")
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: "AmbiguousMutationError",
+      operation: "Schedule withdrawal",
+    });
+    expect((error as AmbiguousMutationError).idempotencyKey).toBeUndefined();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/schedules/schedule%2F1",
+      "/api/v1/schedules/schedule%2F2",
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "DELETE" });
   });
 });

@@ -173,6 +173,7 @@ export interface ScheduleRecord {
   dailyEndMinutes?: number | undefined;
   enabled: boolean;
   screenIds: string[];
+  withdrawable?: boolean | undefined;
   releaseId?: string | undefined;
   assignmentId?: string | undefined;
   createdAt: string;

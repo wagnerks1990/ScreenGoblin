@@ -2696,11 +2696,22 @@ export class MemoryStore implements DataStore {
     return { deleted: true } as const;
   }
   async listSchedules(org: string) {
-    return this.schedules.filter((schedule) => {
-      if (schedule.organizationId !== org) return false;
-      if (!schedule.releaseId) return true;
+    return this.schedules.flatMap((schedule) => {
+      if (schedule.organizationId !== org) return [];
       const latest = this.latestAssignment(schedule.id);
-      return latest?.state !== "WITHDRAWN";
+      if (schedule.releaseId && latest?.state === "WITHDRAWN") return [];
+      const withdrawable = Boolean(
+        schedule.releaseId && latest?.state === "ASSIGNED",
+      );
+      return [
+        {
+          ...schedule,
+          withdrawable,
+          ...(withdrawable && latest
+            ? { assignmentId: latest.id, releaseId: latest.releaseId }
+            : {}),
+        },
+      ];
     });
   }
   async createSchedule(

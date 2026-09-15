@@ -65,6 +65,25 @@ export interface ManagementReleaseCandidate {
   createdAt: string;
 }
 
+export interface ReleaseCandidateCreateRequest {
+  playlistId: string;
+  name: string;
+  priority: "normal" | "campaign" | "priority";
+  startsAt: string;
+  endsAt?: string;
+  timezone: string;
+  daysOfWeek: number[];
+  dailyStartMinutes?: number;
+  dailyEndMinutes?: number;
+  enabled: boolean;
+  screenIds: string[];
+  expiresAt: string;
+}
+
+export interface ReleaseCandidateTransitionRequest {
+  digestSha256: string;
+}
+
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
 
 export interface MediaAsset {
@@ -193,6 +212,8 @@ export interface ManagementSchedule {
   dailyEndMinutes?: number;
   enabled: boolean;
   screenIds: string[];
+  /** Server-verified active publication provenance permits withdrawal. */
+  withdrawable: boolean;
   /** Publication identifiers are opaque and do not imply current assignment state. */
   releaseId?: string;
   assignmentId?: string;

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Clock3, CalendarX2 } from "lucide-react";
+import { Clock3, CalendarX2, Trash2 } from "lucide-react";
 import type { ManagementSchedule } from "@screengoblin/contracts";
 import { schedules } from "../data";
 import {
   EmptyState,
+  Button,
+  Modal,
   PageHeader,
   SearchBox,
   Select,
@@ -24,6 +26,19 @@ function LiveSchedules() {
     "loading",
   );
   const [loadError, setLoadError] = useState("");
+  const [withdrawTarget, setWithdrawTarget] = useState<ManagementSchedule>();
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [operationStatus, setOperationStatus] = useState("");
+  const canWithdraw = ["OWNER", "ADMIN", "PUBLISHER"].includes(
+    api.currentUser()?.role ?? "",
+  );
+
+  const reload = async () => {
+    const records = await api.schedules();
+    setSchedules(records);
+    setLoadState("live");
+    return records;
+  };
 
   useEffect(() => {
     let active = true;
@@ -50,6 +65,44 @@ function LiveSchedules() {
     };
   }, []);
 
+  const withdraw = async () => {
+    if (!withdrawTarget) return;
+    const target = withdrawTarget;
+    setWithdrawing(true);
+    setLoadError("");
+    setOperationStatus("");
+    try {
+      await api.withdrawSchedule(target.id);
+      await reload();
+      setWithdrawTarget(undefined);
+      setOperationStatus(`Schedule ${target.name} was withdrawn.`);
+    } catch (cause) {
+      try {
+        const current = await reload();
+        if (!current.some((schedule) => schedule.id === target.id)) {
+          setWithdrawTarget(undefined);
+          setOperationStatus(
+            `Schedule ${target.name} is no longer active; live state was reconciled.`,
+          );
+        } else {
+          setLoadError(
+            cause instanceof Error
+              ? cause.message
+              : "Schedule withdrawal failed",
+          );
+        }
+      } catch {
+        setLoadError(
+          cause instanceof Error
+            ? cause.message
+            : "Withdrawal outcome is unknown; reconcile live state before retrying.",
+        );
+      }
+    } finally {
+      setWithdrawing(false);
+    }
+  };
+
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return schedules.filter(
@@ -70,6 +123,11 @@ function LiveSchedules() {
           Live schedule data is unavailable: {loadError}. No demo records were
           substituted.
         </div>
+      )}
+      {operationStatus && (
+        <p className="data-source-label" role="status">
+          {operationStatus}
+        </p>
       )}
       <PageHeader
         eyebrow="Programming"
@@ -124,6 +182,11 @@ function LiveSchedules() {
                     <th>Configured window</th>
                     <th>Priority</th>
                     <th>Configuration</th>
+                    {canWithdraw && (
+                      <th>
+                        <span className="sr-only">Actions</span>
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -151,6 +214,19 @@ function LiveSchedules() {
                           value={schedule.enabled ? "Enabled" : "Disabled"}
                         />
                       </td>
+                      {canWithdraw && (
+                        <td>
+                          {schedule.withdrawable && (
+                            <Button
+                              variant="danger"
+                              icon={<Trash2 size={15} />}
+                              onClick={() => setWithdrawTarget(schedule)}
+                            >
+                              Withdraw
+                            </Button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -169,6 +245,45 @@ function LiveSchedules() {
           )}
         </>
       )}
+      <Modal
+        open={!!withdrawTarget}
+        onClose={() => !withdrawing && setWithdrawTarget(undefined)}
+        title="Withdraw published schedule"
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              disabled={withdrawing}
+              onClick={() => setWithdrawTarget(undefined)}
+            >
+              Keep schedule
+            </Button>
+            <Button
+              variant="danger"
+              disabled={withdrawing}
+              onClick={() => void withdraw()}
+            >
+              {withdrawing ? "Withdrawing…" : "Withdraw exact schedule"}
+            </Button>
+          </>
+        }
+      >
+        {withdrawTarget && (
+          <p>
+            Withdraw <b>{withdrawTarget.name}</b> (release{" "}
+            <code>{withdrawTarget.releaseId}</code>, assignment{" "}
+            <code>{withdrawTarget.assignmentId}</code>) from exactly{" "}
+            {new Set(withdrawTarget.screenIds).size} target screens:{" "}
+            <code>{[...new Set(withdrawTarget.screenIds)].join(", ")}</code>.
+            Its configured window is {withdrawTarget.startsAt} to{" "}
+            {withdrawTarget.endsAt ?? "no configured end"} in{" "}
+            {withdrawTarget.timezone}. Disconnected Players may continue
+            displaying already-authorized content until they reconnect or reach
+            a signed hard boundary; cached bytes cannot be remotely recalled.
+            This is withdrawal, not rollback.
+          </p>
+        )}
+      </Modal>
     </>
   );
 }

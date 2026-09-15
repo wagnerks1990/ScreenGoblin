@@ -176,10 +176,12 @@ power-loss, reboot-recovery, and storage-telemetry evidence, are not complete
 release capabilities. Staged
 targeted re-enrollment exists as a manual recovery path, but does not imply
 attestation, erasure, recall, continuous rotation, or physical-device identity.
-The ordinary release-candidate API now enforces one independent approval, but
-Console workflow, scoped grants, re-authentication/MFA, rejection/revision,
-outbox delivery, retention operations, and operational approval evidence remain
-incomplete. Do not create UI or documentation that implies otherwise.
+The ordinary release-candidate API enforces one independent approval, and the
+Console operates candidate creation, exact-evidence review, submission,
+approval, publication, and verified active-schedule withdrawal. Scoped grants,
+re-authentication/MFA, rejection/revision, rollback, outbox delivery, retention
+operations, and operational approval evidence remain incomplete. Do not create
+UI or documentation that implies otherwise.
 
 Production configuration must reject `EMERGENCY_FEATURE_ENABLED=true` until the
 full emergency acceptance checklist is implemented and evidenced. The

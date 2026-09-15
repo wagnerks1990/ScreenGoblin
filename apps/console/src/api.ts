@@ -5,9 +5,12 @@ import type {
   DeviceEnrollmentStatus,
   ManagementListResponse,
   ManagementPlaylist,
+  ManagementReleaseCandidate,
   ManagementSchedule,
   ManagementScreen,
   MediaAsset,
+  ReleaseCandidateCreateRequest,
+  ReleaseCandidateTransitionRequest,
 } from "@screengoblin/contracts";
 import { demoFleet, screens, type DemoScreen } from "./data";
 
@@ -15,6 +18,7 @@ export type ApiResult<T> = { data: T; source: "live" | "demo" };
 export interface LiveSession {
   accessToken: string;
   user: {
+    id: string;
     name: string;
     email: string;
     role: "OWNER" | "ADMIN" | "PUBLISHER" | "VIEWER";
@@ -57,6 +61,52 @@ export interface DeviceReenrollmentActivation extends Partial<DeviceEnrollmentAc
 const baseUrl =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "/api/v1";
 const invalidatedSessionKey = "sg_live_session_invalidated";
+const mutationTimeoutMs = 10_000;
+const liveRoles = new Set(["OWNER", "ADMIN", "PUBLISHER", "VIEWER"]);
+
+function isLiveUser(value: unknown): value is LiveSession["user"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    candidate.id.length > 0 &&
+    typeof candidate.name === "string" &&
+    candidate.name.length > 0 &&
+    typeof candidate.email === "string" &&
+    candidate.email.length > 0 &&
+    typeof candidate.organizationId === "string" &&
+    candidate.organizationId.length > 0 &&
+    typeof candidate.role === "string" &&
+    liveRoles.has(candidate.role)
+  );
+}
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+export class AmbiguousMutationError extends Error {
+  constructor(
+    readonly operation: string,
+    readonly idempotencyKey?: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      `${operation} outcome is unknown. Reconcile live state before retrying${
+        idempotencyKey ? " with the same idempotency key" : ""
+      }.`,
+      options,
+    );
+    this.name = "AmbiguousMutationError";
+  }
+}
 
 function clearSession(invalidated: boolean) {
   window.sessionStorage.removeItem("sg_access_token");
@@ -87,7 +137,13 @@ async function authenticatedRequest<T>(path: string): Promise<T> {
       if (response.status === 401) {
         clearSession(true);
       }
-      throw new Error(`Live API returned HTTP ${response.status}`);
+      const payload = (await response.json().catch(() => undefined)) as
+        { error?: { code?: string; message?: string } } | undefined;
+      throw new ApiRequestError(
+        payload?.error?.message ?? `Live API returned HTTP ${response.status}`,
+        response.status,
+        payload?.error?.code,
+      );
     }
     return (await response.json()) as T;
   } finally {
@@ -104,29 +160,58 @@ async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
   return { data: await authenticatedRequest<T>(path), source: "live" };
 }
 
-async function mutate<T>(path: string, init: RequestInit): Promise<T> {
+async function mutate<T>(
+  path: string,
+  init: RequestInit,
+  ambiguous?: { operation: string; idempotencyKey?: string },
+): Promise<T> {
   const accessToken = window.sessionStorage.getItem("sg_access_token");
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init.body === undefined
-        ? {}
-        : { "Content-Type": "application/json" }),
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      ...init.headers,
-    },
-  });
-  if (!response.ok) {
-    if (response.status === 401 && accessToken) clearSession(true);
-    const payload = (await response.json().catch(() => undefined)) as
-      { error?: { message?: string } } | undefined;
-    throw new Error(
-      payload?.error?.message ?? `API returned ${response.status}`,
-    );
+  const controller = new AbortController();
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    mutationTimeoutMs,
+  );
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...(init.body === undefined
+          ? {}
+          : { "Content-Type": "application/json" }),
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...init.headers,
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      if (response.status === 401 && accessToken) clearSession(true);
+      if (ambiguous && (response.status === 408 || response.status >= 500))
+        throw new AmbiguousMutationError(
+          ambiguous.operation,
+          ambiguous.idempotencyKey,
+        );
+      const payload = (await response.json().catch(() => undefined)) as
+        { error?: { code?: string; message?: string } } | undefined;
+      throw new ApiRequestError(
+        payload?.error?.message ?? `API returned ${response.status}`,
+        response.status,
+        payload?.error?.code,
+      );
+    }
+    if (response.status === 204) return undefined as T;
+    return response.json() as Promise<T>;
+  } catch (error) {
+    if (ambiguous && !(error instanceof ApiRequestError))
+      throw new AmbiguousMutationError(
+        ambiguous.operation,
+        ambiguous.idempotencyKey,
+        { cause: error },
+      );
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
 }
 
 export const api = {
@@ -137,7 +222,12 @@ export const api = {
     const raw = window.sessionStorage.getItem("sg_session_user");
     if (!raw) return undefined;
     try {
-      return JSON.parse(raw) as LiveSession["user"];
+      const parsed: unknown = JSON.parse(raw);
+      if (!isLiveUser(parsed)) {
+        window.sessionStorage.removeItem("sg_session_user");
+        return undefined;
+      }
+      return parsed;
     } catch {
       window.sessionStorage.removeItem("sg_session_user");
       return undefined;
@@ -148,6 +238,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
+    if (
+      !session ||
+      typeof session.accessToken !== "string" ||
+      !session.accessToken ||
+      !isLiveUser(session.user)
+    )
+      throw new Error("Live API returned an invalid session principal");
     window.sessionStorage.setItem("sg_access_token", session.accessToken);
     window.sessionStorage.removeItem(invalidatedSessionKey);
     window.sessionStorage.setItem(
@@ -291,4 +388,67 @@ export const api = {
         "/schedules",
       )
     ).data,
+  releaseCandidates: async (): Promise<ManagementReleaseCandidate[]> =>
+    (
+      await authenticatedRequest<
+        ManagementListResponse<ManagementReleaseCandidate>
+      >("/release-candidates")
+    ).data,
+  releaseCandidate: (candidateId: string) =>
+    authenticatedRequest<ManagementReleaseCandidate>(
+      `/release-candidates/${encodeURIComponent(candidateId)}`,
+    ),
+  createReleaseCandidate: (
+    input: ReleaseCandidateCreateRequest,
+    idempotencyKey: string,
+  ) =>
+    mutate<ManagementReleaseCandidate>(
+      "/release-candidates",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(input),
+      },
+      { operation: "Release candidate creation", idempotencyKey },
+    ),
+  submitReleaseCandidate: (
+    candidateId: string,
+    input: ReleaseCandidateTransitionRequest,
+    idempotencyKey: string,
+  ) => transitionReleaseCandidate(candidateId, "submit", input, idempotencyKey),
+  approveReleaseCandidate: (
+    candidateId: string,
+    input: ReleaseCandidateTransitionRequest,
+    idempotencyKey: string,
+  ) =>
+    transitionReleaseCandidate(candidateId, "approve", input, idempotencyKey),
+  publishReleaseCandidate: (
+    candidateId: string,
+    input: ReleaseCandidateTransitionRequest,
+    idempotencyKey: string,
+  ) =>
+    transitionReleaseCandidate(candidateId, "publish", input, idempotencyKey),
+  withdrawSchedule: (scheduleId: string) =>
+    mutate<void>(
+      `/schedules/${encodeURIComponent(scheduleId)}`,
+      { method: "DELETE" },
+      { operation: "Schedule withdrawal" },
+    ),
 };
+
+function transitionReleaseCandidate(
+  candidateId: string,
+  operation: "submit" | "approve" | "publish",
+  input: ReleaseCandidateTransitionRequest,
+  idempotencyKey: string,
+) {
+  return mutate<ManagementReleaseCandidate>(
+    `/release-candidates/${encodeURIComponent(candidateId)}/${operation}`,
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(input),
+    },
+    { operation: `Release candidate ${operation}`, idempotencyKey },
+  );
+}

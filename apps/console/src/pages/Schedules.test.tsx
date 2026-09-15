@@ -10,6 +10,16 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 it("renders configured schedules without inferred operational or assignment state", async () => {
+  window.sessionStorage.setItem(
+    "sg_session_user",
+    JSON.stringify({
+      id: "publisher",
+      name: "Publisher",
+      email: "publisher@example.test",
+      role: "PUBLISHER",
+      organizationId: "org",
+    }),
+  );
   let resolveRequest!: (response: Response) => void;
   vi.stubGlobal(
     "fetch",
@@ -117,4 +127,66 @@ it("distinguishes authenticated schedule errors from successful empty data", asy
   ).toBeTruthy();
   expect(screen.getByText("Live API data")).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("requires exact confirmation and reconciles after schedule withdrawal", async () => {
+  window.sessionStorage.setItem(
+    "sg_session_user",
+    JSON.stringify({
+      id: "publisher",
+      name: "Publisher",
+      email: "publisher@example.test",
+      role: "PUBLISHER",
+      organizationId: "org",
+    }),
+  );
+  const schedule = {
+    id: "schedule-live",
+    playlistId: "playlist-exact",
+    name: "Published campaign",
+    priority: "campaign",
+    startsAt: "2030-01-01T08:00:00.000Z",
+    timezone: "UTC",
+    daysOfWeek: [],
+    enabled: true,
+    screenIds: ["screen-a", "screen-b"],
+    withdrawable: true,
+    releaseId: "release-live",
+    assignmentId: "assignment-live",
+    createdAt: "2030-01-01T00:00:00.000Z",
+    updatedAt: "2030-01-01T00:00:00.000Z",
+  };
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [schedule] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  vi.stubGlobal("fetch", fetchMock);
+  const user = userEvent.setup();
+  render(<Schedules />);
+
+  await user.click(await screen.findByRole("button", { name: "Withdraw" }));
+  const dialog = screen.getByRole("dialog", {
+    name: "Withdraw published schedule",
+  });
+  expect(dialog).toHaveTextContent("Published campaign");
+  expect(dialog).toHaveTextContent("2 target screens");
+  expect(dialog).toHaveTextContent("withdrawal, not rollback");
+  await user.click(
+    screen.getByRole("button", { name: "Withdraw exact schedule" }),
+  );
+  expect(await screen.findByRole("status")).toHaveTextContent("was withdrawn");
+  expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/schedules/schedule-live");
+  expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("DELETE");
+  expect(screen.queryByRole("button", { name: /rollback/i })).toBeNull();
 });
