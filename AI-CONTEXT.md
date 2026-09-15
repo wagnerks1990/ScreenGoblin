@@ -156,8 +156,9 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 - Location is a stable tenant-bound classification with audited owner/admin
   CRUD and optional Screen linkage. Additive screen-group and access-grant
   tables plus a pure all-target evaluator now exist, but a database latch keeps
-  every organization in `LEGACY`; runtime stores do not load grants and no
-  route/list enforces them. Effective authorization remains organization-role-
+  every organization in `LEGACY`; system-attributed organization-scope
+  compatibility grants mirror current non-emergency roles, while request-time
+  stores do not load grants and no route/list enforces them. Effective authorization remains organization-role-
   wide, and UI or docs must not claim scoped enforcement. The legacy
   Screen.location label remains compatible.
 - Production media must match an explicit canonical HTTPS origin. The current

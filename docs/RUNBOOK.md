@@ -112,10 +112,17 @@ group, or screen-scoped grants. Keep emergency publishing disabled.
 The scoped-authorization foundation migration is additive and intentionally
 adds a `LEGACY`-only database check on `Organization.authorizationMode`. Do not
 drop or alter that safety latch, manually insert grants as if they were
-effective, or advertise scoped access. A later reviewed migration must add
-runtime grant loading, compatibility backfill verification, shadow evidence,
-all affected read/mutation enforcement, epoch invalidation, and explicit tenant
-promotion before `SHADOW` or `SCOPED` can be selected.
+effective, or advertise scoped access. Compatibility grants are
+system-attributed as `legacy-role-backfill-v1`, exact-membership-bound, and
+organization-wide; their presence does not make them effective. Apply the
+compatibility migration with writers stopped after a verified backup and
+staging restore. It deliberately aborts if any preexisting grant cannot be
+proved to be the exact deterministic system bundle; investigate and reconcile
+that data instead of bypassing the preflight. The bootstrap does not revoke
+sessions or increment authorization epochs. A later reviewed migration must add
+runtime grant loading, shadow evidence, all affected read/mutation enforcement,
+grant-administration epoch invalidation, and explicit tenant promotion before
+`SHADOW` or `SCOPED` can be selected.
 
 ## Verifying interrupted historical migrations
 

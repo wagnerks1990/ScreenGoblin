@@ -102,7 +102,7 @@ docker build --pull --target build --file "$ROLLBACK_DOCKERFILE" \
 docker run --rm --pull never --network "$network" \
   --env DATABASE_URL="$DATABASE_URL" \
   screengoblin/recovery-migrate:test \
-  sh -c 'mv apps/api/prisma/migrations/20260912162000_targeted_initial_enrollment /tmp/targeted-initial-enrollment && mv apps/api/prisma/migrations/20260912163000_durable_membership_attribution /tmp/durable-membership-attribution && mv apps/api/prisma/migrations/20260915190000_release_approval_foundation /tmp/release-approval-foundation && mv apps/api/prisma/migrations/20260915210000_scoped_authorization_foundation /tmp/scoped-authorization-foundation && npm run prisma:migrate -w @screengoblin/api'
+  sh -c 'mv apps/api/prisma/migrations/20260912162000_targeted_initial_enrollment /tmp/targeted-initial-enrollment && mv apps/api/prisma/migrations/20260912163000_durable_membership_attribution /tmp/durable-membership-attribution && mv apps/api/prisma/migrations/20260915190000_release_approval_foundation /tmp/release-approval-foundation && mv apps/api/prisma/migrations/20260915210000_scoped_authorization_foundation /tmp/scoped-authorization-foundation && mv apps/api/prisma/migrations/20260915230000_compatibility_grant_backfill /tmp/compatibility-grant-backfill && npm run prisma:migrate -w @screengoblin/api'
 docker exec -i "$pg_container" psql -U screengoblin -d screengoblin \
   -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
 BEGIN;
@@ -113,7 +113,7 @@ VALUES ('upgrade-attribution-user', 'upgrade-attribution@example.test', 'Upgrade
 INSERT INTO "User" ("id", "email", "name", "passwordHash", "createdAt", "updatedAt")
 VALUES ('upgrade-approver', 'upgrade-approver@example.test', 'Upgrade approver fixture', 'non-secret-fixture-hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
-VALUES ('upgrade-attribution-membership', 'upgrade-enrollment-org', 'upgrade-attribution-user', 'OWNER');
+VALUES ('upgrade-attribution-membership-ß', 'upgrade-enrollment-org', 'upgrade-attribution-user', 'OWNER');
 INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
 VALUES ('upgrade-approver-membership', 'upgrade-enrollment-org', 'upgrade-approver', 'ADMIN');
 INSERT INTO "PairingCode" ("id", "organizationId", "codeHash", "status", "expiresAt", "claimedAt", "createdAt")
@@ -156,6 +156,34 @@ docker run --rm --pull never --network "$network" \
   --env DATABASE_URL="$DATABASE_URL" \
   screengoblin/recovery-migrate:test \
   npm run prisma:migrate -w @screengoblin/api
+docker run --rm --pull never --network "$network" \
+  --env DATABASE_URL="$DATABASE_URL" \
+  --env SEED_ADMIN_EMAIL=upgrade-seed@example.test \
+  --env SEED_ADMIN_PASSWORD=upgrade-seed-password-123 \
+  --env SEED_ADMIN_NAME='Upgrade Seed Owner' \
+  --env SEED_ORGANIZATION_NAME='Upgrade Seed Organization' \
+  --env SEED_ORGANIZATION_SLUG=upgrade-seed-organization \
+  screengoblin/recovery-migrate:test \
+  npm run prisma:seed -w @screengoblin/api >/dev/null
+seed_fingerprint_before="$(
+  docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
+    "SELECT member.\"authorizationEpoch\"::text || '|' || actor.\"authenticationEpoch\"::text || '|' || (SELECT count(*) FROM \"UserSession\" session WHERE session.\"userId\" = actor.id)::text || '|' || (SELECT count(*) FROM \"AccessGrant\" grant_row WHERE grant_row.\"organizationId\" = member.\"organizationId\" AND grant_row.\"subjectMembershipId\" = member.id AND grant_row.\"creatorKind\" = 'SYSTEM' AND grant_row.\"createdBySystemKey\" = 'legacy-role-backfill-v1' AND grant_row.\"scopeType\" = 'ORGANIZATION' AND grant_row.\"revokedAt\" IS NULL)::text || '|' || actor.\"passwordHash\" FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'"
+)"
+[[ "$seed_fingerprint_before" == 0\|0\|0\|13\|* ]]
+docker run --rm --pull never --network "$network" \
+  --env DATABASE_URL="$DATABASE_URL" \
+  --env SEED_ADMIN_EMAIL=upgrade-seed@example.test \
+  --env SEED_ADMIN_PASSWORD=upgrade-seed-password-123 \
+  --env SEED_ADMIN_NAME='Upgrade Seed Owner' \
+  --env SEED_ORGANIZATION_NAME='Upgrade Seed Organization' \
+  --env SEED_ORGANIZATION_SLUG=upgrade-seed-organization \
+  screengoblin/recovery-migrate:test \
+  npm run prisma:seed -w @screengoblin/api >/dev/null
+seed_fingerprint_after="$(
+  docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
+    "SELECT member.\"authorizationEpoch\"::text || '|' || actor.\"authenticationEpoch\"::text || '|' || (SELECT count(*) FROM \"UserSession\" session WHERE session.\"userId\" = actor.id)::text || '|' || (SELECT count(*) FROM \"AccessGrant\" grant_row WHERE grant_row.\"organizationId\" = member.\"organizationId\" AND grant_row.\"subjectMembershipId\" = member.id AND grant_row.\"creatorKind\" = 'SYSTEM' AND grant_row.\"createdBySystemKey\" = 'legacy-role-backfill-v1' AND grant_row.\"scopeType\" = 'ORGANIZATION' AND grant_row.\"revokedAt\" IS NULL)::text || '|' || actor.\"passwordHash\" FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'"
+)"
+[[ "$seed_fingerprint_after" == "$seed_fingerprint_before" ]]
 upgrade_authority_result="$(
   docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
     "SELECT pending.status::text || '|' || (attempt.\"cancelledAt\" IS NOT NULL)::text || '|' || claimed.status::text FROM \"PairingCode\" pending JOIN \"PairingAttempt\" attempt ON attempt.\"pairingCodeId\" = pending.id CROSS JOIN \"PairingCode\" claimed WHERE pending.id = 'upgrade-pending-grant' AND claimed.id = 'upgrade-claimed-grant'"
@@ -166,6 +194,21 @@ upgrade_attribution_count="$(
     "SELECT count(*) FROM \"MembershipAttribution\" WHERE \"organizationId\" = 'upgrade-enrollment-org' AND \"userId\" = 'upgrade-attribution-user'"
 )"
 [[ "$upgrade_attribution_count" == 1 ]]
+upgrade_compatibility_grant_result="$(
+  docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
+    "SELECT count(*)::text || '|' || count(*) FILTER (WHERE \"creatorKind\" = 'SYSTEM' AND \"createdByUserId\" IS NULL AND \"createdBySystemKey\" = 'legacy-role-backfill-v1' AND \"scopeType\" = 'ORGANIZATION' AND \"revokedAt\" IS NULL)::text || '|' || min(length(id))::text || '|' || max(length(id))::text FROM \"AccessGrant\" WHERE \"organizationId\" = 'upgrade-enrollment-org'"
+)"
+[[ "$upgrade_compatibility_grant_result" == "26|26|74|74" ]]
+upgrade_compatibility_publish_grant_id="$(
+  docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
+    "SELECT id FROM \"AccessGrant\" WHERE \"organizationId\" = 'upgrade-enrollment-org' AND \"subjectMembershipId\" = 'upgrade-attribution-membership-ß' AND capability = 'release.publish'"
+)"
+[[ "$upgrade_compatibility_publish_grant_id" == "compat-v1:eb14738b547e26112db9f97321f7b884449e99ae2a8c08f05564305d0e706770" ]]
+upgrade_authorization_epoch_result="$(
+  docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
+    "SELECT string_agg(\"authorizationEpoch\"::text, ',' ORDER BY id) FROM \"Membership\" WHERE \"organizationId\" = 'upgrade-enrollment-org'"
+)"
+[[ "$upgrade_authorization_epoch_result" == "0,0" ]]
 upgrade_legacy_assignment_result="$(
   docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
     "SELECT state::text || '|' || \"approvalRequired\"::text FROM \"ReleaseAssignment\" WHERE id = 'upgrade-assignment'"

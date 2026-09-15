@@ -1,58 +1,15 @@
 import { CAPABILITIES, type Capability } from "@screengoblin/contracts";
 import type { Role } from "../domain/types.js";
+import { COMPATIBILITY_GRANT_CAPABILITIES } from "./compatibility.js";
 
 const ROLE_CAPABILITIES = {
   OWNER: [
     CAPABILITIES.authorizationManage,
-    CAPABILITIES.screenRead,
-    CAPABILITIES.locationRead,
-    CAPABILITIES.mediaRead,
-    CAPABILITIES.playlistRead,
-    CAPABILITIES.scheduleRead,
-    CAPABILITIES.releaseCandidateRead,
-    CAPABILITIES.releaseCandidateCreate,
-    CAPABILITIES.releaseCandidateSubmit,
-    CAPABILITIES.releaseApprove,
-    CAPABILITIES.releasePublish,
-    CAPABILITIES.releaseWithdraw,
-    CAPABILITIES.screenCredentialRevoke,
-    CAPABILITIES.screenCredentialReenroll,
+    ...COMPATIBILITY_GRANT_CAPABILITIES.OWNER,
   ],
-  ADMIN: [
-    CAPABILITIES.screenRead,
-    CAPABILITIES.locationRead,
-    CAPABILITIES.mediaRead,
-    CAPABILITIES.playlistRead,
-    CAPABILITIES.scheduleRead,
-    CAPABILITIES.releaseCandidateRead,
-    CAPABILITIES.releaseCandidateCreate,
-    CAPABILITIES.releaseCandidateSubmit,
-    CAPABILITIES.releaseApprove,
-    CAPABILITIES.releasePublish,
-    CAPABILITIES.releaseWithdraw,
-    CAPABILITIES.screenCredentialRevoke,
-    CAPABILITIES.screenCredentialReenroll,
-  ],
-  PUBLISHER: [
-    CAPABILITIES.screenRead,
-    CAPABILITIES.locationRead,
-    CAPABILITIES.mediaRead,
-    CAPABILITIES.playlistRead,
-    CAPABILITIES.scheduleRead,
-    CAPABILITIES.releaseCandidateRead,
-    CAPABILITIES.releaseCandidateCreate,
-    CAPABILITIES.releaseCandidateSubmit,
-    CAPABILITIES.releasePublish,
-    CAPABILITIES.releaseWithdraw,
-  ],
-  VIEWER: [
-    CAPABILITIES.screenRead,
-    CAPABILITIES.locationRead,
-    CAPABILITIES.mediaRead,
-    CAPABILITIES.playlistRead,
-    CAPABILITIES.scheduleRead,
-    CAPABILITIES.releaseCandidateRead,
-  ],
+  ADMIN: COMPATIBILITY_GRANT_CAPABILITIES.ADMIN,
+  PUBLISHER: COMPATIBILITY_GRANT_CAPABILITIES.PUBLISHER,
+  VIEWER: COMPATIBILITY_GRANT_CAPABILITIES.VIEWER,
 } as const satisfies Record<Role, readonly Capability[]>;
 
 const knownCapabilities = new Set<unknown>(Object.values(CAPABILITIES));

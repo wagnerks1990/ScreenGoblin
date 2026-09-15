@@ -30,6 +30,10 @@ test("recovery drill migrates and restores representative application relations"
     script,
     /mv apps\/api\/prisma\/migrations\/20260915210000_scoped_authorization_foundation \/tmp\/scoped-authorization-foundation/,
   );
+  assert.match(
+    script,
+    /mv apps\/api\/prisma\/migrations\/20260915230000_compatibility_grant_backfill \/tmp\/compatibility-grant-backfill/,
+  );
   assert.match(script, /"_prisma_migrations"/);
   for (const table of [
     "Organization",
@@ -83,6 +87,12 @@ test("recovery drill migrates and restores representative application relations"
   assert.match(script, /rcp\.\\\"publisherUserId\\\" = 'recovery-user'/);
   assert.match(script, /ra\.\\\"approvalRequired\\\"/);
   assert.match(script, /upgrade_attribution_count/);
+  assert.match(script, /upgrade_compatibility_grant_result/);
+  assert.match(script, /upgrade_compatibility_publish_grant_id/);
+  assert.match(script, /upgrade_authorization_epoch_result/);
+  assert.match(script, /seed_fingerprint_before/);
+  assert.match(script, /seed_fingerprint_after/);
+  assert.match(script, /npm run prisma:seed -w @screengoblin\/api/);
   assert.match(script, /Restored AuditEvent mutation guard allowed/);
   assert.match(script, /restoredAuditGuardCount/);
   assert.match(script, /restored_relation_count/);

@@ -78,6 +78,11 @@ import {
   releaseCandidateDigest,
 } from "../releases/canonical.js";
 import { hasCapability } from "../authorization/policy.js";
+import {
+  COMPATIBILITY_GRANT_SYSTEM_KEY,
+  compatibilityGrantCapabilities,
+  compatibilityGrantId,
+} from "../authorization/compatibility.js";
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { mediaPublicationFailure } from "../utils/media-policy.js";
 import { matchesScheduleWindow } from "../utils/schedule.js";
@@ -669,6 +674,60 @@ export class PrismaStore implements DataStore {
         AND actor."disabledAt" IS NULL
       FOR UPDATE OF membership, actor`;
     return actor;
+  }
+  private async replaceCompatibilityGrants(
+    tx: Prisma.TransactionClient,
+    input: {
+      organizationId: string;
+      userId: string;
+      membershipId: string;
+      role: SessionUser["role"];
+      authorizationEpoch: number;
+      databaseNow: Date;
+    },
+  ) {
+    await tx.$executeRaw`UPDATE "AccessGrant"
+      SET "revokedAt" = GREATEST(${input.databaseNow}, "createdAt")
+      WHERE "organizationId" = ${input.organizationId}
+        AND "subjectUserId" = ${input.userId}
+        AND "subjectMembershipId" = ${input.membershipId}
+        AND "creatorKind" = 'SYSTEM'::"AccessGrantCreatorKind"
+        AND "createdBySystemKey" = ${COMPATIBILITY_GRANT_SYSTEM_KEY}
+        AND "revokedAt" IS NULL`;
+    const activeOrganizationGrants = await tx.accessGrant.findMany({
+      where: {
+        organizationId: input.organizationId,
+        subjectUserId: input.userId,
+        subjectMembershipId: input.membershipId,
+        scopeType: "ORGANIZATION",
+        revokedAt: null,
+      },
+      select: { capability: true },
+    });
+    const coveredCapabilities = new Set(
+      activeOrganizationGrants.map(({ capability }) => capability),
+    );
+    const nextEpoch = input.authorizationEpoch + 1;
+    const data = compatibilityGrantCapabilities(input.role)
+      .filter((capability) => !coveredCapabilities.has(capability))
+      .map((capability) => ({
+        id: compatibilityGrantId(
+          input.organizationId,
+          input.membershipId,
+          nextEpoch,
+          capability,
+        ),
+        organizationId: input.organizationId,
+        subjectUserId: input.userId,
+        subjectMembershipId: input.membershipId,
+        capability,
+        scopeType: "ORGANIZATION" as const,
+        startsAt: input.databaseNow,
+        creatorKind: "SYSTEM" as const,
+        createdBySystemKey: COMPATIBILITY_GRANT_SYSTEM_KEY,
+        createdAt: input.databaseNow,
+      }));
+    if (data.length > 0) await tx.accessGrant.createMany({ data });
   }
   private async pruneOldDeviceAuthChallenges(
     tx: Prisma.TransactionClient,
@@ -1409,12 +1468,14 @@ export class PrismaStore implements DataStore {
         Array<{
           id: string;
           role: SessionUser["role"];
+          authorizationEpoch: number;
           disabledAt: Date | null;
           databaseNow: Date;
         }>
       >`
         SELECT membership."id",
                membership."role"::text AS "role",
+               membership."authorizationEpoch",
                actor."disabledAt",
                CURRENT_TIMESTAMP AS "databaseNow"
         FROM "Membership" membership
@@ -1440,6 +1501,14 @@ export class PrismaStore implements DataStore {
         [organizationId],
         membership.databaseNow,
       );
+      await this.replaceCompatibilityGrants(tx, {
+        organizationId,
+        userId,
+        membershipId: membership.id,
+        role,
+        authorizationEpoch: membership.authorizationEpoch,
+        databaseNow: membership.databaseNow,
+      });
       await tx.membership.update({
         where: { id: membership.id },
         data: { role, authorizationEpoch: { increment: 1 } },

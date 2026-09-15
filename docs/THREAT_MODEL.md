@@ -126,10 +126,12 @@ The database and shared policy library contain an additive scoped-
 authorization foundation: tenant-constrained flat screen groups, exact grant
 scope shapes, a closed non-emergency grant vocabulary, role ceilings, and
 deterministic all-target evaluation. A database constraint deliberately keeps
-all organizations in `LEGACY` mode. Runtime stores and routes do not load or
-enforce these grants, no compatibility grants are backfilled, and no resource
-list is filtered by them. This groundwork is not an effective least-privilege
-control or completion of the authorization gate.
+all organizations in `LEGACY` mode. Exact-membership, system-attributed
+compatibility grants mirror the current non-emergency role ceiling at
+organization scope, but request-time stores and routes do not load or enforce
+them and no resource list is filtered by them. These broad compatibility rows
+are migration input, not least-privilege evidence. This groundwork is not an
+effective scoped control or completion of the authorization gate.
 
 Published releases and release assignments reference guarded, tenant-scoped
 membership-attribution tombstones instead of live memberships. Removing a
