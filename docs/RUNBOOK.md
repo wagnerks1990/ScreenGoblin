@@ -76,6 +76,39 @@ restored production-sized copy. Do not update or delete attribution rows
 directly. They survive membership and user deletion and are removed only by
 organization cascade.
 
+The release-approval migration requires a coordinated downtime cutover. Stop all
+writers, take and restore-test a backup, run the migration, deploy the new API
+and Console together, then complete the approval-workflow smoke test before
+reopening traffic. It creates immutable candidate, target, approval, and
+publication-provenance records; extends the idempotency ledger; and marks every
+preexisting assignment `approvalRequired=false`. Those legacy assignments are
+grandfathered and remain deliverable, but cannot be presented as independently
+approved. An immediate database trigger rejects new `ASSIGNED` rows that opt
+out of approval. The reviewed transaction writes an exact
+candidate/publication/assignment triangle; deferred composite foreign keys
+require the final assignment and published candidate to point back to the same
+publication evidence at commit.
+
+Do not run old API binaries after this migration. The legacy binary can call the
+old direct-publication store path and cannot satisfy the new provenance trigger,
+so application rollback is unsupported. Roll forward with a corrected new API
+image or restore the verified pre-migration PostgreSQL backup with writers
+stopped. Do not disable the trigger, flip `approvalRequired`, fabricate approval
+rows, or rewrite grandfathered history to unblock deployment.
+
+Before promotion, exercise create, author submit, different-user `OWNER`/`ADMIN`
+approval, and publish with four separate canonical UUIDv4 idempotency keys.
+Confirm the
+publisher may validly equal the author or approver, but the approver never equals
+the author. Verify same-key retries return the exact historical response snapshot
+without advancing current state. Confirm candidate expiry is at most seven days,
+the per-organization unexpired non-published cap is 100, the retained
+non-published cap is 1,000, and candidate creation garbage-collects only expired
+never-published drafts/reviews/approvals older than the 30-day idempotency replay
+window in bounded batches while retaining audit events and tombstones.
+The policy currently covers the whole organization; do not claim location,
+group, or screen-scoped grants. Keep emergency publishing disabled.
+
 ## Verifying interrupted historical migrations
 
 The following already-shipped migrations contain multiple statements and were
@@ -240,7 +273,13 @@ availability, operator readiness, or restoration into production infrastructure.
 
 ## Roll back
 
-Application rollback is safe only when the old application supports the migrated schema. Prefer forward-compatible, expand/migrate/contract database changes. Redeploy the prior image tag, verify readiness, and document the incident. Do not automatically reverse a destructive migration; restore the verified backup when required.
+Application rollback is safe only when the old application supports the migrated
+schema. The release-approval cutover is explicitly not old-binary-compatible;
+use a forward fix or restore the verified pre-migration database backup with all
+writers stopped. For other migrations, prefer forward-compatible
+expand/migrate/contract changes, verify readiness, and document the incident.
+Do not automatically reverse a destructive migration; restore the verified
+backup when required.
 
 Players retain a last-known-good manifest and prune the Android app-private
 native cache, or browser development CacheStorage, to assets referenced by the

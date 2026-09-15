@@ -173,6 +173,42 @@
           "seedPath": "/api/v1/schedules"
         },
         {
+          "label": "release-candidates-list",
+          "method": "GET",
+          "template": "/api/v1/release-candidates",
+          "seedPath": "/api/v1/release-candidates"
+        },
+        {
+          "label": "release-candidates-item",
+          "method": "GET",
+          "template": "/api/v1/release-candidates/:id",
+          "seedPath": "/api/v1/release-candidates/dast-probe"
+        },
+        {
+          "label": "release-candidates-create",
+          "method": "POST",
+          "template": "/api/v1/release-candidates",
+          "seedPath": "/api/v1/release-candidates"
+        },
+        {
+          "label": "release-candidates-submit",
+          "method": "POST",
+          "template": "/api/v1/release-candidates/:id/submit",
+          "seedPath": "/api/v1/release-candidates/dast-probe/submit"
+        },
+        {
+          "label": "release-candidates-approve",
+          "method": "POST",
+          "template": "/api/v1/release-candidates/:id/approve",
+          "seedPath": "/api/v1/release-candidates/dast-probe/approve"
+        },
+        {
+          "label": "release-candidates-publish",
+          "method": "POST",
+          "template": "/api/v1/release-candidates/:id/publish",
+          "seedPath": "/api/v1/release-candidates/dast-probe/publish"
+        },
+        {
           "label": "schedules-delete",
           "method": "DELETE",
           "template": "/api/v1/schedules/:id",

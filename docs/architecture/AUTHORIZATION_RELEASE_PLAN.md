@@ -2,7 +2,15 @@
 
 ## Status
 
-**Design proposal — not fully implemented or approved.** Ordinary release publication and withdrawal now use a closed, deny-by-default capability adapter backed by current organization membership, while preserving the existing role behavior. The broader API still uses one organization membership role (`OWNER`, `ADMIN`, `PUBLISHER`, or `VIEWER`) and organization-filtered queries. That is insufficient for least-privilege multi-location publishing. Resource scopes, grants, approvals, policy review, backfill evidence, and full enforcement tests remain release gates.
+**Design proposal — not fully implemented or approved.** Ordinary release
+publication now uses immutable candidates and a different-person approval,
+while publication and withdrawal use a closed, deny-by-default capability
+adapter backed by current organization membership. Only `OWNER`/`ADMIN` may
+approve; `PUBLISHER` may create, submit, publish, and withdraw. The broader API
+still uses one organization membership role and organization-filtered queries.
+That is insufficient for least-privilege multi-location publishing. Resource
+scopes, custom grants, MFA/re-authentication, policy review, operational
+evidence, and full lifecycle UX remain release gates.
 
 Emergency publishing remains disabled. Nothing in this document authorizes emergency use or allows AI/automation to approve or publish content.
 
@@ -37,7 +45,7 @@ Unknown capabilities fail closed. Capabilities should be referenced through shar
 | ------------ | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
 | `OWNER`      | All non-emergency organization administration and release capabilities                                       | Existing owner remains able to administer its organization; sensitive operations still require re-auth/policy |
 | `ADMIN`      | Membership/audit, screen lifecycle, fleet health, content and release management excluding owner-only grants | Preserve normal administration but remove implicit emergency authority                                        |
-| `PUBLISHER`  | Content editing plus candidate/review/publish capabilities only within assigned scopes                       | No longer organization-wide after enforced scoped grants are established                                      |
+| `PUBLISHER`  | Content editing plus candidate create/submit/publish capabilities, but no approval                           | No longer organization-wide after enforced scoped grants are established                                      |
 | `VIEWER`     | Read-only content, schedule, screen, fleet health within assigned scopes                                     | No mutations                                                                                                  |
 
 The migration must materialize explicit grants equivalent to intended existing access before enforcement. It must not infer emergency, destructive fleet, or cross-location authority from legacy roles.
@@ -105,13 +113,22 @@ The authorization library should expose one typed decision API used by route han
 ```mermaid
 stateDiagram-v2
     [*] --> Draft
-    Draft --> Candidate: snapshot
-    Candidate --> Approved: required approvals
-    Candidate --> Rejected: reviewer decision
+    Draft --> InReview: author submits
+    InReview --> Approved: independent approval
     Approved --> Published: publish transaction
     Published --> Assigned: target and schedule
     Assigned --> Superseded: replacement or rollback
 ```
+
+The first enforced tranche implements `DRAFT -> IN_REVIEW -> APPROVED ->
+PUBLISHED` for ordinary releases. The approver must differ from the author; the
+publisher may equal either participant. It uses organization-wide compatibility
+role bundles while scoped grants remain future work. Candidates bind the frozen
+release, exact screen IDs, schedule and policy version for no more than seven
+days. Each organization may have at most 100 unexpired and 1,000 retained
+non-published candidates; bounded opportunistic GC removes only expired
+never-published records older than the 30-day response-replay window while
+retaining audit events and idempotency tombstones.
 
 ### Records
 
@@ -151,22 +168,34 @@ An audit or outbox failure aborts the business mutation. Audit metadata records 
 
 ## API evolution
 
-Proposed additive endpoints under `/api/v1`:
+The first enforced organization-wide tranche implements these endpoints under
+`/api/v1`:
+
+| Endpoint                               | Current capability/policy                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /release-candidates`              | Authenticated organization member; tenant-filtered                                          |
+| `GET /release-candidates/:id`          | Authenticated organization member; tenant-filtered/non-enumerating                          |
+| `POST /release-candidates`             | `release.candidate.create`; canonical idempotency; seven-day TTL and active cap             |
+| `POST /release-candidates/:id/submit`  | `release.candidate.submit`; author only; canonical digest/idempotency                       |
+| `POST /release-candidates/:id/approve` | `release.approve`; owner/admin compatibility grant; approver differs from author            |
+| `POST /release-candidates/:id/publish` | `release.publish`; approval/authority/digest/target revalidation; transactional publication |
+| `POST /schedules`                      | Always `410 DIRECT_PUBLICATION_DISABLED`                                                    |
+
+The following remain proposed additive endpoints:
 
 | Endpoint                                     | Required capability/policy                                                                                             |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `GET /authorization/me`                      | Current principal; returns effective role/grant summary safe for UI hints, never authoritative client-side enforcement |
 | `GET/POST/PATCH /roles` and `/access-grants` | `membership.read/manage`; cannot delegate beyond actor authority                                                       |
 | `POST /playlists/:id/revisions`              | `playlist.edit` + `release.candidate.create`; idempotent immutable snapshot                                            |
-| `POST /release-candidates`                   | Candidate create across every resolved target scope                                                                    |
-| `GET /release-candidates/:id`                | Review/read access covering candidate scope                                                                            |
-| `POST /release-candidates/:id/approvals`     | `release.approve`, distinct-person and expiry policy; idempotent                                                       |
 | `POST /release-candidates/:id/rejections`    | `release.review`; append-only decision                                                                                 |
-| `POST /release-candidates/:id/publish`       | `release.publish`, complete approvals, target authority; transactional/idempotent                                      |
 | `POST /published-releases/:id/assignments`   | `release.assign`; immutable concrete target snapshot                                                                   |
 | `POST /assignments/:id/rollback`             | `release.rollback`; creates a new assignment to a prior trusted release                                                |
 
-Keep existing playlist/schedule endpoints for draft compatibility during a deprecation window. They must not activate mutable content once enforced release mode is enabled. Responses add capability hints and immutable IDs without removing existing fields until the oldest supported console/player is migrated.
+Keep playlist editing and schedule reads/withdrawal for compatibility. Direct
+schedule publication is already a permanent fail-closed tombstone and must not
+activate mutable content. Responses add capability hints and immutable IDs
+without removing fields until the oldest supported console/player is migrated.
 
 ## Shadow-to-enforced rollout
 

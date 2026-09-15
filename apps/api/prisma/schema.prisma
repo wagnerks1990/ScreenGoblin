@@ -69,32 +69,44 @@ enum LoginFailureReason {
 
 enum IdempotencyOperation {
   SCHEDULE_PUBLISH
+  RELEASE_CANDIDATE_CREATE
+  RELEASE_CANDIDATE_SUBMIT
+  RELEASE_CANDIDATE_APPROVE
+  RELEASE_CANDIDATE_PUBLISH
   SCREEN_ENROLLMENT_CREATE
   SCREEN_ENROLLMENT_ACTIVATE
 }
 
+enum ReleaseCandidateState {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  PUBLISHED
+}
+
 model Organization {
-  id                   String                @id @default(cuid())
-  name                 String
-  slug                 String                @unique
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
-  memberships          Membership[]
+  id                     String                  @id @default(cuid())
+  name                   String
+  slug                   String                  @unique
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  memberships            Membership[]
   membershipAttributions MembershipAttribution[]
-  locations            Location[]
-  screens              Screen[]
-  media                MediaAsset[]
-  playlists            Playlist[]
-  schedules            Schedule[]
-  pairings             PairingCode[]
-  emergencies          EmergencyOverride[]
-  audits               AuditEvent[]
-  publishedReleases    PublishedRelease[]
-  releaseAssignments   ReleaseAssignment[]
-  deviceCredentials    DeviceCredential[]
-  deviceAuthChallenges DeviceAuthChallenge[]
-  pairingAttempts      PairingAttempt[]
-  idempotencyRecords   IdempotencyRecord[]
+  locations              Location[]
+  screens                Screen[]
+  media                  MediaAsset[]
+  playlists              Playlist[]
+  schedules              Schedule[]
+  pairings               PairingCode[]
+  emergencies            EmergencyOverride[]
+  audits                 AuditEvent[]
+  publishedReleases      PublishedRelease[]
+  releaseAssignments     ReleaseAssignment[]
+  releaseCandidates      ReleaseCandidate[]
+  deviceCredentials      DeviceCredential[]
+  deviceAuthChallenges   DeviceAuthChallenge[]
+  pairingAttempts        PairingAttempt[]
+  idempotencyRecords     IdempotencyRecord[]
 }
 
 model IdempotencyRecord {
@@ -147,13 +159,13 @@ model User {
 }
 
 model Membership {
-  id                 String              @id @default(cuid())
+  id                 String        @id @default(cuid())
   organizationId     String
   userId             String
   role               OrgRole
-  authorizationEpoch Int                 @default(0)
-  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authorizationEpoch Int           @default(0)
+  organization       Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   userSessions       UserSession[]
 
   @@unique([organizationId, userId])
@@ -164,12 +176,15 @@ model Membership {
 /// one row for every Membership and custom guards preserve it until its owning
 /// Organization is deleted.
 model MembershipAttribution {
-  organizationId     String
-  userId             String
-  recordedAt         DateTime            @default(now())
-  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  publishedReleases  PublishedRelease[]  @relation("PublishedReleaseCreatorAttribution")
-  releaseAssignments ReleaseAssignment[] @relation("ReleaseAssignmentCreatorAttribution")
+  organizationId            String
+  userId                    String
+  recordedAt                DateTime                      @default(now())
+  organization              Organization                  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  publishedReleases         PublishedRelease[]            @relation("PublishedReleaseCreatorAttribution")
+  releaseAssignments        ReleaseAssignment[]           @relation("ReleaseAssignmentCreatorAttribution")
+  authoredReleaseCandidates ReleaseCandidate[]            @relation("ReleaseCandidateAuthorAttribution")
+  releaseApprovals          ReleaseApproval[]             @relation("ReleaseApprovalApproverAttribution")
+  releasePublications       ReleaseCandidatePublication[] @relation("ReleaseCandidatePublisherAttribution")
 
   @@id([organizationId, userId])
   @@index([userId])
@@ -229,11 +244,12 @@ model Screen {
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
   organization             Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  classifiedLocation       Location?                 @relation(fields: [locationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  classifiedLocation       Location?                 @relation(fields: [locationId, organizationId], references: [id, organizationId], onDelete: NoAction)
   schedules                ScheduleTarget[]
   pairingCodes             PairingCode[]             @relation("PairingResultScreen")
   reenrollmentGrants       PairingCode[]             @relation("PairingTargetScreen")
   releaseAssignmentTargets ReleaseAssignmentTarget[]
+  releaseCandidateTargets  ReleaseCandidateTarget[]
   deviceCredentials        DeviceCredential[]
 
   @@unique([id, organizationId])
@@ -242,30 +258,30 @@ model Screen {
 }
 
 model PairingCode {
-  id                      String           @id @default(cuid())
-  organizationId          String
-  screenId                String?
-  screenOrganizationId    String?
-  purpose                 PairingPurpose   @default(NEW_SCREEN)
-  targetScreenId          String?
-  targetScreenReferenceId String?
-  targetOrganizationId    String?
-  expectedGeneration      Int?
-  authorizedByUserId      String?
-  authorizedByMembershipId String?
+  id                              String           @id @default(cuid())
+  organizationId                  String
+  screenId                        String?
+  screenOrganizationId            String?
+  purpose                         PairingPurpose   @default(NEW_SCREEN)
+  targetScreenId                  String?
+  targetScreenReferenceId         String?
+  targetOrganizationId            String?
+  expectedGeneration              Int?
+  authorizedByUserId              String?
+  authorizedByMembershipId        String?
   authorizedByAuthenticationEpoch Int?
-  authorizedByAuthorizationEpoch Int?
-  priorCredentialId       String?
-  requestReason           String?
-  codeHash                String
-  status                  PairingStatus    @default(PENDING)
-  expiresAt               DateTime
-  claimedAt               DateTime?
-  createdAt               DateTime         @default(now())
-  organization            Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  screen                  Screen?          @relation("PairingResultScreen", fields: [screenId, screenOrganizationId], references: [id, organizationId], onDelete: SetNull)
-  targetScreen            Screen?          @relation("PairingTargetScreen", fields: [targetScreenId, targetOrganizationId], references: [id, organizationId], onDelete: SetNull)
-  attempts                PairingAttempt[]
+  authorizedByAuthorizationEpoch  Int?
+  priorCredentialId               String?
+  requestReason                   String?
+  codeHash                        String
+  status                          PairingStatus    @default(PENDING)
+  expiresAt                       DateTime
+  claimedAt                       DateTime?
+  createdAt                       DateTime         @default(now())
+  organization                    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  screen                          Screen?          @relation("PairingResultScreen", fields: [screenId, screenOrganizationId], references: [id, organizationId], onDelete: SetNull)
+  targetScreen                    Screen?          @relation("PairingTargetScreen", fields: [targetScreenId, targetOrganizationId], references: [id, organizationId], onDelete: SetNull)
+  attempts                        PairingAttempt[]
 
   @@unique([id, organizationId])
   @@index([organizationId, status, expiresAt])
@@ -330,7 +346,7 @@ model PairingAttempt {
   createdAt              DateTime          @default(now())
   organization           Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   pairingCode            PairingCode       @relation(fields: [pairingCodeId, organizationId], references: [id, organizationId], onDelete: Cascade)
-  boundCredential        DeviceCredential? @relation(fields: [boundCredentialId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  boundCredential        DeviceCredential? @relation(fields: [boundCredentialId, organizationId], references: [id, organizationId], onDelete: NoAction)
 
   @@unique([boundCredentialId, organizationId])
   @@index([organizationId, pairingCodeId, expiresAt, consumedAt])
@@ -401,7 +417,7 @@ model PlaylistItem {
   position           Int
   durationSeconds    Int
   playlist           Playlist            @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
-  asset              MediaAsset          @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  asset              MediaAsset          @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: NoAction)
   frozenReleaseItems FrozenReleaseItem[]
 
   @@unique([id, organizationId])
@@ -409,24 +425,25 @@ model PlaylistItem {
 }
 
 model Schedule {
-  id                 String              @id @default(cuid())
-  organizationId     String
-  playlistId         String
-  name               String
-  priority           SchedulePriority    @default(NORMAL)
-  startsAt           DateTime
-  endsAt             DateTime?
-  timezone           String              @default("UTC")
-  daysOfWeek         Int[]               @default([])
-  dailyStartMinutes  Int?
-  dailyEndMinutes    Int?
-  enabled            Boolean             @default(true)
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  playlist           Playlist            @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
-  targets            ScheduleTarget[]
-  releaseAssignments ReleaseAssignment[]
+  id                   String                       @id @default(cuid())
+  organizationId       String
+  playlistId           String
+  name                 String
+  priority             SchedulePriority             @default(NORMAL)
+  startsAt             DateTime
+  endsAt               DateTime?
+  timezone             String                       @default("UTC")
+  daysOfWeek           Int[]                        @default([])
+  dailyStartMinutes    Int?
+  dailyEndMinutes      Int?
+  enabled              Boolean                      @default(true)
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+  organization         Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  playlist             Playlist                     @relation(fields: [playlistId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  targets              ScheduleTarget[]
+  releaseAssignments   ReleaseAssignment[]
+  candidatePublication ReleaseCandidatePublication?
 
   @@unique([id, organizationId])
   @@index([organizationId, startsAt, endsAt])
@@ -443,7 +460,7 @@ model ScheduleTarget {
 }
 
 model PublishedRelease {
-  id                        String              @id @default(cuid())
+  id                        String                @id @default(cuid())
   organizationId            String
   sourcePlaylistId          String
   sourcePlaylistName        String
@@ -451,16 +468,108 @@ model PublishedRelease {
   sourcePlaylistUpdatedAt   DateTime
   digestSha256              String
   createdById               String
-  createdAt                 DateTime            @default(now())
-  organization              Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  sourcePlaylist            Playlist            @relation(fields: [sourcePlaylistId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  createdBy                 MembershipAttribution @relation("PublishedReleaseCreatorAttribution", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: Restrict)
+  createdAt                 DateTime              @default(now())
+  organization              Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sourcePlaylist            Playlist              @relation(fields: [sourcePlaylistId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  createdBy                 MembershipAttribution @relation("PublishedReleaseCreatorAttribution", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: NoAction)
   items                     FrozenReleaseItem[]
   assignments               ReleaseAssignment[]
+  candidates                ReleaseCandidate[]
 
   @@unique([id, organizationId])
   @@unique([organizationId, digestSha256])
   @@index([organizationId, createdAt])
+}
+
+model ReleaseCandidate {
+  id                String                       @id @default(cuid())
+  organizationId    String
+  releaseId         String
+  state             ReleaseCandidateState        @default(DRAFT)
+  digestSha256      String
+  authorUserId      String
+  scheduleName      String
+  priority          SchedulePriority
+  startsAt          DateTime
+  endsAt            DateTime?
+  timezone          String
+  daysOfWeek        Int[]
+  dailyStartMinutes Int?
+  dailyEndMinutes   Int?
+  enabled           Boolean
+  policyVersion     Int                          @default(1)
+  expiresAt         DateTime
+  submittedAt       DateTime?
+  approvedAt        DateTime?
+  publishedAt       DateTime?
+  publicationId     String?                      @unique
+  createdAt         DateTime                     @default(now())
+  organization      Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  release           PublishedRelease             @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  author            MembershipAttribution        @relation("ReleaseCandidateAuthorAttribution", fields: [organizationId, authorUserId], references: [organizationId, userId], onDelete: NoAction)
+  targets           ReleaseCandidateTarget[]
+  approval          ReleaseApproval?
+  publication       ReleaseCandidatePublication? @relation("PublicationCandidateEvidence")
+  finalPublication  ReleaseCandidatePublication? @relation("CandidateFinalPublication", fields: [publicationId, id, organizationId], references: [id, candidateId, organizationId], onDelete: NoAction)
+
+  @@unique([id, organizationId])
+  @@unique([publicationId, id, organizationId])
+  @@index([organizationId, digestSha256])
+  @@index([organizationId, state, expiresAt])
+}
+
+model ReleaseCandidateTarget {
+  organizationId           String
+  candidateId              String
+  screenId                 String
+  liveScreenId             String?
+  liveScreenOrganizationId String?
+  candidate                ReleaseCandidate @relation(fields: [candidateId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  liveScreen               Screen?          @relation(fields: [liveScreenId, liveScreenOrganizationId], references: [id, organizationId], onDelete: SetNull)
+
+  @@id([candidateId, screenId])
+  @@index([organizationId, screenId])
+}
+
+model ReleaseApproval {
+  id                    String                @id @default(cuid())
+  organizationId        String
+  candidateId           String
+  candidateDigestSha256 String
+  approverUserId        String
+  authenticationEpoch   Int
+  authorizationEpoch    Int
+  approvedAt            DateTime              @default(now())
+  candidate             ReleaseCandidate      @relation(fields: [candidateId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  approver              MembershipAttribution @relation("ReleaseApprovalApproverAttribution", fields: [organizationId, approverUserId], references: [organizationId, userId], onDelete: NoAction)
+
+  @@unique([id, organizationId])
+  @@unique([candidateId, organizationId])
+  @@index([organizationId, approverUserId])
+}
+
+model ReleaseCandidatePublication {
+  id                  String                @id @default(cuid())
+  organizationId      String
+  candidateId         String
+  scheduleId          String
+  assignmentId        String
+  publisherUserId     String
+  publishedAt         DateTime              @default(now())
+  candidate           ReleaseCandidate      @relation("PublicationCandidateEvidence", fields: [candidateId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  publishedCandidate  ReleaseCandidate?     @relation("CandidateFinalPublication")
+  schedule            Schedule              @relation(fields: [scheduleId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  assignment          ReleaseAssignment     @relation("PublicationAssignmentEvidence", fields: [assignmentId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  publishedAssignment ReleaseAssignment?    @relation("AssignmentFinalPublication")
+  publisher           MembershipAttribution @relation("ReleaseCandidatePublisherAttribution", fields: [organizationId, publisherUserId], references: [organizationId, userId], onDelete: NoAction)
+
+  @@unique([id, organizationId])
+  @@unique([candidateId, organizationId])
+  @@unique([scheduleId, organizationId])
+  @@unique([assignmentId, organizationId])
+  @@unique([id, candidateId, organizationId])
+  @@unique([id, assignmentId, organizationId])
+  @@index([organizationId, publishedAt])
 }
 
 model FrozenReleaseItem {
@@ -482,41 +591,47 @@ model FrozenReleaseItem {
   durationSeconds      Int
   createdAt            DateTime         @default(now())
   release              PublishedRelease @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: Cascade)
-  sourcePlaylistItem   PlaylistItem     @relation(fields: [sourcePlaylistItemId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  sourceAsset          MediaAsset       @relation(fields: [sourceAssetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  sourcePlaylistItem   PlaylistItem     @relation(fields: [sourcePlaylistItemId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  sourceAsset          MediaAsset       @relation(fields: [sourceAssetId, organizationId], references: [id, organizationId], onDelete: NoAction)
 
   @@unique([releaseId, position])
   @@index([organizationId, sourceAssetId])
 }
 
 model ReleaseAssignment {
-  id                   String                    @id @default(cuid())
-  organizationId       String
-  releaseId            String
-  scheduleId           String
-  state                ReleaseAssignmentState
-  digestSha256         String
-  previousAssignmentId String?                   @unique
-  createdById          String
-  scheduleName         String
-  priority             SchedulePriority
-  startsAt             DateTime
-  endsAt               DateTime?
-  timezone             String
-  daysOfWeek           Int[]
-  dailyStartMinutes    Int?
-  dailyEndMinutes      Int?
-  enabled              Boolean
-  createdAt            DateTime                  @default(now())
-  organization         Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  release              PublishedRelease          @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  schedule             Schedule                  @relation(fields: [scheduleId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  createdBy            MembershipAttribution     @relation("ReleaseAssignmentCreatorAttribution", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: Restrict)
-  previousAssignment   ReleaseAssignment?        @relation("ReleaseAssignmentHistory", fields: [previousAssignmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  nextAssignments      ReleaseAssignment[]       @relation("ReleaseAssignmentHistory")
-  targets              ReleaseAssignmentTarget[]
+  id                     String                       @id @default(cuid())
+  organizationId         String
+  releaseId              String
+  scheduleId             String
+  state                  ReleaseAssignmentState
+  digestSha256           String
+  previousAssignmentId   String?                      @unique
+  createdById            String
+  scheduleName           String
+  priority               SchedulePriority
+  startsAt               DateTime
+  endsAt                 DateTime?
+  timezone               String
+  daysOfWeek             Int[]
+  dailyStartMinutes      Int?
+  dailyEndMinutes        Int?
+  enabled                Boolean
+  approvalRequired       Boolean                      @default(true)
+  candidatePublicationId String?                      @unique
+  expectedWithdrawalDigestSha256 String?
+  createdAt              DateTime                     @default(now())
+  organization           Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  release                PublishedRelease             @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  schedule               Schedule                     @relation(fields: [scheduleId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  createdBy              MembershipAttribution        @relation("ReleaseAssignmentCreatorAttribution", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: NoAction)
+  previousAssignment     ReleaseAssignment?           @relation("ReleaseAssignmentHistory", fields: [previousAssignmentId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  nextAssignments        ReleaseAssignment[]          @relation("ReleaseAssignmentHistory")
+  candidatePublication   ReleaseCandidatePublication? @relation("PublicationAssignmentEvidence")
+  finalPublication       ReleaseCandidatePublication? @relation("AssignmentFinalPublication", fields: [candidatePublicationId, id, organizationId], references: [id, assignmentId, organizationId], onDelete: NoAction)
+  targets                ReleaseAssignmentTarget[]
 
   @@unique([id, organizationId])
+  @@unique([candidatePublicationId, id, organizationId])
   @@index([organizationId, scheduleId, createdAt])
   @@index([organizationId, releaseId])
 }

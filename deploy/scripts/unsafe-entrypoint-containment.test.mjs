@@ -99,3 +99,42 @@ test("removed legacy registration configuration cannot be restored silently", as
       `${file} must not restore the removed registration switch`,
     );
 });
+
+test("production routes cannot restore direct ordinary publication", async () => {
+  const routes = await sourceFiles("apps/api/src/routes");
+  const routeSource = (
+    await Promise.all(
+      routes.map(async (file) => `${file}\n${await read(file)}`),
+    )
+  ).join("\n");
+  assert.doesNotMatch(
+    routeSource,
+    /\.publishScheduleAndAudit\s*\(/,
+    "production routes must not call the grandfathered direct-publish store method",
+  );
+
+  const schedules = await read("apps/api/src/routes/schedules.ts");
+  const legacyRoute = schedules.match(
+    /app\.post\("\/schedules",[\s\S]*?\n  \}\);/,
+  )?.[0];
+  assert.ok(legacyRoute, "the legacy route must remain an explicit tombstone");
+  assert.match(legacyRoute, /\.code\(410\)/);
+  assert.match(legacyRoute, /DIRECT_PUBLICATION_DISABLED/);
+  assert.doesNotMatch(legacyRoute, /request\.body|app\.store/);
+
+  const prismaStore = await read("apps/api/src/store/prisma.ts");
+  assert.match(
+    prismaStore,
+    /async publishScheduleAndAudit\([\s\S]*?return \{ published: false, reason: "FORBIDDEN" \}/,
+    "the legacy store method must deny production callers before any write",
+  );
+
+  for (const endpoint of [
+    'app.post("/release-candidates"',
+    "`/release-candidates/:id/${operation}`",
+  ])
+    assert.ok(
+      schedules.includes(endpoint),
+      `required release-candidate endpoint is absent: ${endpoint}`,
+    );
+});

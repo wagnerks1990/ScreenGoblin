@@ -115,19 +115,43 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   actor's active organization role and commit the resource mutation with its
   audit event in one transaction. Authorization, reference conflicts, and audit
   failures must leave both resource state and audit history unchanged.
-- Ordinary schedule publication freezes playlist and asset playback facts plus
-  targets and schedule windows in an immutable release assignment. Manifest
-  selection must use only those snapshots; withdrawal is append-only and must
-  retain release history.
-- Ordinary release publication and withdrawal require exact typed capabilities
-  and revalidate the actor's current organization membership in the store. The
-  current role-to-capability map is only a compatibility adapter; do not treat it
-  as scoped authorization or an approval workflow.
-- Ordinary publication requires a canonical UUIDv4 command key. Store only its
-  domain- and tenant-bound SHA-256 fingerprint and canonical request digest;
-  commit the replay body with release, assignment, and audit state. A same-key
-  retry is historical response recovery and must never reactivate a withdrawn
-  assignment. Thirty-day response bodies compact to non-reusable tombstones.
+- Ordinary publication is only `create -> submit -> approve -> publish` through
+  `/release-candidates`; `POST /schedules` is a fail-closed `410` compatibility
+  tombstone. Creation freezes playlist/assets, the exact organization-wide
+  screen set, schedule, policy version, and seven-day-or-shorter expiry into a
+  canonical digest. Submit is author-only. Approval requires a different active
+  `OWNER` or `ADMIN` human from the author; `PUBLISHER` cannot approve. The
+  publisher may be the author, the approver, or a
+  third authorized human, but publication must revalidate the approval identity,
+  authentication/authorization epochs, digest, targets, release, assets, and
+  current authority in one transaction. This interim policy is organization-wide;
+  it is not location/group/screen-scoped authorization.
+- Candidate list/detail responses are tenant-filtered and expose the immutable,
+  ordered review facts (asset identity/name/type, configured source URL,
+  checksum, byte size, expiry/creation time, position, and duration). Never add
+  storage keys, media capabilities, device/session credentials, or signing
+  material to these management responses.
+- Each candidate transition requires its own canonical UUIDv4 idempotency key.
+  Store only the operation/domain/tenant-bound key fingerprint, canonical
+  request digest, and exact committed response snapshot. Same-key/same-actor/
+  same-request retries return that historical snapshot even if candidate state
+  later advances; changed payload/actor and expired or compacted keys fail
+  closed. Response snapshots retain for 30 days, then compact to permanent
+  non-reusable tombstones.
+- At most 100 unexpired and 1,000 retained non-published candidates may exist
+  per organization. Candidate creation garbage-collects expired
+  never-published draft, review, or approved records older than the 30-day
+  response-replay window in bounded batches. Published candidates,
+  publications, releases, assignments, audit, and idempotency tombstones remain
+  retained history. Legacy assignments are explicitly grandfathered with
+  `approvalRequired=false`; every newly assigned release requires candidate
+  publication provenance. The approved publish transaction pre-generates its
+  assignment and publication IDs and writes one exact provenance triangle.
+  The approved assignment also freezes its expected canonical withdrawal
+  digest; PostgreSQL rejects a successor whose digest, scalar snapshot, or
+  exact target bindings do not match, preventing unique-history-slot poisoning.
+  Deferred composite foreign keys require the final `ASSIGNED` row and
+  `PUBLISHED` candidate to point back to that same evidence at commit.
 - Tenant-owned database relationships must carry and enforce the same organization ID at the foreign-key boundary; migrations must abort for investigation rather than silently relabel cross-tenant legacy rows.
 - Location is now a stable tenant-bound classification with audited owner/admin
   CRUD and optional Screen linkage. It has no grants or filtering semantics;
@@ -144,7 +168,7 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 ## Deliberately disabled or incomplete
 
 Emergency activation, remote commands, screenshots, proof of play, binary
-uploads/scanning/transcoding/private delivery, release approvals, scoped location authorization, MFA/SSO,
+uploads/scanning/transcoding/private delivery, scoped location authorization, MFA/SSO,
 update rings, device hardware/application attestation, automatic overlapping
 credential rotation, verified local erasure, offline recall, and representative
 physical-device validation, including native-cache full-disk, process-death,
@@ -152,9 +176,10 @@ power-loss, reboot-recovery, and storage-telemetry evidence, are not complete
 release capabilities. Staged
 targeted re-enrollment exists as a manual recovery path, but does not imply
 attestation, erasure, recall, continuous rotation, or physical-device identity.
-Immutable ordinary release snapshots exist, but multi-party approval and
-promotion workflows remain incomplete. Do not create UI or documentation that
-implies otherwise.
+The ordinary release-candidate API now enforces one independent approval, but
+Console workflow, scoped grants, re-authentication/MFA, rejection/revision,
+outbox delivery, retention operations, and operational approval evidence remain
+incomplete. Do not create UI or documentation that implies otherwise.
 
 Production configuration must reject `EMERGENCY_FEATURE_ENABLED=true` until the
 full emergency acceptance checklist is implemented and evidenced. The

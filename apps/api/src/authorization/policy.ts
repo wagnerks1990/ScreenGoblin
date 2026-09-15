@@ -3,18 +3,29 @@ import type { Role } from "../domain/types.js";
 
 const ROLE_CAPABILITIES = {
   OWNER: [
+    CAPABILITIES.releaseCandidateCreate,
+    CAPABILITIES.releaseCandidateSubmit,
+    CAPABILITIES.releaseApprove,
     CAPABILITIES.releasePublish,
     CAPABILITIES.releaseWithdraw,
     CAPABILITIES.screenCredentialRevoke,
     CAPABILITIES.screenCredentialReenroll,
   ],
   ADMIN: [
+    CAPABILITIES.releaseCandidateCreate,
+    CAPABILITIES.releaseCandidateSubmit,
+    CAPABILITIES.releaseApprove,
     CAPABILITIES.releasePublish,
     CAPABILITIES.releaseWithdraw,
     CAPABILITIES.screenCredentialRevoke,
     CAPABILITIES.screenCredentialReenroll,
   ],
-  PUBLISHER: [CAPABILITIES.releasePublish, CAPABILITIES.releaseWithdraw],
+  PUBLISHER: [
+    CAPABILITIES.releaseCandidateCreate,
+    CAPABILITIES.releaseCandidateSubmit,
+    CAPABILITIES.releasePublish,
+    CAPABILITIES.releaseWithdraw,
+  ],
   VIEWER: [],
 } as const satisfies Record<Role, readonly Capability[]>;
 

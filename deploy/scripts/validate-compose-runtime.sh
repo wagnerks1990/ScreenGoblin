@@ -503,11 +503,16 @@ readonly enrollment_screen_id="compose-enrollment-screen"
 readonly media_credential_id="compose-media-credential"
 readonly media_user_id="compose-media-user"
 readonly media_membership_id="compose-media-membership"
+readonly media_approver_id="compose-media-approver"
+readonly media_approver_membership_id="compose-media-approver-membership"
 readonly media_playlist_id="compose-media-playlist"
 readonly media_playlist_item_id="compose-media-playlist-item"
 readonly media_schedule_id="compose-media-schedule"
 readonly media_release_id="compose-media-release"
 readonly media_assignment_id="compose-media-assignment"
+readonly media_candidate_id="compose-media-candidate"
+readonly media_approval_id="compose-media-approval"
+readonly media_publication_id="compose-media-publication"
 media_key_id="$(printf 'K%.0s' {1..43})"
 readonly media_key_id
 readonly media_asset_id="compose-media-asset"
@@ -592,6 +597,11 @@ mapfile -t media_snapshot_digests < <(
 readonly media_release_digest="${media_snapshot_digests[0]}"
 readonly media_assignment_digest="${media_snapshot_digests[1]}"
 readonly media_withdrawal_digest="${media_snapshot_digests[2]}"
+media_candidate_digest="$(
+  printf '%s' "$media_release_digest:$media_assignment_digest:$media_screen_id" |
+    "$OPENSSL_BIN" dgst -sha256 | awk '{print $2}'
+)"
+readonly media_candidate_digest
 
 "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh minio-init -ceu '
   mc alias set smoke http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
@@ -624,6 +634,10 @@ INSERT INTO "User" ("id", "email", "name", "passwordHash", "createdAt", "updated
 VALUES ('$media_user_id', 'compose-media@example.test', 'Compose media operator', '$media_password_hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
 VALUES ('$media_membership_id', '$media_org_id', '$media_user_id', 'OWNER');
+INSERT INTO "User" ("id", "email", "name", "passwordHash", "createdAt", "updatedAt")
+VALUES ('$media_approver_id', 'compose-media-approver@example.test', 'Compose media approver', '$media_password_hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
+VALUES ('$media_approver_membership_id', '$media_org_id', '$media_approver_id', 'ADMIN');
 INSERT INTO "Screen" (
   "id", "organizationId", "name", "status", "orientation", "resolution",
   "tags", "credentialGeneration", "createdAt", "updatedAt"
@@ -646,10 +660,26 @@ INSERT INTO "PublishedRelease" ("id", "organizationId", "sourcePlaylistId", "sou
 VALUES ('$media_release_id', '$media_org_id', '$media_playlist_id', 'Compose playlist', 'Capability authorization fixture', '$media_snapshot_timestamp', '$media_release_digest', '$media_user_id', CURRENT_TIMESTAMP);
 INSERT INTO "FrozenReleaseItem" ("id", "organizationId", "releaseId", "sourcePlaylistItemId", "sourceAssetId", "assetName", "assetKind", "assetMimeType", "assetUrl", "assetStorageKey", "assetChecksumSha256", "assetSizeBytes", "assetCreatedAt", "position", "durationSeconds", "createdAt")
 VALUES ('compose-media-frozen-item', '$media_org_id', '$media_release_id', '$media_playlist_item_id', '$media_asset_id', 'Compose media', 'IMAGE', 'image/png', 'https://signage.example.test/media/compose.png', '$media_storage_key', '$media_checksum', '$media_size'::bigint, '$media_snapshot_timestamp', 0, 15, CURRENT_TIMESTAMP);
-INSERT INTO "ReleaseAssignment" ("id", "organizationId", "releaseId", "scheduleId", "state", "digestSha256", "createdById", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt")
-VALUES ('$media_assignment_id', '$media_org_id', '$media_release_id', '$media_schedule_id', 'ASSIGNED', '$media_assignment_digest', '$media_user_id', 'Compose schedule', 'NORMAL', '$media_schedule_starts_at', '$media_schedule_ends_at', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP);
+INSERT INTO "ReleaseCandidate" ("id", "organizationId", "releaseId", "state", "digestSha256", "authorUserId", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "policyVersion", "expiresAt", "createdAt")
+VALUES ('$media_candidate_id', '$media_org_id', '$media_release_id', 'DRAFT', '$media_candidate_digest', '$media_user_id', 'Compose schedule', 'NORMAL', '$media_schedule_starts_at', '$media_schedule_ends_at', 'UTC', ARRAY[]::INTEGER[], true, 1, CURRENT_TIMESTAMP + INTERVAL '1 day', CURRENT_TIMESTAMP);
+INSERT INTO "ReleaseCandidateTarget" ("organizationId", "candidateId", "screenId", "liveScreenId", "liveScreenOrganizationId")
+VALUES ('$media_org_id', '$media_candidate_id', '$media_screen_id', '$media_screen_id', '$media_org_id');
+UPDATE "ReleaseCandidate" SET "state"='IN_REVIEW', "submittedAt"=CURRENT_TIMESTAMP WHERE "id"='$media_candidate_id';
+INSERT INTO "ReleaseApproval" ("id", "organizationId", "candidateId", "candidateDigestSha256", "approverUserId", "authenticationEpoch", "authorizationEpoch", "approvedAt")
+VALUES ('$media_approval_id', '$media_org_id', '$media_candidate_id', '$media_candidate_digest', '$media_approver_id', 0, 0, CURRENT_TIMESTAMP);
+UPDATE "ReleaseCandidate"
+SET "state"='APPROVED',
+    "approvedAt"=(SELECT "approvedAt" FROM "ReleaseApproval" WHERE "id"='$media_approval_id')
+WHERE "id"='$media_candidate_id';
+BEGIN;
+INSERT INTO "ReleaseAssignment" ("id", "organizationId", "releaseId", "scheduleId", "state", "digestSha256", "createdById", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "approvalRequired", "candidatePublicationId", "expectedWithdrawalDigestSha256", "createdAt")
+VALUES ('$media_assignment_id', '$media_org_id', '$media_release_id', '$media_schedule_id', 'ASSIGNED', '$media_assignment_digest', '$media_user_id', 'Compose schedule', 'NORMAL', '$media_schedule_starts_at', '$media_schedule_ends_at', 'UTC', ARRAY[]::INTEGER[], true, true, '$media_publication_id', '$media_withdrawal_digest', CURRENT_TIMESTAMP);
 INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screenId", "liveScreenId", "liveScreenOrganizationId")
 VALUES ('$media_org_id', '$media_assignment_id', '$media_screen_id', '$media_screen_id', '$media_org_id');
+UPDATE "ReleaseCandidate" SET "state"='PUBLISHED', "publishedAt"=CURRENT_TIMESTAMP, "publicationId"='$media_publication_id' WHERE "id"='$media_candidate_id';
+INSERT INTO "ReleaseCandidatePublication" ("id", "organizationId", "candidateId", "scheduleId", "assignmentId", "publisherUserId", "publishedAt")
+VALUES ('$media_publication_id', '$media_org_id', '$media_candidate_id', '$media_schedule_id', '$media_assignment_id', '$media_user_id', CURRENT_TIMESTAMP);
+COMMIT;
 SQL
 
 login_status="$($CURL_BIN --silent --show-error --insecure \
@@ -863,10 +893,12 @@ assert_status "$SCREEN_GOBLIN_HOST" \
 "${compose[@]}" exec -T postgres psql \
   --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set ON_ERROR_STOP=1 <<SQL >/dev/null
+BEGIN;
 INSERT INTO "ReleaseAssignment" ("id", "organizationId", "releaseId", "scheduleId", "state", "digestSha256", "previousAssignmentId", "createdById", "scheduleName", "priority", "startsAt", "endsAt", "timezone", "daysOfWeek", "enabled", "createdAt")
 VALUES ('compose-media-withdrawal', '$media_org_id', '$media_release_id', '$media_schedule_id', 'WITHDRAWN', '$media_withdrawal_digest', '$media_assignment_id', '$media_user_id', 'Compose schedule', 'NORMAL', '$media_schedule_starts_at', '$media_schedule_ends_at', 'UTC', ARRAY[]::INTEGER[], true, CURRENT_TIMESTAMP);
 INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screenId", "liveScreenId", "liveScreenOrganizationId")
 VALUES ('$media_org_id', 'compose-media-withdrawal', '$media_screen_id', '$media_screen_id', '$media_org_id');
+COMMIT;
 SQL
 assert_status "$SCREEN_GOBLIN_HOST" \
   "/api/v1/device/media/$media_asset_id" \

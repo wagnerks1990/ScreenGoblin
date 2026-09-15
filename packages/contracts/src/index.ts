@@ -15,6 +15,9 @@ export const SUPPORTED_MEDIA_MIME_TYPES = {
 } as const satisfies Record<ContentKind, readonly string[]>;
 
 export const CAPABILITIES = {
+  releaseCandidateCreate: "release.candidate.create",
+  releaseCandidateSubmit: "release.candidate.submit",
+  releaseApprove: "release.approve",
   releasePublish: "release.publish",
   releaseWithdraw: "release.withdraw",
   screenCredentialRevoke: "screen.credential.revoke",
@@ -22,6 +25,45 @@ export const CAPABILITIES = {
   emergencyActivate: "emergency.activate",
   emergencyClear: "emergency.clear",
 } as const;
+
+export type ReleaseCandidateState =
+  "DRAFT" | "IN_REVIEW" | "APPROVED" | "PUBLISHED";
+
+export interface ManagementReleaseCandidate {
+  id: string;
+  state: ReleaseCandidateState;
+  digestSha256: string;
+  releaseId: string;
+  releaseDigestSha256: string;
+  sourcePlaylistId: string;
+  authorUserId: string;
+  items: PlaylistItem[];
+  schedule: {
+    name: string;
+    priority: "normal" | "campaign" | "priority";
+    startsAt: string;
+    endsAt?: string;
+    timezone: string;
+    daysOfWeek: number[];
+    dailyStartMinutes?: number;
+    dailyEndMinutes?: number;
+    enabled: boolean;
+  };
+  screenIds: string[];
+  policyVersion: number;
+  expiresAt: string;
+  submittedAt?: string;
+  approvedAt?: string;
+  publishedAt?: string;
+  approval?: {
+    approverUserId: string;
+    candidateDigestSha256: string;
+    approvedAt: string;
+  };
+  scheduleId?: string;
+  assignmentId?: string;
+  createdAt: string;
+}
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
 

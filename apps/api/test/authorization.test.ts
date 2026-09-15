@@ -23,6 +23,16 @@ async function releaseFixture(role: Role) {
     authenticationEpoch: 0,
     authorizationEpoch: 0,
   });
+  store.users.push({
+    id: "approver",
+    email: "approver@example.test",
+    name: "Approver",
+    passwordHash: "unused",
+    organizationId: "org-a",
+    role: "ADMIN",
+    authenticationEpoch: 0,
+    authorizationEpoch: 0,
+  });
   const screen = await store.createScreen("org-a", {
     name: "Lobby",
     location: "",
@@ -130,15 +140,40 @@ describe("release capability policy", () => {
 
   it("re-evaluates current authority before withdrawal", async () => {
     const { store, input } = await releaseFixture("PUBLISHER");
-    const publicationCommand = idempotency();
-    const publication = await store.publishScheduleAndAudit(
+    const created = await store.createReleaseCandidateAndAudit(
       "org-a",
-      input,
+      {
+        ...input,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
       { actorUserId: "actor" },
       allowedOrigins,
-      publicationCommand,
+      idempotency(),
     );
-    if (!publication.published) throw new Error(publication.reason);
+    if (!created.completed) throw new Error(created.reason);
+    await store.submitReleaseCandidateAndAudit(
+      "org-a",
+      created.candidate.id,
+      created.candidate.digestSha256,
+      { actorUserId: "actor" },
+      idempotency(),
+    );
+    await store.approveReleaseCandidateAndAudit(
+      "org-a",
+      created.candidate.id,
+      created.candidate.digestSha256,
+      { actorUserId: "approver" },
+      idempotency(),
+    );
+    const publication = await store.publishReleaseCandidateAndAudit(
+      "org-a",
+      created.candidate.id,
+      created.candidate.digestSha256,
+      { actorUserId: "actor" },
+      allowedOrigins,
+      idempotency(),
+    );
+    if (!publication.completed) throw new Error(publication.reason);
     store.users[0]!.role = "VIEWER";
 
     await expect(
@@ -147,18 +182,28 @@ describe("release capability policy", () => {
         input,
         { actorUserId: "actor" },
         allowedOrigins,
-        publicationCommand,
+        idempotency(),
       ),
     ).resolves.toEqual({ published: false, reason: "FORBIDDEN" });
 
     await expect(
-      store.withdrawScheduleAndAudit("org-a", publication.schedule.id, {
-        actorUserId: "actor",
-      }),
+      store.withdrawScheduleAndAudit(
+        "org-a",
+        publication.candidate.scheduleId!,
+        {
+          actorUserId: "actor",
+        },
+      ),
     ).resolves.toEqual({ withdrawn: false, reason: "FORBIDDEN" });
     expect(
       store.releaseAssignments.map((assignment) => assignment.state),
     ).toEqual(["ASSIGNED"]);
-    expect(store.audits).toHaveLength(1);
+    expect(store.audits.map(({ action }) => action)).toEqual([
+      "release.candidate.created",
+      "release.candidate.submitted",
+      "release.candidate.approved",
+      "release.candidate.published",
+      "release.published",
+    ]);
   });
 });

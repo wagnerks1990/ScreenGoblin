@@ -259,6 +259,74 @@ export interface ReleasePublicationPolicy {
   mediaAllowedOrigins: string[];
 }
 
+export type ReleaseCandidateState =
+  "DRAFT" | "IN_REVIEW" | "APPROVED" | "PUBLISHED";
+
+export interface ReleaseApprovalRecord {
+  id: string;
+  organizationId: string;
+  candidateId: string;
+  candidateDigestSha256: string;
+  approverUserId: string;
+  authenticationEpoch: number;
+  authorizationEpoch: number;
+  approvedAt: string;
+}
+
+export interface ReleaseCandidateRecord {
+  id: string;
+  organizationId: string;
+  releaseId: string;
+  releaseDigestSha256: string;
+  sourcePlaylistId: string;
+  state: ReleaseCandidateState;
+  digestSha256: string;
+  authorUserId: string;
+  items: FrozenReleaseItem[];
+  schedule: FrozenScheduleSnapshot;
+  screenIds: string[];
+  policyVersion: number;
+  expiresAt: string;
+  submittedAt?: string | undefined;
+  approvedAt?: string | undefined;
+  publishedAt?: string | undefined;
+  scheduleId?: string | undefined;
+  assignmentId?: string | undefined;
+  approval?: ReleaseApprovalRecord | undefined;
+  createdAt: string;
+}
+
+export interface ReleaseCandidateIdempotencyInput {
+  keyHash: string;
+  requestDigestSha256: string;
+}
+
+export const RELEASE_CANDIDATE_RESPONSE_RETENTION_MS =
+  30 * 24 * 60 * 60 * 1_000;
+
+export type ReleaseCandidateFailureReason =
+  | "NOT_FOUND"
+  | "FORBIDDEN"
+  | "INVALID_STATE"
+  | "STALE_DIGEST"
+  | "AUTHOR_CANNOT_APPROVE"
+  | "APPROVAL_STALE"
+  | "EXPIRED"
+  | "IDEMPOTENCY_KEY_REUSED"
+  | "IDEMPOTENCY_KEY_EXPIRED"
+  | "PLAYLIST_NOT_FOUND"
+  | "SCREEN_NOT_FOUND"
+  | "ASSET_NOT_FOUND"
+  | "ASSET_NOT_ALLOWED"
+  | "ASSET_UNSUPPORTED"
+  | "ASSET_EXPIRED"
+  | "RELEASE_TOO_LARGE"
+  | "NO_PLAYABLE_ITEMS";
+
+export type ReleaseCandidateResult =
+  | { completed: true; candidate: ReleaseCandidateRecord; replayed?: true }
+  | { completed: false; reason: ReleaseCandidateFailureReason };
+
 export interface ReleaseAuditContext {
   actorUserId: string;
   ipAddress?: string | undefined;
@@ -917,6 +985,40 @@ export interface DataStore {
     policy: ReleasePublicationPolicy,
     idempotency: SchedulePublicationIdempotencyInput,
   ): Promise<SchedulePublicationResult>;
+  createReleaseCandidateAndAudit(
+    orgId: string,
+    data: SchedulePublicationInput & { expiresAt: string },
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult>;
+  listReleaseCandidates(orgId: string): Promise<ReleaseCandidateRecord[]>;
+  getReleaseCandidate(
+    orgId: string,
+    candidateId: string,
+  ): Promise<ReleaseCandidateRecord | null>;
+  submitReleaseCandidateAndAudit(
+    orgId: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult>;
+  approveReleaseCandidateAndAudit(
+    orgId: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult>;
+  publishReleaseCandidateAndAudit(
+    orgId: string,
+    candidateId: string,
+    expectedDigestSha256: string,
+    audit: ReleaseAuditContext,
+    policy: ReleasePublicationPolicy,
+    idempotency: ReleaseCandidateIdempotencyInput,
+  ): Promise<ReleaseCandidateResult>;
   withdrawScheduleAndAudit(
     orgId: string,
     scheduleId: string,

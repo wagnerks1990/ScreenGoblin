@@ -312,7 +312,7 @@ describe("authenticated management routes", () => {
     expect(updated.body).not.toContain("private-hash");
   });
 
-  it("serves whitelisted playlist and schedule publication responses", async () => {
+  it("serves whitelisted playlist and reviewed publication responses", async () => {
     const createdPlaylist = await app.inject({
       method: "POST",
       url: "/api/v1/playlists",
@@ -346,9 +346,9 @@ describe("authenticated management routes", () => {
         { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
       ],
     });
-    const published = await app.inject({
+    const created = await app.inject({
       method: "POST",
-      url: "/api/v1/schedules",
+      url: "/api/v1/release-candidates",
       headers: {
         authorization,
         "idempotency-key": crypto.randomUUID(),
@@ -362,15 +362,87 @@ describe("authenticated management routes", () => {
         daysOfWeek: [],
         enabled: true,
         screenIds: [screen.id],
+        expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
       },
     });
+    expect(created.statusCode).toBe(201);
+    const candidate = created.json();
+    const submit = await app.inject({
+      method: "POST",
+      url: `/api/v1/release-candidates/${candidate.id}/submit`,
+      headers: { authorization, "idempotency-key": crypto.randomUUID() },
+      payload: { digestSha256: candidate.digestSha256 },
+    });
+    expect(submit.statusCode).toBe(200);
 
-    expect(published.statusCode).toBe(201);
+    const approverId = "00000000-0000-4000-8000-000000000003";
+    store.users.push({
+      id: approverId,
+      email: "approver@example.test",
+      name: "Approver",
+      passwordHash: "unused",
+      organizationId: "organization-1",
+      role: "ADMIN",
+      authenticationEpoch: 0,
+      authorizationEpoch: 0,
+    });
+    const approverSessionId = randomToken();
+    store.userSessions.push({
+      id: "00000000-0000-4000-8000-000000000004",
+      organizationId: "organization-1",
+      userId: approverId,
+      tokenHash: sha256(approverSessionId),
+      authenticationEpoch: 0,
+      authorizationEpoch: 0,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      createdAt: timestamps.createdAt,
+    });
+    const approverAuthorization = `Bearer ${app.jwt.sign({
+      sub: approverId,
+      email: "approver@example.test",
+      organizationId: "organization-1",
+      role: "ADMIN",
+      sessionId: approverSessionId,
+    })}`;
+    const approval = await app.inject({
+      method: "POST",
+      url: `/api/v1/release-candidates/${candidate.id}/approve`,
+      headers: {
+        authorization: approverAuthorization,
+        "idempotency-key": crypto.randomUUID(),
+      },
+      payload: { digestSha256: candidate.digestSha256 },
+    });
+    expect(approval.statusCode).toBe(200);
+    const published = await app.inject({
+      method: "POST",
+      url: `/api/v1/release-candidates/${candidate.id}/publish`,
+      headers: { authorization, "idempotency-key": crypto.randomUUID() },
+      payload: { digestSha256: candidate.digestSha256 },
+    });
+
+    expect(published.statusCode).toBe(200);
     expect(published.json()).toMatchObject({
-      playlistId: playlist.id,
+      sourcePlaylistId: playlist.id,
       releaseId: expect.any(String),
       assignmentId: expect.any(String),
+      state: "PUBLISHED",
+      items: [
+        {
+          asset: {
+            id: asset.id,
+            url: "https://media.example.test/schedule.png",
+          },
+        },
+      ],
     });
-    expect(published.json()).not.toHaveProperty("organizationId");
+    for (const privateField of [
+      "organizationId",
+      "storageKey",
+      "authenticationEpoch",
+      "authorizationEpoch",
+    ]) {
+      expect(published.body).not.toContain(privateField);
+    }
   });
 });

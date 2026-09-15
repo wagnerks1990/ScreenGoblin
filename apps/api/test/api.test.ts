@@ -10,7 +10,12 @@ import {
 import { MEDIA_MAX_ASSET_BYTES } from "@screengoblin/contracts";
 import { randomToken, sha256 } from "../src/utils/crypto.js";
 import { LOGIN_FAILURE_MAX_RECORDS } from "../src/domain/types.js";
-import type { SessionUser } from "../src/domain/types.js";
+import type {
+  ReleaseAuditContext,
+  ReleasePublicationPolicy,
+  SchedulePublicationInput,
+  SessionUser,
+} from "../src/domain/types.js";
 import { verifyMediaCapability } from "../src/media/delivery.js";
 
 const secret = "test-secret-that-is-longer-than-thirty-two-characters";
@@ -73,6 +78,16 @@ beforeEach(async () => {
       passwordHash: await hash("correct horse battery staple", 4),
       organizationId: "org-a",
       role: "VIEWER",
+      authenticationEpoch: 0,
+      authorizationEpoch: 0,
+    },
+    {
+      id: "00000000-0000-4000-8000-000000000003",
+      email: "approver@example.test",
+      name: "Approver",
+      passwordHash: await hash("correct horse battery staple", 4),
+      organizationId: "org-a",
+      role: "ADMIN",
       authenticationEpoch: 0,
       authorizationEpoch: 0,
     },
@@ -147,7 +162,7 @@ const scheduledPlaylist = async (
       { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
     ],
   });
-  const result = await store.publishScheduleAndAudit(
+  const result = await publishApprovedSchedule(
     "org-a",
     {
       playlistId: playlist.id,
@@ -169,7 +184,67 @@ const scheduledPlaylist = async (
   );
   if (!result.published)
     throw new Error(`Schedule fixture failed: ${result.reason}`);
-  return result.schedule;
+  return result.schedule!;
+};
+
+const publishApprovedSchedule = async (
+  org: string,
+  data: SchedulePublicationInput,
+  audit: ReleaseAuditContext,
+  policy: ReleasePublicationPolicy,
+  _idempotency: unknown,
+) => {
+  void _idempotency;
+  const created = await store.createReleaseCandidateAndAudit(
+    org,
+    {
+      ...data,
+      expiresAt: new Date(Date.now() + 6 * 24 * 60 * 60_000).toISOString(),
+    },
+    audit,
+    policy,
+    storeIdempotency(),
+  );
+  if (!created.completed) return { published: false, reason: created.reason };
+  const submitted = await store.submitReleaseCandidateAndAudit(
+    org,
+    created.candidate.id,
+    created.candidate.digestSha256,
+    audit,
+    storeIdempotency(),
+  );
+  if (!submitted.completed)
+    return { published: false, reason: submitted.reason };
+  const approved = await store.approveReleaseCandidateAndAudit(
+    org,
+    created.candidate.id,
+    created.candidate.digestSha256,
+    { actorUserId: "00000000-0000-4000-8000-000000000003" },
+    storeIdempotency(),
+  );
+  if (!approved.completed) return { published: false, reason: approved.reason };
+  const published = await store.publishReleaseCandidateAndAudit(
+    org,
+    created.candidate.id,
+    created.candidate.digestSha256,
+    audit,
+    policy,
+    storeIdempotency(),
+  );
+  if (!published.completed)
+    return { published: false, reason: published.reason };
+  const schedule = store.schedules.find(
+    ({ id }) => id === published.candidate.scheduleId,
+  );
+  const release = store.releases.find(
+    ({ id }) => id === published.candidate.releaseId,
+  );
+  const assignment = store.releaseAssignments.find(
+    ({ id }) => id === published.candidate.assignmentId,
+  );
+  if (!schedule || !release || !assignment)
+    throw new Error("Approved publication fixture is incomplete");
+  return { published: true, schedule, release, assignment };
 };
 
 describe("browser CORS policy", () => {
@@ -930,726 +1005,6 @@ describe("authentication and organization RBAC", () => {
   });
 });
 
-describe("immutable ordinary release publication", () => {
-  const scheduleHeaders = (
-    bearer = token,
-    idempotencyKey = crypto.randomUUID(),
-  ) => ({
-    authorization: `Bearer ${bearer}`,
-    "idempotency-key": idempotencyKey,
-  });
-  const schedulePayload = (playlistId: string, screenId: string) => ({
-    playlistId,
-    name: "School day",
-    priority: "normal" as const,
-    startsAt: "2026-09-14T00:00:00.000Z",
-    endsAt: "2026-09-15T00:00:00.000Z",
-    timezone: "America/New_York",
-    daysOfWeek: [1],
-    dailyStartMinutes: 9 * 60,
-    dailyEndMinutes: 17 * 60,
-    enabled: true,
-    screenIds: [screenId],
-  });
-
-  it("orders absolute windows by instant and stores one canonical UTC spelling", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Fractional window",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const asset = await store.createMedia("org-a", {
-      name: "Fractional window",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://media.example.test/fractional-window.png",
-      checksumSha256: "9".repeat(64),
-      sizeBytes: 3,
-    });
-    const playlist = await store.createPlaylist("org-a", {
-      name: "Fractional window",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-    const key = crypto.randomUUID();
-    const valid = {
-      ...schedulePayload(playlist.id, screen.id),
-      startsAt: "2026-09-14T00:00:00.2Z",
-      endsAt: "2026-09-14T00:00:00.21Z",
-    };
-    const first = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(token, key),
-      payload: valid,
-    });
-    expect(first.statusCode).toBe(201);
-    expect(first.json()).toMatchObject({
-      startsAt: "2026-09-14T00:00:00.200Z",
-      endsAt: "2026-09-14T00:00:00.210Z",
-    });
-
-    const equivalentReplay = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(token, key),
-      payload: {
-        ...valid,
-        startsAt: "2026-09-14T00:00:00.2000Z",
-        endsAt: "2026-09-14T00:00:00.210Z",
-      },
-    });
-    expect(equivalentReplay.statusCode).toBe(201);
-    expect(equivalentReplay.json()).toEqual(first.json());
-    expect(store.schedules).toHaveLength(1);
-    expect(store.schedules[0]).toMatchObject({
-      startsAt: "2026-09-14T00:00:00.200Z",
-      endsAt: "2026-09-14T00:00:00.210Z",
-    });
-    expect(store.releaseAssignments[0]!.schedule).toMatchObject({
-      startsAt: "2026-09-14T00:00:00.200Z",
-      endsAt: "2026-09-14T00:00:00.210Z",
-    });
-    expect(store.idempotencyRecords[0]!.response).toMatchObject({
-      startsAt: "2026-09-14T00:00:00.200Z",
-      endsAt: "2026-09-14T00:00:00.210Z",
-    });
-
-    for (const [startsAt, endsAt] of [
-      ["2026-09-14T00:00:00.20Z", "2026-09-14T00:00:00.2Z"],
-      ["2026-09-14T00:00:00.21Z", "2026-09-14T00:00:00.2Z"],
-    ]) {
-      const rejected = await app.inject({
-        method: "POST",
-        url: "/api/v1/schedules",
-        headers: scheduleHeaders(),
-        payload: { ...valid, startsAt, endsAt },
-      });
-      expect(rejected.statusCode).toBe(400);
-      expect(rejected.json().error).toMatchObject({
-        code: "VALIDATION_ERROR",
-      });
-    }
-    expect(store.schedules).toHaveLength(1);
-  });
-
-  it("enforces the release capability compatibility matrix", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Lobby",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const asset = await store.createMedia("org-a", {
-      name: "Welcome",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://media.example.test/welcome.png",
-      checksumSha256: "a".repeat(64),
-      sizeBytes: 3,
-    });
-    const playlist = await store.createPlaylist("org-a", {
-      name: "Role matrix",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-
-    let publishedScheduleId = "";
-    for (const role of ["OWNER", "ADMIN", "PUBLISHER"] as const) {
-      store.users[0]!.role = role;
-      const roleToken = issueTestToken(store.users[0]!);
-      const publication = await app.inject({
-        method: "POST",
-        url: "/api/v1/schedules",
-        headers: scheduleHeaders(roleToken),
-        payload: {
-          ...schedulePayload(playlist.id, screen.id),
-          name: `${role} publication`,
-        },
-      });
-      expect(publication.statusCode).toBe(201);
-      publishedScheduleId ||= publication.json().id;
-      const withdrawal = await app.inject({
-        method: "DELETE",
-        url: `/api/v1/schedules/${publication.json().id}`,
-        headers: { authorization: `Bearer ${roleToken}` },
-      });
-      expect(withdrawal.statusCode).toBe(204);
-    }
-
-    store.users[0]!.role = "VIEWER";
-    const viewerToken = issueTestToken(store.users[0]!);
-    const denied = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(viewerToken),
-      payload: {
-        ...schedulePayload(playlist.id, screen.id),
-        name: "Viewer publication",
-      },
-    });
-    expect(denied.statusCode).toBe(403);
-    expect(denied.json().error.code).toBe("FORBIDDEN");
-    const deniedWithdrawal = await app.inject({
-      method: "DELETE",
-      url: `/api/v1/schedules/${publishedScheduleId}`,
-      headers: { authorization: `Bearer ${viewerToken}` },
-    });
-    expect(deniedWithdrawal.statusCode).toBe(403);
-    expect(deniedWithdrawal.json().error.code).toBe("FORBIDDEN");
-    expect(store.schedules).toHaveLength(3);
-    expect(store.releaseAssignments).toHaveLength(6);
-    expect(store.audits).toHaveLength(6);
-  });
-
-  it("atomically publishes a frozen release, assignment, schedule, and audit", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Lobby",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const asset = await store.createMedia("org-a", {
-      name: "Welcome",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://media.example.test/welcome.png",
-      checksumSha256: "a".repeat(64),
-      sizeBytes: 3,
-    });
-    const playlist = await store.createPlaylist("org-a", {
-      name: "Lobby playlist",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-    store.audit = async () => {
-      throw new Error("standalone audit must not be used for publication");
-    };
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(),
-      payload: schedulePayload(playlist.id, screen.id),
-    });
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({
-      playlistId: playlist.id,
-      releaseId: store.releases[0]!.id,
-      assignmentId: store.releaseAssignments[0]!.id,
-    });
-    expect(store.releases[0]!.items[0]!.asset).toMatchObject({
-      id: asset.id,
-      url: asset.url,
-      checksumSha256: asset.checksumSha256,
-    });
-    expect(store.audits).toContainEqual(
-      expect.objectContaining({
-        action: "release.published",
-        entityId: store.releases[0]!.id,
-        metadata: expect.objectContaining({
-          assignmentId: store.releaseAssignments[0]!.id,
-          digestSha256: store.releases[0]!.digestSha256,
-        }),
-      }),
-    );
-  });
-
-  it("reuses an identical active assignment instead of publishing a conflict", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Lobby",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const asset = await store.createMedia("org-a", {
-      name: "Welcome",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://media.example.test/welcome.png",
-      checksumSha256: "a".repeat(64),
-      sizeBytes: 3,
-    });
-    const playlist = await store.createPlaylist("org-a", {
-      name: "Lobby playlist",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-    const key = crypto.randomUUID();
-    const request = () =>
-      app.inject({
-        method: "POST",
-        url: "/api/v1/schedules",
-        headers: scheduleHeaders(token, key),
-        payload: schedulePayload(playlist.id, screen.id),
-      });
-
-    const first = await request();
-    const second = await request();
-
-    expect(first.statusCode).toBe(201);
-    expect(second.statusCode).toBe(201);
-    expect(second.json()).toMatchObject({
-      id: first.json().id,
-      releaseId: first.json().releaseId,
-      assignmentId: first.json().assignmentId,
-    });
-    expect(store.schedules).toHaveLength(1);
-    expect(store.releases).toHaveLength(1);
-    expect(store.releaseAssignments).toHaveLength(1);
-    expect(store.audits).toHaveLength(1);
-  });
-
-  it("replays a lost publication response after withdrawal without reactivation", async () => {
-    const [firstScreen, secondScreen] = await Promise.all([
-      store.createScreen("org-a", {
-        name: "First lobby",
-        location: "",
-        orientation: "landscape",
-        resolution: "1920x1080",
-        tags: [],
-      }),
-      store.createScreen("org-a", {
-        name: "Second lobby",
-        location: "",
-        orientation: "landscape",
-        resolution: "1920x1080",
-        tags: [],
-      }),
-    ]);
-    const asset = await store.createMedia("org-a", {
-      name: "Idempotent welcome",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://media.example.test/idempotent.png",
-      checksumSha256: "d".repeat(64),
-      sizeBytes: 3,
-    });
-    const playlist = await store.createPlaylist("org-a", {
-      name: "Idempotent playlist",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-    const key = crypto.randomUUID();
-    const payload = {
-      ...schedulePayload(playlist.id, firstScreen.id),
-      daysOfWeek: [5, 1],
-      screenIds: [secondScreen.id, firstScreen.id],
-    };
-    const first = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(token, key),
-      payload,
-    });
-    expect(first.statusCode).toBe(201);
-    const withdrawal = await app.inject({
-      method: "DELETE",
-      url: `/api/v1/schedules/${first.json().id}`,
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(withdrawal.statusCode).toBe(204);
-    const schedulesAfterWithdrawal = await app.inject({
-      method: "GET",
-      url: "/api/v1/schedules",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(schedulesAfterWithdrawal.statusCode).toBe(200);
-    expect(schedulesAfterWithdrawal.json()).toEqual({ data: [] });
-
-    const replay = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(token, key),
-      payload: {
-        ...payload,
-        daysOfWeek: [1, 5, 1],
-        screenIds: [firstScreen.id, secondScreen.id, firstScreen.id],
-      },
-    });
-    expect(replay.statusCode).toBe(201);
-    expect(replay.json()).toEqual(first.json());
-    expect(store.schedules).toHaveLength(1);
-    expect(store.releaseAssignments.map((item) => item.state)).toEqual([
-      "ASSIGNED",
-      "WITHDRAWN",
-    ]);
-    expect(store.audits.map((item) => item.action)).toEqual([
-      "release.published",
-      "release.withdrawn",
-    ]);
-    expect(store.idempotencyRecords[0]!.keyHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(JSON.stringify(store.idempotencyRecords)).not.toContain(key);
-    await expect(
-      store.activeOrdinaryReleases(
-        "org-a",
-        firstScreen.id,
-        "2026-09-14T13:00:00.000Z",
-      ),
-    ).resolves.toEqual([]);
-
-    const intentional = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(),
-      payload,
-    });
-    expect(intentional.statusCode).toBe(201);
-    expect(intentional.json().id).not.toBe(first.json().id);
-    expect(store.releaseAssignments).toHaveLength(3);
-  });
-
-  it("rejects missing, malformed, payload-reused, and actor-reused keys generically", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Key validation",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const asset = await store.createMedia("org-a", {
-      name: "Key validation",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://media.example.test/key-validation.png",
-      checksumSha256: "e".repeat(64),
-      sizeBytes: 3,
-    });
-    const playlist = await store.createPlaylist("org-a", {
-      name: "Key validation",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-    const payload = schedulePayload(playlist.id, screen.id);
-    for (const key of [undefined, "NOT-A-CANONICAL-UUID"] as const) {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/v1/schedules",
-        headers: {
-          authorization: `Bearer ${token}`,
-          ...(key ? { "idempotency-key": key } : {}),
-        },
-        payload,
-      });
-      expect(response.statusCode).toBe(400);
-      expect(response.json().error.code).toBe("VALIDATION_ERROR");
-    }
-
-    const key = crypto.randomUUID();
-    const first = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(token, key),
-      payload,
-    });
-    expect(first.statusCode).toBe(201);
-    const changed = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(token, key),
-      payload: { ...payload, name: "Changed intent" },
-    });
-    expect(changed.statusCode).toBe(409);
-    expect(changed.json().error.code).toBe("IDEMPOTENCY_KEY_REUSED");
-
-    store.users[1]!.role = "PUBLISHER";
-    const otherActor = issueTestToken(store.users[1]!);
-    const actorReuse = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(otherActor, key),
-      payload,
-    });
-    expect(actorReuse.statusCode).toBe(409);
-    expect(actorReuse.json().error.code).toBe("IDEMPOTENCY_KEY_REUSED");
-    expect(store.schedules).toHaveLength(1);
-    expect(store.audits).toHaveLength(1);
-  });
-
-  it("revalidates authority and retains an expired key tombstone", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Replay authority",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const asset = await store.createMedia("org-a", {
-      name: "Replay authority",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://media.example.test/replay-authority.png",
-      checksumSha256: "f".repeat(64),
-      sizeBytes: 3,
-    });
-    const playlist = await store.createPlaylist("org-a", {
-      name: "Replay authority",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-    const key = crypto.randomUUID();
-    const request = () =>
-      app.inject({
-        method: "POST",
-        url: "/api/v1/schedules",
-        headers: scheduleHeaders(token, key),
-        payload: schedulePayload(playlist.id, screen.id),
-      });
-    expect((await request()).statusCode).toBe(201);
-    store.users[0]!.role = "VIEWER";
-    expect((await request()).statusCode).toBe(401);
-    store.users[0]!.role = "OWNER";
-    store.idempotencyRecords[0]!.expiresAt = "2020-01-01T00:00:00.000Z";
-    store.idempotencyRecords.push({
-      ...structuredClone(store.idempotencyRecords[0]!),
-      keyHash: "1".repeat(64),
-      response: structuredClone(store.idempotencyRecords[0]!.response),
-    });
-    const expired = await request();
-    expect(expired.statusCode).toBe(409);
-    expect(expired.json().error.code).toBe("IDEMPOTENCY_KEY_EXPIRED");
-    expect(store.idempotencyRecords).toHaveLength(2);
-    expect(store.idempotencyRecords.every((record) => record.response)).toBe(
-      true,
-    );
-    expect((await request()).json().error.code).toBe("IDEMPOTENCY_KEY_EXPIRED");
-    expect(
-      (
-        await app.inject({
-          method: "POST",
-          url: "/api/v1/schedules",
-          headers: scheduleHeaders(token),
-          payload: schedulePayload(playlist.id, screen.id),
-        })
-      ).statusCode,
-    ).toBe(201);
-    expect(store.idempotencyRecords).toHaveLength(3);
-    expect(
-      store.idempotencyRecords.slice(0, 2).every((record) => !record.response),
-    ).toBe(true);
-    expect(store.idempotencyRecords[2]!.response).toBeDefined();
-    expect(store.schedules).toHaveLength(1);
-    expect(store.audits).toHaveLength(1);
-  });
-
-  it("reports a conflict instead of deleting published source records", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Lobby",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const asset = await store.createMedia("org-a", {
-      name: "Welcome",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://media.example.test/welcome.png",
-      checksumSha256: "a".repeat(64),
-      sizeBytes: 3,
-    });
-    const playlist = await store.createPlaylist("org-a", {
-      name: "Protected source",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-    const publication = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(),
-      payload: schedulePayload(playlist.id, screen.id),
-    });
-    expect(publication.statusCode).toBe(201);
-
-    for (const url of [
-      `/api/v1/media/${asset.id}`,
-      `/api/v1/playlists/${playlist.id}`,
-    ]) {
-      const response = await app.inject({
-        method: "DELETE",
-        url,
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(response.statusCode).toBe(409);
-      expect(response.json().error.code).toBe("RESOURCE_IN_USE");
-    }
-    expect(await store.getMedia("org-a", asset.id)).not.toBeNull();
-    expect(await store.getPlaylist("org-a", playlist.id)).not.toBeNull();
-    expect(store.releases).toHaveLength(1);
-
-    const screenDeletion = await app.inject({
-      method: "DELETE",
-      url: `/api/v1/screens/${screen.id}`,
-      headers: scheduleHeaders(),
-    });
-    expect(screenDeletion.statusCode).toBe(204);
-    expect(await store.getScreen("org-a", screen.id)).toBeNull();
-    expect(store.releaseAssignments[0]!.screenIds).toEqual([screen.id]);
-  });
-
-  it("fails closed without partially publishing empty or off-policy content", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Lobby",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const empty = await store.createPlaylist("org-a", {
-      name: "Empty",
-      description: "",
-      items: [],
-    });
-    const emptyResponse = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(),
-      payload: schedulePayload(empty.id, screen.id),
-    });
-    expect(emptyResponse.statusCode).toBe(422);
-    expect(emptyResponse.json().error.code).toBe("EMPTY_RELEASE");
-
-    const asset = await store.createMedia("org-a", {
-      name: "Off policy",
-      kind: "image",
-      mimeType: "image/png",
-      url: "https://legacy.example.test/image.png",
-      checksumSha256: "b".repeat(64),
-      sizeBytes: 3,
-    });
-    const offPolicy = await store.createPlaylist("org-a", {
-      name: "Off policy",
-      description: "",
-      items: [
-        { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
-      ],
-    });
-    const policyResponse = await app.inject({
-      method: "POST",
-      url: "/api/v1/schedules",
-      headers: scheduleHeaders(),
-      payload: schedulePayload(offPolicy.id, screen.id),
-    });
-    expect(policyResponse.statusCode).toBe(422);
-    expect(policyResponse.json().error.code).toBe("MEDIA_ORIGIN_NOT_ALLOWED");
-    expect(store.schedules).toEqual([]);
-    expect(store.releases).toEqual([]);
-    expect(store.releaseAssignments).toEqual([]);
-    expect(store.audits).toEqual([]);
-  });
-
-  it("rejects expired, unsupported, and oversized aggregate releases atomically", async () => {
-    const screen = await store.createScreen("org-a", {
-      name: "Lobby",
-      location: "",
-      orientation: "landscape",
-      resolution: "1920x1080",
-      tags: [],
-    });
-    const publish = (playlistId: string) =>
-      app.inject({
-        method: "POST",
-        url: "/api/v1/schedules",
-        headers: scheduleHeaders(),
-        payload: schedulePayload(playlistId, screen.id),
-      });
-    const createSingleAssetPlaylist = async (
-      name: string,
-      overrides: Partial<Parameters<MemoryStore["createMedia"]>[1]>,
-    ) => {
-      const asset = await store.createMedia("org-a", {
-        name,
-        kind: "image",
-        mimeType: "image/png",
-        url: `https://media.example.test/${name}.png`,
-        checksumSha256: "d".repeat(64),
-        sizeBytes: 1,
-        ...overrides,
-      });
-      return store.createPlaylist("org-a", {
-        name,
-        description: "",
-        items: [
-          {
-            id: "ignored",
-            assetId: asset.id,
-            position: 0,
-            durationSeconds: 10,
-          },
-        ],
-      });
-    };
-
-    const expired = await createSingleAssetPlaylist("Expired", {
-      expiresAt: new Date(Date.now() - 1).toISOString(),
-    });
-    const expiredResponse = await publish(expired.id);
-    expect(expiredResponse.statusCode).toBe(422);
-    expect(expiredResponse.json().error.code).toBe("MEDIA_EXPIRED");
-
-    const unsupported = await createSingleAssetPlaylist("Unsupported", {
-      kind: "web",
-      mimeType: "text/html",
-    });
-    const unsupportedResponse = await publish(unsupported.id);
-    expect(unsupportedResponse.statusCode).toBe(422);
-    expect(unsupportedResponse.json().error.code).toBe(
-      "MEDIA_TYPE_NOT_SUPPORTED",
-    );
-
-    const aggregateAssets = await Promise.all(
-      Array.from({ length: 5 }, (_, index) =>
-        store.createMedia("org-a", {
-          name: `Large ${index}`,
-          kind: "video",
-          mimeType: "video/mp4",
-          url: `https://media.example.test/large-${index}.mp4`,
-          checksumSha256: String(index).repeat(64),
-          sizeBytes: 128 * 1024 * 1024,
-        }),
-      ),
-    );
-    const aggregate = await store.createPlaylist("org-a", {
-      name: "Aggregate too large",
-      description: "",
-      items: aggregateAssets.map((asset, position) => ({
-        id: "ignored",
-        assetId: asset.id,
-        position,
-        durationSeconds: 10,
-      })),
-    });
-    const aggregateResponse = await publish(aggregate.id);
-    expect(aggregateResponse.statusCode).toBe(422);
-    expect(aggregateResponse.json().error.code).toBe("RELEASE_TOO_LARGE");
-    expect(store.schedules).toEqual([]);
-    expect(store.releases).toEqual([]);
-    expect(store.releaseAssignments).toEqual([]);
-    expect(store.audits).toEqual([]);
-  });
-});
-
 describe("device lifecycle", () => {
   it("retries pairing-code collisions with a bounded allocation loop", async () => {
     const create = store.tryCreatePairingAndAudit.bind(store);
@@ -2079,7 +1434,7 @@ describe("device lifecycle", () => {
         durationSeconds: 10 + position,
       })),
     });
-    const publication = await store.publishScheduleAndAudit(
+    const publication = await publishApprovedSchedule(
       "org-a",
       {
         playlistId: playlist.id,
@@ -2308,7 +1663,7 @@ describe("device lifecycle", () => {
         { id: "ignored", assetId: asset.id, position: 0, durationSeconds: 15 },
       ],
     });
-    const publication = await store.publishScheduleAndAudit(
+    const publication = await publishApprovedSchedule(
       "org-a",
       {
         playlistId: playlist.id,

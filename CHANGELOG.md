@@ -4,6 +4,28 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Replace direct ordinary schedule publication with an immutable four-step
+  release-candidate workflow: create, submit, independently approve, and
+  publish. Candidate content, schedule, and organization-wide target snapshots
+  are digest-bound for at most seven days; only an `OWNER`/`ADMIN` distinct from
+  the author may approve, while the publisher may be either participant. Every
+  successful
+  transition and its canonical idempotency replay snapshot commits
+  transactionally, unexpired non-published candidates are capped at 100 and all
+  retained non-published candidates at 1,000 per organization, and expired
+  never-published candidates older than the 30-day replay window are
+  garbage-collected in bounded batches. Existing assignments remain
+  grandfathered; this is a coordinated-downtime, no-old-binary-rollback
+  migration and does not enable emergencies,
+  scoped grants, or complete the pre-production approval gate.
+- Fix the release-assignment provenance gate with an exact, atomic provenance
+  triangle and bind each approved assignment to its expected withdrawal digest
+  so a forged successor cannot consume the unique withdrawal-history slot.
+  Approved publication pre-generates assignment and publication IDs;
+  deferred composite foreign keys require both the final `ASSIGNED` row and
+  `PUBLISHED` candidate to point to the same publication evidence at commit.
+  Recovery verifies those constraints and rejects partial graphs.
+
 - Remove emergency activation and clear authority from every legacy role bundle;
   production startup containment remains in place, and forcing the fixture flag
   does not give any current role effective emergency authority. Remove the
