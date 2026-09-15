@@ -7,7 +7,7 @@ Initial pairing is relative to the configured server URL. The pairing response r
 | POST   | `/api/v1/device/pair/challenge` | Bind a pairing attempt to a device key        |
 | POST   | `/api/v1/device/pair`           | Prove the key and consume the pairing code    |
 | POST   | `{deviceApiBaseUrl}/challenges` | Issue a one-use request-bound proof challenge |
-| GET    | `{deviceApiBaseUrl}/manifest`   | Fetch this screen's resolved manifest         |
+| POST   | `{deviceApiBaseUrl}/manifest`   | Negotiate v2 and fetch the resolved manifest  |
 | POST   | `{deviceApiBaseUrl}/heartbeat`  | Report actual player and playback state       |
 
 Remote device commands are intentionally not enabled in the current prototype. They require persistent command records, expiry, authorization, replay resistance, idempotent acknowledgement, and hardware capability checks before activation.
@@ -83,10 +83,12 @@ failure from orphaning the server-side activation.
 
 Manifest and heartbeat access first requests a challenge with `X-Screen-Id`
 and `X-Device-Key-Id`. Its body names the operation and a lowercase hexadecimal
-SHA-256: empty bytes for manifest, or the exact canonical heartbeat JSON bytes.
+SHA-256: the exact canonical
+`{"mediaDelivery":"authorization-v1","protocolVersion":2}` bytes for manifest,
+or the exact canonical heartbeat JSON bytes.
 The protected call echoes the opaque challenge and sends these headers:
 `X-Device-Challenge-Id`, `X-Device-Challenge`, `X-Device-Key-Id`,
-`X-Device-Signature-Format: ES256-DER`, and `X-Device-Signature`. Manifest GET
+`X-Device-Signature-Format: ES256-DER`, and `X-Device-Signature`. Manifest POST
 retries obtain a fresh challenge and signature for every attempt. Heartbeats
 are never automatically replayed.
 
@@ -95,7 +97,15 @@ the explicit build-time `VITE_DEVICE_AUTH_DEVELOPMENT_BEARER=true` flag and an
 API URL whose hostname is `localhost`, `127.0.0.1`, or `::1`. Android never
 uses this fallback, and no client silently downgrades after proof failure.
 
-The manifest includes `version`, `generatedAt`, `validUntil`, `screenId`, `priority`, required signed `withdrawn`, optional signed `playbackEndsAt`, and ordered playlist `items`. Each playlist item contains an `asset` plus `durationSeconds`; the player normalizes that wire shape before staging. A withdrawal is an empty normal release that intentionally clears playback. `validUntil` is the renewable envelope lease; normal last-known-good playback may continue past it during an outage. `playbackEndsAt` is a hard schedule boundary and blanks locally even offline. Image, video, and template checksums are mandatory. URLs should be immutable or short-lived signed URLs whose content bytes stay stable for the URL lifetime.
+The Player requests a manifest with canonical body
+`{"mediaDelivery":"authorization-v1","protocolVersion":2}`; proof-v1 binds its
+digest, and the signed response repeats both selections. Each ordinary asset
+has a query-free URL on the exact paired API origin/path plus a separate bounded
+`mediaCapability`. Downloads send exactly
+`Authorization: MediaCapability <token>` with credentials omitted and no
+referrer. There is no GET, query-token, v1-token, or downgrade fallback.
+
+The manifest also includes `version`, `generatedAt`, `validUntil`, `screenId`, `priority`, required signed `withdrawn`, optional signed `playbackEndsAt`, and ordered playlist `items`. Each playlist item contains an `asset` plus `durationSeconds`; the player normalizes that wire shape before staging. A withdrawal is an empty normal release that intentionally clears playback. `validUntil` is the renewable envelope lease; normal last-known-good playback may continue past it during an outage. `playbackEndsAt` is a hard schedule boundary and blanks locally even offline. Image, video, and template checksums are mandatory.
 
 Hard playback boundaries and emergency `validUntil` use a bounded deadline
 watcher. It checks the wall clock at least every 30 seconds and immediately on
@@ -139,7 +149,7 @@ pressure is visible to player health and operations. The `NativeAssetCache`
 bridge stores files under the application's private `filesDir/media-cache-v1`
 directory and exposes:
 
-- `prefetch({ assetId, url, mimeType, checksumSha256, sizeBytes })` and
+- `prefetch({ assetId, url, mediaCapability, mimeType, checksumSha256, sizeBytes })` and
   `resolve({ assetId, mimeType, checksumSha256, sizeBytes })`, each returning a
   native `file:///` path that the Player converts with Capacitor before
   playback;
@@ -167,6 +177,12 @@ malformed native success and every other native error are hard failures and
 never fall back to a raw URL or unchecked bytes. If prefetch or native storage
 fails, activation fails and the existing verified last-known-good release
 remains where safe.
+
+An upgraded Player may verify and recover a pre-v2 signed manifest solely to
+resolve already cached, hash-verified bytes. Neither browser nor native staging
+performs a network request without v2 header-delivery fields. Operators must
+deploy the v2 Player/APK before the API cutover; unsupported devices retain only
+eligible cached content until its signed hard boundary.
 
 Manifest staging is serialized through pre-prune, bounded two-worker fail-stop
 prefetch, state activation, and post-prune. Deprovisioning cancels the staging

@@ -35,8 +35,8 @@ import {
 } from "../device-proof/crypto.js";
 import {
   canonicalHeartbeatDigest,
+  canonicalManifestDigest,
   canonicalPairingDigest,
-  EMPTY_BODY_SHA256,
 } from "../device-proof/canonical.js";
 
 const MANIFEST_LEASE_MS = 5 * 60_000;
@@ -112,6 +112,12 @@ const heartbeat = z
       .max(Number.MAX_SAFE_INTEGER),
     networkType: z.string().min(1).max(40),
     occurredAt: z.iso.datetime(),
+  })
+  .strict();
+const manifestRequest = z
+  .object({
+    protocolVersion: z.literal(2),
+    mediaDelivery: z.literal("authorization-v1"),
   })
   .strict();
 
@@ -368,15 +374,6 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
         .passthrough()
         .parse(request.headers);
       const input = deviceChallenge.parse(request.body);
-      if (
-        input.operation === "manifest" &&
-        input.bodySha256 !== EMPTY_BODY_SHA256
-      )
-        throw new ApiError(
-          422,
-          "INVALID_BODY_DIGEST",
-          "Manifest challenges require the empty-body digest",
-        );
       const challenge = randomChallenge();
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const issued = await app.store.issueDeviceAuthChallenge({
@@ -611,7 +608,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       };
     },
   );
-  app.get(
+  app.post(
     "/manifest",
     {
       onRequest: [sourceBudget("manifest-source", 120)],
@@ -619,6 +616,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       preHandler: deviceProofBudget("manifest-device", 60),
     },
     async (request) => {
+      const negotiation = manifestRequest.parse(request.body);
       let screen = request.device!;
       let requestChallengeId: string | undefined;
       let credentialKeyId: string | undefined;
@@ -637,7 +635,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
               ),
             ),
             operation: "manifest",
-            requestDigestSha256: EMPTY_BODY_SHA256,
+            requestDigestSha256: canonicalManifestDigest(negotiation),
           },
           (credential) =>
             verifyDeviceSignature(
@@ -679,6 +677,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           sizeBytes: number;
           createdAt: string;
           expiresAt?: string;
+          mediaDelivery?: "authorization-v1";
+          mediaCapability?: string;
         };
         position: number;
         durationSeconds: number;
@@ -769,7 +769,7 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                   name: item.asset.name,
                   kind: item.asset.kind,
                   mimeType: item.asset.mimeType,
-                  url: (() => {
+                  ...(() => {
                     const storageKey =
                       item.asset.storageKey ??
                       mediaStorageKey(
@@ -804,9 +804,11 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
                       },
                       app.config.mediaDeliverySecret,
                     );
-                    return `${apiBaseUrl(request)}/media/${encodeURIComponent(
-                      item.asset.id,
-                    )}?capability=${encodeURIComponent(capability)}`;
+                    return {
+                      url: `${apiBaseUrl(request)}/media/${encodeURIComponent(item.asset.id)}`,
+                      mediaDelivery: "authorization-v1" as const,
+                      mediaCapability: capability,
+                    };
                   })(),
                   checksumSha256: item.asset.checksumSha256,
                   sizeBytes: item.asset.sizeBytes,
@@ -832,6 +834,8 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
       }
       const version = sha256(
         JSON.stringify({
+          protocolVersion: 2,
+          mediaDelivery: "authorization-v1",
           screenId: screen.id,
           releaseIdentity,
           priority,
@@ -840,13 +844,29 @@ export const deviceRoutes: FastifyPluginAsync = async (app) => {
           items:
             priority === "emergency"
               ? items
-              : items.map((item) => ({
-                  ...item,
-                  asset: { ...item.asset, url: "" },
-                })),
+              : items.map((item) => {
+                  const asset = item.asset;
+                  return {
+                    ...item,
+                    asset: {
+                      id: asset.id,
+                      name: asset.name,
+                      kind: asset.kind,
+                      mimeType: asset.mimeType,
+                      checksumSha256: asset.checksumSha256,
+                      sizeBytes: asset.sizeBytes,
+                      createdAt: asset.createdAt,
+                      ...(asset.expiresAt
+                        ? { expiresAt: asset.expiresAt }
+                        : {}),
+                    },
+                  };
+                }),
         }),
       );
       const unsigned = {
+        protocolVersion: 2 as const,
+        mediaDelivery: "authorization-v1" as const,
         version,
         generatedAt,
         validUntil,

@@ -66,6 +66,16 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   alone must never install a replacement, and pairing failure must never cause
   silent key rotation.
 - Manifests bind to a screen, carry a renewable envelope lease, and are signed with Ed25519. Every proof-v1 response also signs the one-use request challenge ID, which the Player must match exactly before acceptance. Before selection, signing, or private media authorization, the API recomputes the complete frozen published-release and latest-assignment digests; drift fails closed without per-read audit writes, but this does not make a compromised database tamper-proof. Online activation rejects a signed generation time older than persisted active state and rejects a different semantic version at an equal timestamp; explicit local rollback is exempt from generation ordering but must remain within signed playback and asset boundaries. A signed normal withdrawal clears stale playback and atomically tombstones the local rollback slot; an optional signed `playbackEndsAt` is the hard schedule boundary. Players pin the verification key during trusted enrollment, persist the exact verified signing bytes with each cache slot, and reverify the signature, screen binding, normalized view, and local eligibility before boot recovery or rollback. Legacy unsigned or altered slots fail closed, and a missing active slot never promotes an older release.
+- Manifest protocol v2 is a strict POST negotiation. Device proof binds canonical
+  `{"mediaDelivery":"authorization-v1","protocolVersion":2}`, and the signed
+  response repeats it. Ordinary media uses a query-free URL on the exact paired
+  API origin/path plus a separate bounded capability sent only as exactly one
+  `Authorization: MediaCapability <token>` header. Never add query, GET-manifest,
+  v1-token, wrong-scheme, duplicate-header, or downgrade compatibility.
+- Verified pre-v2 signed manifests may recover already cached, hash-verified
+  bytes only. They must never cause a network fetch. The signed v2 envelope
+  stores its opaque media capability in IndexedDB, so do not claim at-rest
+  secrecy; external ingress/APM must redact Authorization.
 - Private object delivery requires identity encoding and a canonical declared
   length, then independently enforces the signed byte count on the actual API
   stream. Its final byte is withheld until clean upstream EOF; encoded,

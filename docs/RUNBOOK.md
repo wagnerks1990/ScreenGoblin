@@ -169,7 +169,14 @@ docker compose --env-file deploy/.env logs --since=30m api caddy
 docker compose --env-file deploy/.env ps
 ```
 
-Logs must carry a request ID and must not contain passwords, JWTs, bearer device tokens, pairing codes, device proof challenges/signatures, public-key enrollment payloads, signed URLs, or full sensitive payloads.
+Logs must carry a request ID and must not contain passwords, JWTs, bearer device tokens, media Authorization capabilities, pairing codes, device proof challenges/signatures, public-key enrollment payloads, signed URLs, or full sensitive payloads. Caddy access logging stays disabled; configure every external ingress, WAF, APM, and trace collector to redact Authorization values before enabling it.
+
+The strict media-protocol cutover is atomic: first confirm every supported
+Player/APK is v2-capable, then deploy API and proxy together and rotate
+`MEDIA_DELIVERY_SECRET`. There is no v1/query fallback. Upgraded players may
+continue only already cached, verified legacy content until its signed hard
+boundary; unsupported or offline devices cannot fetch new media. Rotation and
+withdrawal cannot recall bytes already cached by a disconnected Player.
 
 ## Back up and restore
 

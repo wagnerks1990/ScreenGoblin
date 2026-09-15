@@ -30,8 +30,8 @@ sigv4_finding_count="$(jq -s \
 if [[ "${sigv4_constructor_sources[*]}" == "${expected_sigv4_sources[*]}" ]] \
   && [[ "$sigv4_finding_count" == "1" ]] \
   && [[ "$(git hash-object apps/api/src/server.ts)" == "c4b5721f109fe2ef6bbe759870b7d8646e2763bb" ]] \
-  && [[ "$(git hash-object apps/api/test/media-delivery.test.ts)" == "ea8ae748815a8448733b0ed929acae5cb55d7c90" ]] \
-  && [[ "$(git hash-object apps/api/src/media/delivery.ts)" == "8b27df77e32a3b03435b2ebf84a56376f5e5d4a7" ]]; then
+  && [[ "$(git hash-object apps/api/test/media-delivery.test.ts)" == "da0c876703f7e5c9a863f9b48ba39a115ebae777" ]] \
+  && [[ "$(git hash-object apps/api/src/media/delivery.ts)" == "29148e088df4c95a8f8d7d3b5cb456f22ed6324b" ]]; then
   approved_sigv4=true
 fi
 
@@ -49,13 +49,13 @@ blocking_result='def approved_false_positive:
     and .locations[0].physicalLocation.artifactLocation.uri
       == "apps/api/src/media/delivery.ts"
     and .locations[0].physicalLocation.region
-      == {"startLine": 235, "startColumn": 35, "endColumn": 51}
+      == {"startLine": 238, "startColumn": 35, "endColumn": 51}
     and (.codeFlows | length) == 3
     and all(.codeFlows[]; (.threadFlows | length) == 1)
     and [.codeFlows[].threadFlows[0].locations[0].location.physicalLocation.artifactLocation.uri]
       == ["apps/api/test/media-delivery.test.ts", "apps/api/test/media-delivery.test.ts", "apps/api/test/media-delivery.test.ts"]
     and [.codeFlows[].threadFlows[0].locations[0].location.physicalLocation.region.startLine]
-      == [138, 166, 192]
+      == [160, 188, 214]
     and ([.codeFlows[].threadFlows[].locations[].location.physicalLocation.artifactLocation.uri] | unique)
       == ["apps/api/src/media/delivery.ts", "apps/api/test/media-delivery.test.ts"]));
   def evidence_only_uri:

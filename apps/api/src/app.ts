@@ -39,6 +39,7 @@ export interface BuildOptions {
   emergencyPublishingEnabled?: boolean;
   corsOrigins?: string[];
   logger?: boolean | string;
+  loggerStream?: NodeJS.WritableStream;
   trustProxy?: boolean | string[];
   mediaAllowedOrigins?: string[];
   legacyMediaRegistrationEnabled?: boolean;
@@ -77,9 +78,11 @@ export async function buildApp(
             "body.password",
             "req.url",
           ],
+          ...(options.loggerStream ? { stream: options.loggerStream } : {}),
         }
       : false,
     bodyLimit: 2 * 1024 * 1024,
+    routerOptions: { maxParamLength: 4096 },
     trustProxy: options.trustProxy ?? false,
     requestIdHeader: false,
     genReqId: () => randomUUID(),
@@ -128,10 +131,19 @@ export async function buildApp(
   await app.register(jwt, { secret: options.jwtSecret });
   await app.register(authPlugin);
   app.addHook("onSend", async (request, reply) => {
-    if (request.url.startsWith("/api/") || request.url.startsWith("/health/"))
+    if (
+      (request.url.startsWith("/api/") || request.url.startsWith("/health/")) &&
+      !reply.hasHeader("Cache-Control")
+    )
       reply.header("Cache-Control", "no-store");
   });
   app.setErrorHandler((error, request, reply) => {
+    const candidate = error as { statusCode?: unknown; message?: unknown };
+    if (
+      request.url.startsWith("/api/v1/device/media") &&
+      (candidate.statusCode === 400 || candidate.statusCode === 414)
+    )
+      return reply.code(404).send();
     if (error instanceof ZodError)
       return reply.code(400).send({
         error: {
@@ -149,7 +161,6 @@ export async function buildApp(
         error: { code: error.code, message: error.message },
         requestId: request.id,
       });
-    const candidate = error as { statusCode?: unknown; message?: unknown };
     const status =
       typeof candidate.statusCode === "number" && candidate.statusCode < 500
         ? candidate.statusCode

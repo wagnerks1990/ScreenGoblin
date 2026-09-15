@@ -5,6 +5,9 @@ export interface PlayerAsset {
   id: string;
   kind: AssetKind;
   url: string;
+  /** Opaque signed credential sent only in the MediaCapability header. */
+  mediaCapability?: string;
+  mediaDelivery?: "authorization-v1";
   mimeType: string;
   checksumSha256: string;
   sizeBytes: number;
@@ -14,6 +17,10 @@ export interface PlayerAsset {
 }
 
 export interface PlayerManifest {
+  /** Absent only on a verified pre-cutover cache-only recovery record. */
+  protocolVersion?: 2;
+  /** Absent only on a verified pre-cutover cache-only recovery record. */
+  mediaDelivery?: "authorization-v1";
   version: string;
   generatedAt: string;
   validUntil: string;

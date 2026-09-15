@@ -67,6 +67,8 @@ const challenge = (suffix: string) => ({
 });
 
 const manifest = (requestChallengeId = challengeIds["manifest-2"]!) => ({
+  protocolVersion: 2,
+  mediaDelivery: "authorization-v1" as const,
   version: "manifest-1",
   generatedAt: "2026-09-11T00:00:00.000Z",
   validUntil: "2026-09-11T00:05:00.000Z",
@@ -81,7 +83,9 @@ const manifest = (requestChallengeId = challengeIds["manifest-2"]!) => ({
       asset: {
         id: "asset-1",
         kind: "image",
-        url: "https://media.example.test/welcome.png",
+        url: `${proofCredentials.apiBaseUrl}/media/asset-1`,
+        mediaDelivery: "authorization-v1" as const,
+        mediaCapability: `${"a".repeat(48)}.${"b".repeat(43)}`,
         mimeType: "image/png",
         checksumSha256: "a".repeat(64),
         sizeBytes: 42,
@@ -596,7 +600,14 @@ describe("PlayerApi proof-v1", () => {
         ),
       ).toEqual({
         operation: "manifest",
-        bodySha256: await sha256Hex(new ArrayBuffer(0)),
+        bodySha256: await sha256Hex(
+          utf8(
+            canonicalJson({
+              mediaDelivery: "authorization-v1",
+              protocolVersion: 2,
+            }),
+          ),
+        ),
       });
     }
     const secondProofHeaders = new Headers(
@@ -610,6 +621,24 @@ describe("PlayerApi proof-v1", () => {
       second.challenge,
       native.identity.keyId,
     );
+  });
+
+  it("rejects a signed media URL outside the exact paired API origin and path", async () => {
+    const issued = challenge("manifest-1");
+    const response = manifest(issued.id);
+    response.items[0]!.asset.url =
+      "https://attacker.example.test/api/v1/device/media/asset-1";
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(Response.json(issued))
+        .mockResolvedValueOnce(Response.json(response)),
+    );
+
+    await expect(
+      new PlayerApi(proofCredentials.apiBaseUrl, proofCredentials).manifest(),
+    ).rejects.toThrow("Manifest media origin binding is invalid");
   });
 
   it("rejects a signed manifest bound to a different request challenge", async () => {

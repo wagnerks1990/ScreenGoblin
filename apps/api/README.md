@@ -51,7 +51,7 @@ Production Player endpoints use the two-stage `proof-v1` protocol:
 - `POST /api/v1/device/pair`
 - `POST /api/v1/device/challenges`
 - `POST /api/v1/device/heartbeat`
-- `GET /api/v1/device/manifest`
+- `POST /api/v1/device/manifest` with the exact protocol-v2 negotiation body
 
 Pairing and request proofs use the Android Keystore P-256 identity, short-lived one-use challenges, strict domain-separated `ES256-DER` signatures, and operation/body-digest binding. See [`docs/DEVICE_PROTOCOL.md`](../../docs/DEVICE_PROTOCOL.md) for the exact contract. Production requires `DEVICE_AUTH_MODE=proof-v1`. `X-Device-Token` is retained only for explicit non-production localhost browser development in `development-bearer` mode.
 
@@ -64,6 +64,15 @@ assignment is still the latest active assignment for that tenant, screen, and
 asset. Withdrawal therefore denies subsequent online reads immediately. A
 player that already downloaded verified bytes remains governed by the signed
 local playback boundaries and offline-recall limitations.
+
+A protocol-v2 manifest returns query-free same-origin media URLs and separate
+signed capabilities. Delivery accepts exactly one
+`Authorization: MediaCapability <token>` header. Any query, missing/duplicate
+header, management `Bearer` scheme, malformed credential, or v1 capability is
+an opaque empty `404`; no compatibility transport exists. Manifest proof binds
+the canonical body `{"mediaDelivery":"authorization-v1","protocolVersion":2}`
+to prevent downgrade. Media responses are private/no-store/no-transform,
+no-referrer, nosniff, and vary on Authorization.
 
 The withdrawal guarantee applies to reads authorized after the database commit.
 A stream that completed its authorization recheck before the commit may finish;

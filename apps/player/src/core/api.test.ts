@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createPrivateKey, sign } from "node:crypto";
 import { PlayerApi } from "./api";
 
 const apiBaseUrl = "http://localhost:3000/api/v1/device";
 const verificationKey = "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw";
-const validSignature =
-  "9CQuvlprzcxrX1pjj9voSF6PZBPoAWp15OKhnVQyweAgr7oQ7sxdOSu_6UcDAVMe_DO28hi0pjuQVqb1KqsGBA";
+const signingSeed = Buffer.alloc(32, 7);
+const signingKey = createPrivateKey({
+  key: Buffer.concat([
+    Buffer.from("302e020100300506032b657004220420", "hex"),
+    signingSeed,
+  ]),
+  format: "der",
+  type: "pkcs8",
+});
 
 const credentials = {
   authMode: "development-bearer" as const,
@@ -18,6 +26,8 @@ const credentials = {
 
 const signedManifest = () => {
   const unsigned = {
+    protocolVersion: 2,
+    mediaDelivery: "authorization-v1",
     version: "manifest-1",
     generatedAt: "2026-09-11T00:00:00.000Z",
     validUntil: "2026-09-11T00:05:00.000Z",
@@ -31,7 +41,9 @@ const signedManifest = () => {
         asset: {
           id: "asset-1",
           kind: "image",
-          url: "https://media.example.test/welcome.png",
+          url: `${apiBaseUrl}/media/asset-1`,
+          mediaDelivery: "authorization-v1",
+          mediaCapability: `${"a".repeat(48)}.${"b".repeat(43)}`,
           mimeType: "image/png",
           checksumSha256: "a".repeat(64),
           sizeBytes: 42,
@@ -42,7 +54,11 @@ const signedManifest = () => {
   return {
     ...unsigned,
     signatureAlgorithm: "Ed25519" as const,
-    signature: validSignature,
+    signature: sign(
+      null,
+      Buffer.from(JSON.stringify(unsigned)),
+      signingKey,
+    ).toString("base64url"),
   };
 };
 
@@ -67,7 +83,7 @@ describe("PlayerApi wire contract", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${apiBaseUrl}/manifest`,
-      expect.objectContaining({ cache: "no-store" }),
+      expect.objectContaining({ method: "POST", cache: "no-store" }),
     );
     const headers = new Headers(
       (fetchMock.mock.calls[0]?.[1] as RequestInit).headers,

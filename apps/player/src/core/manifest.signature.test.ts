@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ManifestManager, createSignedPlayerManifest } from "./manifest";
+import { ManifestManager } from "./manifest";
 import type {
   AssetRepository,
   Credentials,
@@ -21,7 +21,7 @@ const unsigned = () => ({
   generatedAt: "2026-09-11T00:00:00.000Z",
   validUntil: "2026-09-11T00:05:00.000Z",
   screenId: "screen-1",
-  priority: "normal",
+  priority: "normal" as const,
   items: [
     {
       id: "playlist-item-1",
@@ -29,7 +29,7 @@ const unsigned = () => ({
       durationSeconds: 15,
       asset: {
         id: "asset-1",
-        kind: "image",
+        kind: "image" as const,
         url: "https://media.example.test/welcome.png",
         mimeType: "image/png",
         checksumSha256: "a".repeat(64),
@@ -38,6 +38,27 @@ const unsigned = () => ({
     },
   ],
 });
+const legacyEnvelope = (): SignedPlayerManifest => {
+  const payload = unsigned();
+  return {
+    formatVersion: 1,
+    payloadJson: JSON.stringify(payload),
+    signatureAlgorithm: "Ed25519",
+    signature: validSignature,
+    manifest: {
+      version: payload.version,
+      generatedAt: payload.generatedAt,
+      validUntil: payload.validUntil,
+      screenId: payload.screenId,
+      priority: payload.priority,
+      withdrawn: false,
+      items: payload.items.map((item) => ({
+        ...item.asset,
+        durationSeconds: item.durationSeconds,
+      })),
+    },
+  };
+};
 
 class SignedMemoryStore implements PlayerStore {
   active: SignedPlayerManifest | undefined;
@@ -99,11 +120,7 @@ const assets: AssetRepository = {
 describe("stored manifest signature verification", () => {
   it("recovers an intact exact signed payload offline", async () => {
     const store = new SignedMemoryStore();
-    store.active = createSignedPlayerManifest(
-      unsigned(),
-      "Ed25519",
-      validSignature,
-    );
+    store.active = legacyEnvelope();
 
     await expect(
       new ManifestManager(store, assets).recover(trust),
@@ -116,11 +133,7 @@ describe("stored manifest signature verification", () => {
 
   it("clears a payload changed after signature verification", async () => {
     const store = new SignedMemoryStore();
-    store.active = createSignedPlayerManifest(
-      unsigned(),
-      "Ed25519",
-      validSignature,
-    );
+    store.active = legacyEnvelope();
     store.active.payloadJson = store.active.payloadJson.replace(
       '"priority":"normal"',
       '"priority":"emergency"',
@@ -134,11 +147,7 @@ describe("stored manifest signature verification", () => {
 
   it("clears an envelope verified against the wrong pinned key", async () => {
     const store = new SignedMemoryStore();
-    store.active = createSignedPlayerManifest(
-      unsigned(),
-      "Ed25519",
-      validSignature,
-    );
+    store.active = legacyEnvelope();
 
     await expect(
       new ManifestManager(store, assets).recover({

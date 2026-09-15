@@ -252,9 +252,15 @@
         },
         {
           "label": "device-manifest",
-          "method": "GET",
+          "method": "POST",
           "template": "/api/v1/device/manifest",
           "seedPath": "/api/v1/device/manifest"
+        },
+        {
+          "label": "device-media-empty",
+          "method": "GET",
+          "template": "/api/v1/device/media",
+          "seedPath": "/api/v1/device/media"
         },
         {
           "label": "device-media",

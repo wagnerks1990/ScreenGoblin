@@ -199,7 +199,9 @@ owner and review date.
 ## Private media delivery
 
 The object bucket is private, and the public proxy never routes directly to
-MinIO. Proof-authenticated manifests carry short-lived bearer GET capabilities
+MinIO. Proof-authenticated protocol-v2 POST manifests bind the canonical
+header-delivery negotiation to device proof and carry query-free same-origin
+media URLs plus separate short-lived GET capabilities
 bound to the active credential key ID, device, tenant, immutable asset,
 immutable assignment ID/digest, server-derived storage key, digest, size, and
 the earliest manifest, schedule, or frozen-asset deadline. On each delivery,
@@ -218,8 +220,13 @@ capability is replayable only while its bound credential and assignment remain
 active and until its earliest signed deadline. Withdrawal blocks new reads once
 the database change commits; a request that passed the authorization recheck
 before that commit may finish streaming, and already-downloaded offline bytes
-remain governed by the signed playback and asset-expiry boundaries. Capability
-query values are redacted from structured request logs.
+remain governed by the signed playback and asset-expiry boundaries.
+Capabilities are accepted only through one exact `MediaCapability`
+Authorization header; any query, duplicate, wrong scheme, malformed token, or
+v1 token is an opaque 404 before storage access. API logs redact Authorization
+and request URLs, Caddy access logging is disabled, and any external ingress/APM
+must also redact Authorization. The signed manifest still persists the opaque
+capability in IndexedDB until its manifest record is replaced or cleared.
 
 The schema upgrade deliberately aborts when legacy media or frozen release rows
 exist: their public URL metadata cannot prove that bytes are present at the new

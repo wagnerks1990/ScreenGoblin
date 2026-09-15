@@ -942,9 +942,16 @@ export class PlayerApi {
   async manifest(
     options: PlayerRequestOptions = {},
   ): Promise<SignedPlayerManifest> {
-    // GET is safe to retry. Every attempt retains its own hard deadline.
+    const negotiation = canonicalJson({
+      mediaDelivery: "authorization-v1",
+      protocolVersion: 2,
+    });
+    // The exact idempotent negotiation body is safe to retry. Every attempt
+    // obtains a fresh proof bound to these non-downgradeable protocol choices.
     const fetchManifest = () =>
       this.protectedRequestWithContext<{
+        protocolVersion: 2;
+        mediaDelivery: "authorization-v1";
         version: string;
         generatedAt: string;
         validUntil: string;
@@ -959,8 +966,14 @@ export class PlayerApi {
         }>;
         signatureAlgorithm: "Ed25519";
         signature: string;
-      }>("manifest", "/manifest", undefined, { cache: "no-store" }, options);
-    // A proof is one-use, so every safe GET retry obtains and signs a new one.
+      }>(
+        "manifest",
+        "/manifest",
+        negotiation,
+        { method: "POST", cache: "no-store" },
+        options,
+      );
+    // A proof is one-use, so every retry obtains and signs a new one.
     const { payload: response, requestChallengeId } = await this.withRetries(
       fetchManifest,
       options,
@@ -970,6 +983,8 @@ export class PlayerApi {
     if (
       !this.credentials ||
       response.screenId !== this.credentials.screenId ||
+      response.protocolVersion !== 2 ||
+      response.mediaDelivery !== "authorization-v1" ||
       signatureAlgorithm !== "Ed25519" ||
       !this.credentials.manifestVerificationKey ||
       !(await verifyManifestSignature(
@@ -983,6 +998,32 @@ export class PlayerApi {
         "protocol",
         false,
       );
+    const deviceOrigin = new URL(this.credentials.apiBaseUrl).origin;
+    for (const item of response.items) {
+      const asset = item.asset;
+      const isEmergencyTemplate =
+        response.priority === "emergency" &&
+        asset.kind === "template" &&
+        asset.mimeType === "application/vnd.screengoblin.emergency+json";
+      if (isEmergencyTemplate) continue;
+      try {
+        const url = new URL(asset.url);
+        const expectedPath = `${new URL(this.credentials.apiBaseUrl).pathname.replace(/\/$/, "")}/media/${encodeURIComponent(asset.id)}`;
+        if (
+          url.origin !== deviceOrigin ||
+          url.pathname !== expectedPath ||
+          url.search ||
+          url.hash
+        )
+          throw new Error("invalid media URL");
+      } catch {
+        throw new PlayerApiFailure(
+          "Manifest media origin binding is invalid",
+          "protocol",
+          false,
+        );
+      }
+    }
     if (
       this.credentials.authMode === "proof-v1" &&
       response.requestChallengeId !== requestChallengeId

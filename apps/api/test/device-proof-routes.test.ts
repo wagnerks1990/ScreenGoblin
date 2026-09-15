@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import {
   canonicalHeartbeatDigest,
-  EMPTY_BODY_SHA256,
+  canonicalManifestDigest,
 } from "../src/device-proof/canonical.js";
 import { sha256Base64Url } from "../src/device-proof/crypto.js";
 import { MemoryStore } from "../src/store/memory.js";
@@ -13,6 +13,11 @@ import { randomToken, sha256 } from "../src/utils/crypto.js";
 const jwtSecret = "test-secret-that-is-longer-than-thirty-two-characters";
 const manifestSigningKey = Buffer.alloc(32, 7).toString("base64url");
 const proofDomain = Buffer.from("ScreenGoblin device proof v1\0", "utf8");
+const manifestRequest = {
+  mediaDelivery: "authorization-v1" as const,
+  protocolVersion: 2 as const,
+};
+const manifestDigest = canonicalManifestDigest(manifestRequest);
 
 interface ChallengeResponse {
   id: string;
@@ -590,11 +595,12 @@ describe("proof-v1 device routes", () => {
       screenId,
       fixture.identity.keyId,
       "manifest",
-      EMPTY_BODY_SHA256,
+      manifestDigest,
     );
     const manifest = await app.inject({
-      method: "GET",
+      method: "POST",
       url: "/api/v1/device/manifest",
+      payload: manifestRequest,
       headers: proofHeaders(
         screenId,
         fixture.identity.keyId,
@@ -633,7 +639,7 @@ describe("proof-v1 device routes", () => {
         "x-screen-id": screenId,
         "x-device-key-id": fixture.identity.keyId,
       },
-      payload: { operation: "manifest", bodySha256: EMPTY_BODY_SHA256 },
+      payload: { operation: "manifest", bodySha256: manifestDigest },
     });
     expect(dummyResponse.statusCode).toBe(201);
     const dummy = dummyResponse.json<ChallengeResponse>();
@@ -644,8 +650,9 @@ describe("proof-v1 device routes", () => {
     });
 
     const denied = await app.inject({
-      method: "GET",
+      method: "POST",
       url: "/api/v1/device/manifest",
+      payload: manifestRequest,
       headers: proofHeaders(
         screenId,
         fixture.identity.keyId,

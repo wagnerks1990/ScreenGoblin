@@ -98,6 +98,12 @@ does not authenticate, exercise authorization/tenant boundaries, scan
 capability-authorized private media, validate production DNS/TLS/firewalls,
 execute a browser DOM scanner, or cover operator/device/hardware workflows.
 
+The Compose gate separately proves query-free header-authorized private-media
+delivery and opaque rejection of query, missing, duplicate, Bearer, tampered,
+expired, and withdrawn credentials. Evidence and logs must never include the
+derived capability value; any external ingress requires verified Authorization
+redaction before deployment.
+
 Gradle verifies the pinned 8.11.1 distribution ZIP against the checksum
 published for that exact distribution. The Android build also uses strict
 SHA-256 verification metadata for Maven, plugin, module-metadata, and transitive

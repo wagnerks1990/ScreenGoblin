@@ -19,9 +19,7 @@ const storeIdempotency = () => ({
   keyHash: sha256(randomToken()),
   requestDigestSha256: sha256(randomToken()),
 });
-const capabilityClaims = (url: string) => {
-  const capability = new URL(url).searchParams.get("capability");
-  if (!capability) throw new Error("Manifest item has no media capability");
+const capabilityClaims = (capability: string) => {
   const claims = verifyMediaCapability(capability, secret);
   if (!claims) throw new Error("Manifest media capability is invalid");
   return claims;
@@ -191,6 +189,11 @@ describe("browser CORS policy", () => {
       method: "PATCH",
       url: "/api/v1/locations/location-a",
       requestHeaders: "authorization,content-type",
+    },
+    {
+      method: "GET",
+      url: "/api/v1/device/media/asset-a",
+      requestHeaders: "authorization",
     },
   ])(
     "allows $method preflight for $url only from an allowed origin",
@@ -1779,7 +1782,9 @@ describe("device lifecycle", () => {
     });
     expect(beat.statusCode).toBe(200);
     const manifest = await app.inject({
-      url: "/api/v1/device/manifest",
+      method: "POST",
+      url: "/api/v1/device/manifest", // protocol v2
+      payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
       headers,
     });
     expect(manifest.statusCode).toBe(200);
@@ -1791,6 +1796,25 @@ describe("device lifecycle", () => {
     });
     expect(manifest.json().signature).toBeTypeOf("string");
     expect(manifest.json().signatureAlgorithm).toBe("Ed25519");
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/v1/device/manifest",
+          headers,
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/v1/device/manifest",
+          payload: { mediaDelivery: "query-v1", protocolVersion: 1 },
+          headers,
+        })
+      ).statusCode,
+    ).toBe(400);
     expect(credentials.manifestVerificationKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const screens = await app.inject({
       url: "/api/v1/screens",
@@ -1840,14 +1864,18 @@ describe("device lifecycle", () => {
 
     const first = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
     vi.setSystemTime(new Date("2026-09-14T13:31:00.000Z"));
     const second = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -1857,9 +1885,9 @@ describe("device lifecycle", () => {
     expect(second.version).toBe(first.version);
     expect(second.generatedAt).not.toBe(first.generatedAt);
     expect(second.validUntil).not.toBe(first.validUntil);
-    expect(capabilityClaims(first.items[0].asset.url).expiresAt).toBe(
-      first.validUntil,
-    );
+    expect(
+      capabilityClaims(first.items[0].asset.mediaCapability).expiresAt,
+    ).toBe(first.validUntil);
   });
 
   it("publishes a signed withdrawal when a schedule no longer applies", async () => {
@@ -1868,20 +1896,27 @@ describe("device lifecycle", () => {
     const device = await pairDevice("withdrawal-device");
     const initialBlank = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
     const schedule = await scheduledPlaylist(device.screenId);
     const scheduled = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
     const scheduledMedia = new URL(scheduled.items[0].asset.url);
     const beforeWithdrawal = await app.inject({
       url: `${scheduledMedia.pathname}${scheduledMedia.search}`,
+      headers: {
+        authorization: `MediaCapability ${scheduled.items[0].asset.mediaCapability}`,
+      },
     });
     expect(beforeWithdrawal.statusCode).toBe(503);
     const deletion = await app.inject({
@@ -1892,11 +1927,16 @@ describe("device lifecycle", () => {
     expect(deletion.statusCode).toBe(204);
     const afterWithdrawal = await app.inject({
       url: `${scheduledMedia.pathname}${scheduledMedia.search}`,
+      headers: {
+        authorization: `MediaCapability ${scheduled.items[0].asset.mediaCapability}`,
+      },
     });
     expect(afterWithdrawal.statusCode).toBe(404);
     const withdrawn = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -1927,7 +1967,9 @@ describe("device lifecycle", () => {
     const schedule = await scheduledPlaylist(device.screenId);
     const original = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -1941,7 +1983,9 @@ describe("device lifecycle", () => {
 
     const afterSourceMutation = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -1965,7 +2009,9 @@ describe("device lifecycle", () => {
     frozenAsset.mimeType = "text/html";
     const webManifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -1979,7 +2025,9 @@ describe("device lifecycle", () => {
     frozenAsset.mimeType = "image/svg+xml";
     const unsupportedManifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -1993,7 +2041,9 @@ describe("device lifecycle", () => {
     frozenAsset.url = "https://user:secret@media.example.test/legacy.png";
     const credentialedUrlManifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -2054,7 +2104,9 @@ describe("device lifecycle", () => {
     const readManifest = async () =>
       (
         await app.inject({
-          url: "/api/v1/device/manifest",
+          method: "POST",
+          url: "/api/v1/device/manifest", // protocol v2
+          payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
           headers: device.headers,
         })
       ).json();
@@ -2102,7 +2154,9 @@ describe("device lifecycle", () => {
     await scheduledPlaylist(device.screenId);
     const initial = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -2149,7 +2203,9 @@ describe("device lifecycle", () => {
       expect(
         (
           await app.inject({
-            url: "/api/v1/device/manifest",
+            method: "POST",
+            url: "/api/v1/device/manifest", // protocol v2
+            payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
             headers: device.headers,
           })
         ).json(),
@@ -2158,6 +2214,9 @@ describe("device lifecycle", () => {
         (
           await app.inject({
             url: `${mediaUrl.pathname}${mediaUrl.search}`,
+            headers: {
+              authorization: `MediaCapability ${initial.items[0].asset.mediaCapability}`,
+            },
           })
         ).statusCode,
       ).toBe(404);
@@ -2174,12 +2233,16 @@ describe("device lifecycle", () => {
 
     const manifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
     expect(manifest.items[0].asset.expiresAt).toBe(expiresAt);
-    expect(capabilityClaims(manifest.items[0].asset.url)).toMatchObject({
+    expect(
+      capabilityClaims(manifest.items[0].asset.mediaCapability),
+    ).toMatchObject({
       assignmentId: store.releaseAssignments[0]!.id,
       assignmentDigestSha256: store.releaseAssignments[0]!.digestSha256,
       expiresAt,
@@ -2211,7 +2274,9 @@ describe("device lifecycle", () => {
 
     const manifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -2286,15 +2351,17 @@ describe("device lifecycle", () => {
 
     const manifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
     expect(manifest.playbackEndsAt).toBe("2026-09-14T13:59:00.000Z");
     expect(manifest.validUntil).toBe("2026-09-14T14:03:00.000Z");
-    expect(capabilityClaims(manifest.items[0].asset.url).expiresAt).toBe(
-      manifest.playbackEndsAt,
-    );
+    expect(
+      capabilityClaims(manifest.items[0].asset.mediaCapability).expiresAt,
+    ).toBe(manifest.playbackEndsAt);
   });
 
   it("publishes the next daily playback boundary in its time zone", async () => {
@@ -2308,15 +2375,17 @@ describe("device lifecycle", () => {
 
     const manifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
     expect(manifest.playbackEndsAt).toBe("2026-09-14T14:00:00.000Z");
     expect(manifest.validUntil).toBe("2026-09-14T14:03:00.000Z");
-    expect(capabilityClaims(manifest.items[0].asset.url).expiresAt).toBe(
-      manifest.playbackEndsAt,
-    );
+    expect(
+      capabilityClaims(manifest.items[0].asset.mediaCapability).expiresAt,
+    ).toBe(manifest.playbackEndsAt);
   });
 
   it("signs the first valid post-gap instant for a nonexistent daily end", async () => {
@@ -2333,7 +2402,9 @@ describe("device lifecycle", () => {
 
     const manifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -2358,7 +2429,9 @@ describe("device lifecycle", () => {
 
     const firstOccurrence = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -2370,7 +2443,9 @@ describe("device lifecycle", () => {
     vi.setSystemTime(new Date("2026-11-01T06:15:00.000Z"));
     const repeatedHour = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();
@@ -2378,7 +2453,9 @@ describe("device lifecycle", () => {
   });
   it("rejects bad device credentials", async () => {
     const r = await app.inject({
-      url: "/api/v1/device/manifest",
+      method: "POST",
+      url: "/api/v1/device/manifest", // protocol v2
+      payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
       headers: {
         "x-screen-id": crypto.randomUUID(),
         "x-device-token": "wrong",
@@ -2623,7 +2700,9 @@ describe("media trust boundary", () => {
 
     const manifest = (
       await app.inject({
-        url: "/api/v1/device/manifest",
+        method: "POST",
+        url: "/api/v1/device/manifest", // protocol v2
+        payload: { mediaDelivery: "authorization-v1", protocolVersion: 2 },
         headers: device.headers,
       })
     ).json();

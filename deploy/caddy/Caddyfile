@@ -4,7 +4,8 @@
 }
 
 {$SCREEN_GOBLIN_HOST:localhost} {
-  encode zstd gzip
+  @compressible not path /api/v1/device/media/*
+  encode @compressible zstd gzip
 
   @readiness path /health/ready
   handle @readiness {

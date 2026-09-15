@@ -96,7 +96,7 @@ test("runtime DAST remains pinned, isolated, blocking, and checksum-bound", () =
   assert.match(runtime, /ERROR <class/);
   assert.match(runtime, /grep -Eo/);
   assert.doesNotMatch(runtime, /"\$scan_log" \| LC_ALL/);
-  assert.equal(inventory.surfaces["console-api"].routes.length, 43);
+  assert.equal(inventory.surfaces["console-api"].routes.length, 44);
   assert.equal(inventory.surfaces.player.routes.length, 1);
   assert.match(runtime, /TRACE/);
   assert.match(runtime, /malformed-auth/);

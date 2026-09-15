@@ -21,6 +21,7 @@ const EMERGENCY_TEMPLATE_MIME = "application/vnd.screengoblin.emergency+json";
 interface NativeAssetOptions {
   assetId: string;
   url: string;
+  mediaCapability: string;
   mimeType: string;
   checksumSha256: string;
   sizeBytes: number;
@@ -67,6 +68,8 @@ function nativeAssetOptions(asset: PlayerAsset): NativeAssetOptions {
   if (
     !asset.id ||
     !asset.url ||
+    asset.mediaDelivery !== "authorization-v1" ||
+    !asset.mediaCapability ||
     !NATIVE_MIME_TYPES.has(asset.mimeType) ||
     !SHA256_HEX.test(asset.checksumSha256) ||
     !Number.isSafeInteger(asset.sizeBytes) ||
@@ -78,13 +81,14 @@ function nativeAssetOptions(asset: PlayerAsset): NativeAssetOptions {
   return {
     assetId: asset.id,
     url: asset.url,
+    mediaCapability: asset.mediaCapability,
     mimeType: asset.mimeType,
     checksumSha256: asset.checksumSha256,
     sizeBytes: asset.sizeBytes,
   };
 }
 
-function isLegacyOnlyAsset(asset: PlayerAsset): boolean {
+function isInlineEmergencyTemplate(asset: PlayerAsset): boolean {
   return (
     asset.kind === "template" &&
     asset.mimeType === EMERGENCY_TEMPLATE_MIME &&
@@ -93,9 +97,22 @@ function isLegacyOnlyAsset(asset: PlayerAsset): boolean {
 }
 
 function nativeAssetIdentity(asset: PlayerAsset): NativeAssetIdentity {
-  const { assetId, mimeType, checksumSha256, sizeBytes } =
-    nativeAssetOptions(asset);
-  return { assetId, mimeType, checksumSha256, sizeBytes };
+  if (
+    !asset.id ||
+    !NATIVE_MIME_TYPES.has(asset.mimeType) ||
+    !SHA256_HEX.test(asset.checksumSha256) ||
+    !Number.isSafeInteger(asset.sizeBytes) ||
+    asset.sizeBytes < 1
+  )
+    throw new Error(
+      `Invalid native asset metadata for ${asset.id || "unknown"}`,
+    );
+  return {
+    assetId: asset.id,
+    mimeType: asset.mimeType,
+    checksumSha256: asset.checksumSha256,
+    sizeBytes: asset.sizeBytes,
+  };
 }
 
 function nativePlaybackUrl(result: NativeAssetPath, assetId: string): string {
@@ -285,8 +302,27 @@ export class CacheAssetRepository implements AssetRepository {
         this.requestTimeoutMs,
       );
       try {
+        const inlineEmergency = isInlineEmergencyTemplate(asset);
+        if (
+          !inlineEmergency &&
+          (asset.mediaDelivery !== "authorization-v1" ||
+            typeof asset.mediaCapability !== "string" ||
+            !/^[A-Za-z0-9_-]{1,4052}\.[A-Za-z0-9_-]{43}$/.test(
+              asset.mediaCapability,
+            ))
+        )
+          throw new Error(`Asset authorization is invalid for ${asset.id}`);
         const response = await fetch(asset.url, {
           cache: "no-store",
+          credentials: "omit",
+          ...(inlineEmergency
+            ? {}
+            : {
+                headers: {
+                  Authorization: `MediaCapability ${asset.mediaCapability}`,
+                },
+              }),
+          referrerPolicy: "no-referrer",
           redirect: "error",
           signal: controller.signal,
         });
@@ -368,7 +404,7 @@ export class NativeAssetRepository implements AssetRepository {
 
   async prefetch(asset: PlayerAsset): Promise<void> {
     if (asset.kind === "web") return;
-    if (isLegacyOnlyAsset(asset)) {
+    if (isInlineEmergencyTemplate(asset)) {
       await this.legacyRepository.prefetch(asset);
       return;
     }
@@ -378,7 +414,7 @@ export class NativeAssetRepository implements AssetRepository {
 
   async resolve(asset: PlayerAsset): Promise<string> {
     if (asset.kind === "web") return asset.url;
-    if (isLegacyOnlyAsset(asset))
+    if (isInlineEmergencyTemplate(asset))
       return await this.legacyRepository.resolve(asset);
     let result: NativeAssetPath;
     try {
@@ -396,7 +432,9 @@ export class NativeAssetRepository implements AssetRepository {
 
   async prune(retainedAssets: PlayerAsset[]): Promise<void> {
     const retainedNative = retainedAssets
-      .filter((asset) => asset.kind !== "web" && !isLegacyOnlyAsset(asset))
+      .filter(
+        (asset) => asset.kind !== "web" && !isInlineEmergencyTemplate(asset),
+      )
       .map((asset) => {
         const { assetId, mimeType, checksumSha256 } =
           nativeAssetIdentity(asset);

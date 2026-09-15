@@ -112,11 +112,11 @@ test("the SigV4 CodeQL exception matches only the reviewed aggregated flow", asy
       {
         physicalLocation: {
           artifactLocation: { uri: "apps/api/src/media/delivery.ts" },
-          region: { startLine: 235, startColumn: 35, endColumn: 51 },
+          region: { startLine: 238, startColumn: 35, endColumn: 51 },
         },
       },
     ],
-    codeFlows: [138, 166, 192].map((startLine) => ({
+    codeFlows: [160, 188, 214].map((startLine) => ({
       threadFlows: [
         {
           locations: [
@@ -136,7 +136,7 @@ test("the SigV4 CodeQL exception matches only the reviewed aggregated flow", asy
                   artifactLocation: {
                     uri: "apps/api/src/media/delivery.ts",
                   },
-                  region: { startLine: 235 },
+                  region: { startLine: 238 },
                 },
               },
             },
@@ -201,7 +201,7 @@ test("the SigV4 CodeQL exception matches only the reviewed aggregated flow", asy
       );
     }
     await rejects(
-      (value) => (value.locations[0].physicalLocation.region.endLine = 235),
+      (value) => (value.locations[0].physicalLocation.region.endLine = 238),
     );
     await rejects((value) => value.codeFlows.pop());
     await rejects(
