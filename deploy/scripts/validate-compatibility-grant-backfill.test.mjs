@@ -61,6 +61,10 @@ test("backfill is exact, bounded, provenance-safe, and runtime-neutral", async (
   );
   assert.match(
     migration,
+    /creatorKind" = 'SYSTEM'[\s\S]*createdBySystemKey" IS NOT NULL[\s\S]*createdBySystemKey" = 'legacy-role-backfill-v1'/,
+  );
+  assert.match(
+    migration,
     /NEW\."creatorKind"[\s\S]*NEW\."createdByUserId"[\s\S]*NEW\."createdBySystemKey"/,
   );
   assert.match(migration, /LOCK TABLE "Membership" IN EXCLUSIVE MODE/);

@@ -14,7 +14,7 @@ ALTER TABLE "AccessGrant"
   ADD COLUMN "createdBySystemKey" TEXT,
   ADD CONSTRAINT "AccessGrant_creator_shape" CHECK (
     ("creatorKind" = 'USER' AND "createdByUserId" IS NOT NULL AND "createdBySystemKey" IS NULL) OR
-    ("creatorKind" = 'SYSTEM' AND "createdByUserId" IS NULL AND "createdBySystemKey" = 'legacy-role-backfill-v1')
+    ("creatorKind" = 'SYSTEM' AND "createdByUserId" IS NULL AND "createdBySystemKey" IS NOT NULL AND "createdBySystemKey" = 'legacy-role-backfill-v1')
   );
 
 ALTER TABLE "AccessGrant"
