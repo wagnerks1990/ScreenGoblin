@@ -143,6 +143,7 @@ export function managementSchedule(record: ScheduleRecord): ManagementSchedule {
       : {}),
     enabled: record.enabled,
     screenIds: [...record.screenIds],
+    withdrawable: record.withdrawable === true,
     ...(record.releaseId ? { releaseId: record.releaseId } : {}),
     ...(record.assignmentId ? { assignmentId: record.assignmentId } : {}),
     createdAt: record.createdAt,

@@ -122,6 +122,7 @@ describe("authenticated management response contracts", () => {
       dailyEndMinutes: 1020,
       enabled: true,
       screenIds: ["screen-1", "screen-2"],
+      withdrawable: false,
       releaseId: "release-1",
       assignmentId: "assignment-1",
       ...timestamps,
@@ -140,6 +141,7 @@ describe("authenticated management response contracts", () => {
       dailyEndMinutes: 1020,
       enabled: true,
       screenIds: ["screen-1", "screen-2"],
+      withdrawable: false,
       releaseId: "release-1",
       assignmentId: "assignment-1",
       ...timestamps,
@@ -264,6 +266,7 @@ describe("authenticated management routes", () => {
         id: "schedule-1",
         enabled: false,
         screenIds: ["screen-1"],
+        withdrawable: false,
       }),
     ]);
   });

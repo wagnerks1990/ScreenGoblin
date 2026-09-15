@@ -11,6 +11,7 @@ import {
   Images,
   ListVideo,
   CalendarDays,
+  FileCheck2,
   Monitor,
   Siren,
   Settings,
@@ -22,6 +23,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { MediaVault } from "./pages/MediaVault";
 import { Playlists } from "./pages/Playlists";
 import { Schedules } from "./pages/Schedules";
+import { Releases } from "./pages/Releases";
 import { Fleet } from "./pages/Fleet";
 import { Emergency } from "./pages/Emergency";
 import { SettingsPage } from "./pages/Settings";
@@ -33,6 +35,7 @@ const nav = [
   ["/media", "Media vault", Images],
   ["/playlists", "Playlists", ListVideo],
   ["/schedules", "Schedules", CalendarDays],
+  ["/releases", "Release review", FileCheck2],
   ["/screens", "Screen fleet", Monitor],
 ] as const;
 
@@ -249,6 +252,10 @@ export function App() {
             <Route path="/media" element={<MediaVault key={dataMode} />} />
             <Route path="/playlists" element={<Playlists />} />
             <Route path="/schedules" element={<Schedules />} />
+            <Route
+              path="/releases"
+              element={<Releases key={dataMode} user={sessionUser} />}
+            />
             <Route
               path="/screens"
               element={<Fleet key={dataMode} canManage={canAdmin} />}

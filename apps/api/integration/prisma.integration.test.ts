@@ -923,6 +923,7 @@ describe("PrismaStore PostgreSQL integration", () => {
     expect((await store.listSchedules(alpha.id)).map((x) => x.name)).toEqual([
       "Alpha schedule",
     ]);
+    expect((await store.listSchedules(alpha.id))[0]?.withdrawable).toBe(false);
     expect((await store.listAudits(alpha.id, 10)).map((x) => x.action)).toEqual(
       ["integration.alpha"],
     );
@@ -6864,7 +6865,12 @@ describe("PrismaStore PostgreSQL integration", () => {
           },
         });
         await expect(store.listSchedules(organization.id)).resolves.toEqual([
-          expect.objectContaining({ id: assigned.scheduleId }),
+          expect.objectContaining({
+            id: assigned.scheduleId,
+            withdrawable: true,
+            releaseId: assigned.releaseId,
+            assignmentId: assigned.id,
+          }),
         ]);
         await expect(
           store.activeOrdinaryReleases(

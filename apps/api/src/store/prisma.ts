@@ -4500,7 +4500,7 @@ export class PrismaStore implements DataStore {
         },
       },
     });
-    const activeScheduleIds = new Set(
+    const activeAssignments = new Map(
       assignments
         .filter(
           (assignment) =>
@@ -4508,15 +4508,24 @@ export class PrismaStore implements DataStore {
             verifiedReleaseAssignmentDtos(assignment) &&
             !hasValidWithdrawalSuccessor(assignment),
         )
-        .map(({ scheduleId }) => scheduleId),
+        .map((assignment) => [assignment.scheduleId, assignment] as const),
     );
     return schedules
       .filter(
         (schedule) =>
           schedule.releaseAssignments.length === 0 ||
-          activeScheduleIds.has(schedule.id),
+          activeAssignments.has(schedule.id),
       )
-      .map((schedule) => scheduleDto(schedule));
+      .map((schedule) => {
+        const assignment = activeAssignments.get(schedule.id);
+        return {
+          ...scheduleDto(schedule),
+          withdrawable: Boolean(assignment),
+          ...(assignment
+            ? { releaseId: assignment.releaseId, assignmentId: assignment.id }
+            : {}),
+        };
+      });
   }
   async createSchedule(
     org: string,

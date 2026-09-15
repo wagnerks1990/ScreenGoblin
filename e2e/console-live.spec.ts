@@ -298,7 +298,7 @@ test("authenticated schedules mirror the live collection without inferred state"
   });
   expect(response).toBeOK();
   const schedules = (await response.json()) as {
-    data: Array<{ name: string; enabled: boolean }>;
+    data: Array<{ name: string; enabled: boolean; withdrawable: boolean }>;
   };
 
   await page.goto("/schedules");
@@ -318,11 +318,48 @@ test("authenticated schedules mirror the live collection without inferred state"
   const pageContent = page.locator("#main-content");
   await expect(
     pageContent.getByRole("button", {
-      name: /new|publish|withdraw|options/i,
+      name: /new|publish|options/i,
     }),
   ).toHaveCount(0);
+  await expect(
+    pageContent.getByRole("button", { name: "Withdraw" }),
+  ).toHaveCount(
+    schedules.data.filter((schedule) => schedule.withdrawable).length,
+  );
   for (const inferred of ["Active", "Upcoming", "Draft", "Published"])
     await expect(pageContent.getByText(inferred, { exact: true })).toHaveCount(
       0,
     );
+});
+
+test("release review mirrors live immutable candidates without demo substitution", async ({
+  page,
+}) => {
+  await loginAsSeededOwner(page);
+  const headers = await liveHeaders(page);
+  const response = await page.request.get(`${apiBaseUrl}/release-candidates`, {
+    headers,
+  });
+  expect(response).toBeOK();
+  const candidates = (await response.json()) as {
+    data: Array<{ id: string; digestSha256: string }>;
+  };
+
+  await page.goto("/releases");
+  await expect(page.getByText("Live API data")).toBeVisible();
+  if (candidates.data[0]) {
+    await expect(
+      page.getByText(candidates.data[0].id, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(candidates.data[0].digestSha256, { exact: true }).first(),
+    ).toBeVisible();
+  } else {
+    await expect(
+      page.getByRole("heading", { name: "No release candidates" }),
+    ).toBeVisible();
+  }
+  await expect(page.getByText(demoScheduleName, { exact: true })).toHaveCount(
+    0,
+  );
 });

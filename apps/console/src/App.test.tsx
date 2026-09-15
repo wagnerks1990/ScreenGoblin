@@ -26,6 +26,7 @@ function setAdminSession() {
   window.sessionStorage.setItem(
     "sg_session_user",
     JSON.stringify({
+      id: "admin-user",
       name: "Administrator",
       email: "admin@example.test",
       role: "ADMIN",
@@ -432,6 +433,7 @@ describe("ScreenGoblin console", () => {
     window.sessionStorage.setItem(
       "sg_session_user",
       JSON.stringify({
+        id: "admin-user",
         name: "Administrator",
         email: "admin@example.test",
         role: "ADMIN",
@@ -920,7 +922,7 @@ describe("ScreenGoblin console", () => {
     expect(opener).toHaveFocus();
   });
 
-  it("keeps prototype settings read-only without implying enforcement", async () => {
+  it("keeps prototype settings read-only while reporting enforced approval accurately", async () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter initialEntries={["/settings"]}>
@@ -934,7 +936,9 @@ describe("ScreenGoblin console", () => {
       }),
     ).toBeTruthy();
     expect(
-      screen.getByText("Content approval is not configured or enforced here."),
+      screen.getByText(
+        /Immutable ordinary-release approval is enforced by the API/,
+      ),
     ).toBeTruthy();
     expect(
       screen.getByText(
@@ -967,6 +971,7 @@ describe("ScreenGoblin console", () => {
     window.sessionStorage.setItem(
       "sg_session_user",
       JSON.stringify({
+        id: "viewer-user",
         name: "Viewer",
         email: "viewer@example.test",
         role: "VIEWER",
@@ -992,6 +997,7 @@ describe("ScreenGoblin console", () => {
     window.sessionStorage.setItem(
       "sg_session_user",
       JSON.stringify({
+        id: "viewer-user",
         name: "Viewer",
         email: "viewer@example.test",
         role: "VIEWER",

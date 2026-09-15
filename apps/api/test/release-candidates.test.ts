@@ -197,6 +197,18 @@ describe("immutable release-candidate publication", () => {
     expect(first.json()).toMatchObject({ state: "PUBLISHED" });
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toEqual(first.json());
+    const listedSchedules = await app.inject({
+      method: "GET",
+      url: "/api/v1/schedules",
+      headers: headers(author),
+    });
+    expect(listedSchedules.json().data).toEqual([
+      expect.objectContaining({
+        withdrawable: true,
+        releaseId: first.json().releaseId,
+        assignmentId: first.json().assignmentId,
+      }),
+    ]);
     expect(store.schedules).toHaveLength(1);
     expect(store.releaseAssignments).toHaveLength(1);
     expect(store.audits.map((record) => record.action)).toEqual([

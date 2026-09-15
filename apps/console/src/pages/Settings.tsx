@@ -58,7 +58,11 @@ export function SettingsPage() {
             {tab === "Workspace" && (
               <>
                 <p>
-                  <b>Content approval is not configured or enforced here.</b>
+                  <b>
+                    Immutable ordinary-release approval is enforced by the API
+                    and operated from Release review. Scoped grants, MFA,
+                    rejection, and rollback remain unavailable.
+                  </b>
                 </p>
                 <p>
                   <b>

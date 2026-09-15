@@ -516,6 +516,84 @@ a:focus-visible {
   height: 18px;
   flex: 0 0 auto;
 }
+
+.digest {
+  display: inline-block;
+  max-width: 34rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.candidate-actions,
+.candidate-note {
+  margin-top: 1.25rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface-subtle, #f7f8f6);
+}
+
+.candidate-evidence dl,
+.candidate-asset dl {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.candidate-evidence dl > div,
+.candidate-asset dl > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.4fr) minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.candidate-evidence dt,
+.candidate-asset dt {
+  color: var(--text-muted, #60665f);
+  font-weight: 600;
+}
+
+.candidate-evidence dd,
+.candidate-asset dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.candidate-evidence section {
+  margin-top: 1.5rem;
+}
+
+.candidate-asset {
+  margin-top: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+
+.candidate-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.candidate-form > label,
+.candidate-form fieldset {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.candidate-form input:not([type="checkbox"]),
+.candidate-form select {
+  width: 100%;
+  padding: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface, white);
+  color: inherit;
+}
+
+.candidate-form fieldset label {
+  display: block;
+  padding: 0.35rem 0;
+}
 .menu-button {
   display: none;
 }
