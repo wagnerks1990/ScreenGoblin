@@ -4,6 +4,16 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Remove emergency activation and clear authority from every legacy role bundle;
+  production startup containment remains in place, and forcing the fixture flag
+  does not give any current role effective emergency authority. Remove the
+  deprecated caller-supplied media metadata registration route and its
+  configuration switch entirely. Runtime, API, route-inventory, and static
+  guards keep registration, multipart/media-ingestion, parser, and
+  caller-directed remote-fetch surfaces absent. This containment does not
+  implement the emergency workflow or private ingestion pipeline and does not
+  complete either pre-production gate.
+
 - Replace URL-carried private-media credentials with a strict protocol-v2
   contract. Manifest POST negotiation is device-proof-bound; signed manifests
   contain query-free same-origin API URLs and separate capabilities used only
@@ -100,8 +110,8 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   telemetry and stable first-organization login semantics remain unchanged.
   This is not a constant-time authentication claim.
 
-- Disable deprecated caller-supplied media metadata registration by default and
-  reject enabling it in production. Document the separate durable quarantine,
+- Remove deprecated caller-supplied media metadata registration and its
+  configuration switch. Document the separate durable quarantine,
   fail-closed malware scanning, canonicalization, atomic-visibility promotion,
   cleanup/retry, and safe image/video derivative design without claiming that
   upload or external scanning/transcoding is implemented.
@@ -255,9 +265,9 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
   or rollback. Remove legacy/altered records, refuse previous-slot revival when
   the active marker is missing, and rehash persistent media before reuse and
   playback.
-- Fail production startup when `EMERGENCY_FEATURE_ENABLED=true`; the incomplete
-  emergency path remains available only to isolated non-production fixtures and
-  cannot be enabled by a production environment override.
+- Fail production startup when `EMERGENCY_FEATURE_ENABLED=true`; retain only
+  isolated non-production transactional fixtures while granting no legacy role
+  activation or clear authority.
 - Enroll canonical Android Keystore P-256 public keys through a two-stage,
   transcript-bound pairing challenge; derive installation identity from the
   SPKI fingerprint and require strict domain-separated `ES256-DER` proof before

@@ -46,7 +46,6 @@ const app = await buildApp({
     config.MEDIA_ALLOWED_ORIGINS,
     config.NODE_ENV,
   ),
-  legacyMediaRegistrationEnabled: config.LEGACY_MEDIA_REGISTRATION_ENABLED,
   publicApiUrl: config.PUBLIC_API_URL,
   logger: config.LOG_LEVEL,
   trustProxy:

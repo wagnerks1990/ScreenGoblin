@@ -6,7 +6,7 @@ export type SchedulePriority = "normal" | "campaign" | "priority" | "emergency";
 export const MEDIA_MAX_ASSET_BYTES = 128 * 1024 * 1024;
 export const MEDIA_MAX_RELEASE_BYTES = 512 * 1024 * 1024;
 
-/** Media formats accepted by the metadata-only pilot boundary. */
+/** Media formats accepted for pre-provisioned internal records and playback. */
 export const SUPPORTED_MEDIA_MIME_TYPES = {
   image: ["image/jpeg", "image/png"],
   video: ["video/mp4"],

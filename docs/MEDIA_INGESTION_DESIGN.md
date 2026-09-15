@@ -1,8 +1,9 @@
 # Private media ingestion design gate
 
 Status: design only. No upload endpoint or production ingestion worker exists.
-The deprecated caller-supplied metadata registration route is disabled by
-default and cannot be enabled in production.
+The deprecated caller-supplied metadata registration route and its configuration
+switch have been removed. No multipart parser, media-ingestion route, or
+caller-directed remote fetch exists.
 
 ## Why ingestion is a separate tranche
 

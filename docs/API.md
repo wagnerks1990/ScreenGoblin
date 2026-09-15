@@ -31,7 +31,7 @@ no public identity-administration endpoints.
 | Schedules      | Time rules, priority, and targets                                | User            |
 | Pairing        | Short-lived enrollment code exchange                             | User/device     |
 | Device         | Pairing, heartbeat, and manifest delivery; commands are disabled | Device          |
-| Emergency      | Expiring high-priority overrides                                 | Privileged user |
+| Emergency      | Dormant future-workflow routes and internal fixtures             | No current role |
 | Audit          | Security- and publishing-relevant events                         | Admin/auditor   |
 
 `GET /audit-events` returns a tenant-scoped latest-event window of at most 200
@@ -45,12 +45,13 @@ WORM, retention, or legal-hold boundary.
 
 ## Authorization rules
 
-Every user resource query must include the authenticated organization boundary. A caller-provided organization ID is never sufficient authorization. Devices are restricted to their own screen and current organization. Object keys must be server-generated and tenant-prefixed. Emergency activation requires a separately audited permission; district-wide two-person approval is a production requirement.
+Every user resource query must include the authenticated organization boundary. A caller-provided organization ID is never sufficient authorization. Devices are restricted to their own screen and current organization. Object keys must be server-generated and tenant-prefixed. No current role has emergency activation or clear authority; a future workflow requires separately audited permissions and district-wide two-person approval.
 
-Screen creation/update and media/playlist creation/deletion revalidate the
+Screen creation/update and playlist creation/deletion revalidate the
 actor's active membership and allowed role inside the database transaction that
 performs the mutation and appends its audit event. Screens require `OWNER` or
-`ADMIN`; media and playlists also allow `PUBLISHER`. A concurrent disablement,
+`ADMIN`; playlists also allow `PUBLISHER`. Media deletion retains the same
+transactional role checks for pre-provisioned fixture records. A concurrent disablement,
 demotion, cross-organization identifier, resource-in-use conflict, or audit
 write failure leaves both resource state and audit history unchanged.
 
@@ -72,15 +73,12 @@ idempotent and does not append a second audit event.
 
 Ordinary release publication and withdrawal use a closed, deny-by-default capability adapter. The API checks the capability at the route boundary, and the transactional store re-evaluates the actor's current organization membership and capability before writing release state or audit history. For compatibility, `OWNER`, `ADMIN`, and `PUBLISHER` currently receive `release.publish` and `release.withdraw`; `VIEWER` receives neither. This adapter does not yet provide resource scopes, custom grants, or reviewer/publisher separation.
 
-Media metadata creation and manifest publication are fail-closed: each URL
-origin must exactly match an explicitly configured allowlist entry. Production
-entries are origin-only HTTPS URLs using non-local DNS hostnames; URL credentials
-are rejected. The metadata-only pilot boundary accepts exact MIME/kind pairs for
-JPEG, PNG, MP4, and JSON templates, requires a positive size no greater than
-128 MiB, canonicalizes SHA-256 to lowercase, and accepts only future expiries.
-Web assets are disabled. The API does not fetch a submitted legacy URL, sniff,
-scan, decode, transcode, or upload the object. Private delivery fetches only the
-server-derived key from the configured S3 endpoint, requests identity encoding,
+No public media metadata creation, upload, multipart, or media-ingestion route
+exists. Pre-provisioned internal fixture metadata remains subject to manifest
+publication policy: URL origins must exactly match an explicitly configured
+allowlist entry, web assets are disabled, and kind/MIME, digest, size, and expiry
+must pass the bounded policy. The API never fetches a caller-submitted remote
+URL. Private delivery fetches only the server-derived key from the configured S3 endpoint, requests identity encoding,
 rejects encoded or malformed-length responses, and enforces the signed size on
 the actual stream, withholding its final byte until clean upstream EOF. Players
 reject redirects while downloading binary assets; a hostname can still resolve

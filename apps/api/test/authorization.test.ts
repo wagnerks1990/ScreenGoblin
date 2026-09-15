@@ -92,15 +92,13 @@ describe("release capability policy", () => {
     );
   });
 
-  it.each([
-    ["OWNER", true],
-    ["ADMIN", true],
-    ["PUBLISHER", false],
-    ["VIEWER", false],
-  ] as const)("maps emergency capabilities for %s", (role, allowed) => {
-    expect(hasCapability(role, CAPABILITIES.emergencyActivate)).toBe(allowed);
-    expect(hasCapability(role, CAPABILITIES.emergencyClear)).toBe(allowed);
-  });
+  it.each(["OWNER", "ADMIN", "PUBLISHER", "VIEWER"] as const)(
+    "does not derive emergency authority from the legacy %s role",
+    (role) => {
+      expect(hasCapability(role, CAPABILITIES.emergencyActivate)).toBe(false);
+      expect(hasCapability(role, CAPABILITIES.emergencyClear)).toBe(false);
+    },
+  );
 
   it.each(["VIEWER", "disabled", "missing", "cross-organization"] as const)(
     "denies direct publication for a %s actor without partial writes",

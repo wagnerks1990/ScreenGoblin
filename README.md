@@ -72,8 +72,8 @@ the actual stream. The final byte is released only after clean upstream EOF, so
 encoded, overlong, truncated, or late-error bodies fail closed.
 
 The Console media inventory is intentionally read-only. This prototype has no
-browser upload pipeline. Deprecated caller-supplied metadata registration is
-disabled by default and cannot be enabled in production. See
+browser upload pipeline, caller-supplied metadata registration route,
+multipart parser, or remote-URL ingestion surface. See
 [`docs/MEDIA_INGESTION_DESIGN.md`](docs/MEDIA_INGESTION_DESIGN.md) for the
 quarantine, scanning, canonicalization, promotion, and recovery gate. Web media,
 images, and video must not be enabled through that future boundary without their

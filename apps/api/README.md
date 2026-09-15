@@ -30,8 +30,7 @@ All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the
 - `POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`
 - `GET|POST|PATCH|DELETE /api/v1/screens`
 - `GET|POST|PATCH|DELETE /api/v1/locations`
-- `GET|DELETE /api/v1/media` (`POST` is deprecated and disabled by default;
-  production rejects enabling it)
+- `GET|DELETE /api/v1/media` (no registration or upload method exists)
 - `GET|POST|DELETE /api/v1/playlists`
 - `GET|POST|DELETE /api/v1/schedules`
 - `POST /api/v1/emergencies`, `POST /api/v1/emergencies/:id/clear`
@@ -95,10 +94,10 @@ downstream disconnect destroys the upstream object stream.
   treated as authorization scopes.
 
 - OWNER/ADMIN control screens; PUBLISHER may manage ordinary content and
-  schedules; VIEWER is read-only. Legacy emergency routes exist only for
-  isolated non-production fixtures. Their activation and clear writes recheck
-  current capabilities, lock organization-scoped targets, and commit audit and
-  state atomically, but they are not a complete approval or authorization model.
+  schedules; VIEWER is read-only. No legacy role grants emergency activation or
+  clear authority. The dormant routes and transactional store fixtures remain
+  for future workflow work, but no current authenticated role can invoke them,
+  even if a non-production feature flag is misconfigured.
 - `POST /schedules` requires a canonical UUIDv4 `Idempotency-Key`. Its raw
   value is neither logged nor stored. The transaction revalidates the active
   membership, tenant-binds the key fingerprint, and commits the publication,
@@ -191,8 +190,9 @@ downstream disconnect destroys the upstream object stream.
   authentication constant time or disclose whether a tenant membership exists.
 - Security headers, strict CORS, payload limits, endpoint/global rate limits, generic server errors, structured validation failures, and secret-redacted logs are enabled. Production rate limits use Redis and fail closed; login, pairing creation/claim, heartbeat, and manifest budgets use HMAC-derived keys so Redis never receives raw account, code, device, or source identifiers.
 - Private object delivery is implemented, but upload, quarantine, scanning, safe
-  decoding, and transcoding are not. The legacy caller-supplied metadata route
-  is deprecated, disabled by default, and forbidden in production. The required
+  decoding, and transcoding are not. Caller-supplied metadata registration was
+  removed; no upload, multipart, media-ingestion, or remote-URL fetch route is
+  registered. The required
   durable state machine and external controls are specified in
   [`docs/MEDIA_INGESTION_DESIGN.md`](../../docs/MEDIA_INGESTION_DESIGN.md).
 
