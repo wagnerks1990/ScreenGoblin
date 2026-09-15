@@ -63,7 +63,9 @@ players pin its public verification key during pairing.
 Point `SCREEN_GOBLIN_HOST` and `PLAYER_HOST` DNS records at the host. Caddy obtains TLS certificates automatically for public names. Do not expose PostgreSQL, Redis, MinIO, or the Caddy admin endpoint to the network.
 
 The MinIO bucket is private and Caddy does not proxy it. Players receive
-short-lived, active-device-bound API capabilities in signed manifests; the API
+short-lived, active-device-bound API capabilities in signed manifests. Media
+URLs are query-free and players send each capability only as an exact
+`Authorization: MediaCapability <token>` header; the API
 streams only the exact server-derived object key from its fixed storage endpoint.
 Object responses must use identity encoding and match the signed byte length on
 the actual stream. The final byte is released only after clean upstream EOF, so

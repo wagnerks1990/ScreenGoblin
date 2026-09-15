@@ -6,14 +6,15 @@ import {
 } from "node:crypto";
 import { Readable, Transform } from "node:stream";
 
-const CAPABILITY_VERSION = 1;
-const CAPABILITY_PREFIX = "ScreenGoblin media delivery capability v1\n";
+const CAPABILITY_VERSION = 2;
+const CAPABILITY_PREFIX = "ScreenGoblin media delivery capability v2\n";
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]{1,256}$/;
 
 export interface MediaDeliveryClaims {
-  version: 1;
+  version: 2;
   method: "GET";
+  transport: "authorization-v1";
   screenId: string;
   organizationId: string;
   credentialKeyId?: string;
@@ -108,13 +109,14 @@ export const mediaStorageKey = (
 };
 
 export const issueMediaCapability = (
-  claims: Omit<MediaDeliveryClaims, "version" | "method">,
+  claims: Omit<MediaDeliveryClaims, "version" | "method" | "transport">,
   secret: string,
 ): string => {
   const payload = encode({
+    ...claims,
     version: CAPABILITY_VERSION,
     method: "GET",
-    ...claims,
+    transport: "authorization-v1",
   });
   return `${payload}.${signature(payload, secret)}`;
 };
@@ -137,6 +139,7 @@ export const verifyMediaCapability = (
     if (
       claims.version !== CAPABILITY_VERSION ||
       claims.method !== "GET" ||
+      claims.transport !== "authorization-v1" ||
       typeof claims.screenId !== "string" ||
       typeof claims.organizationId !== "string" ||
       (claims.credentialKeyId !== undefined &&

@@ -38,6 +38,22 @@ export interface MediaAsset {
   createdAt: string;
 }
 
+/** Strict manifest negotiation for header-authorized private media delivery. */
+export interface DeviceManifestRequest {
+  protocolVersion: 2;
+  mediaDelivery: "authorization-v1";
+}
+
+export interface PlaybackMediaAsset extends MediaAsset {
+  /** Opaque credential; clients send it only in the MediaCapability header. */
+  mediaCapability?: string;
+  mediaDelivery?: "authorization-v1";
+}
+
+export interface PlaybackPlaylistItem extends Omit<PlaylistItem, "asset"> {
+  asset: PlaybackMediaAsset;
+}
+
 export interface PlaylistItem {
   id: string;
   asset: MediaAsset;
@@ -46,6 +62,8 @@ export interface PlaylistItem {
 }
 
 export interface PlaybackManifest {
+  protocolVersion: 2;
+  mediaDelivery: "authorization-v1";
   version: string;
   generatedAt: string;
   validUntil: string;
@@ -55,7 +73,7 @@ export interface PlaybackManifest {
   priority: SchedulePriority;
   withdrawn: boolean;
   playbackEndsAt?: string;
-  items: PlaylistItem[];
+  items: PlaybackPlaylistItem[];
   signatureAlgorithm: "Ed25519";
   signature: string;
 }

@@ -10,6 +10,8 @@ const signedManifest = (
 ): SignedPlayerManifest =>
   createSignedPlayerManifest(
     {
+      protocolVersion: 2,
+      mediaDelivery: "authorization-v1",
       version,
       generatedAt: "2026-09-12T00:00:00.000Z",
       validUntil: "2099-09-12T00:05:00.000Z",
@@ -27,6 +29,8 @@ const signedManifest = (
                 id: `asset-${version}`,
                 kind: "image",
                 url: `https://media.example.test/${version}.png`,
+                mediaDelivery: "authorization-v1",
+                mediaCapability: `${"a".repeat(48)}.${"b".repeat(43)}`,
                 mimeType: "image/png",
                 checksumSha256: "a".repeat(64),
                 sizeBytes: 42,

@@ -41,6 +41,7 @@ public final class MediaCachePlugin extends Plugin {
             MediaCacheStore.Asset asset = MediaCacheStore.Asset.forPrefetch(
                 call.getString("assetId"),
                 call.getString("url"),
+                call.getString("mediaCapability"),
                 call.getString("mimeType"),
                 call.getString("checksumSha256"),
                 call.getLong("sizeBytes"),

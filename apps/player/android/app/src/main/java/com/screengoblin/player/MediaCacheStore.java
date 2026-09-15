@@ -34,6 +34,7 @@ final class MediaCacheStore {
     private static final long MAX_DOWNLOAD_DURATION_MS = 10L * 60L * 1000L;
     private static final int BUFFER_BYTES = 64 * 1024;
     private static final Pattern SHA256 = Pattern.compile("^[0-9a-f]{64}$");
+    private static final Pattern MEDIA_CAPABILITY = Pattern.compile("^[A-Za-z0-9_-]{1,4052}\\.[A-Za-z0-9_-]{43}$");
     private static final Pattern FINAL_NAME = Pattern.compile("^([0-9a-f]{64})\\.([a-z0-9]+)$");
     private static final Map<String, String> EXTENSIONS;
 
@@ -63,13 +64,15 @@ final class MediaCacheStore {
     static final class Asset {
         final String assetId;
         final URL url;
+        final String mediaCapability;
         final String mimeType;
         final String sha256;
         final long sizeBytes;
 
-        private Asset(String assetId, URL url, String mimeType, String sha256, long sizeBytes) {
+        private Asset(String assetId, URL url, String mediaCapability, String mimeType, String sha256, long sizeBytes) {
             this.assetId = assetId;
             this.url = url;
+            this.mediaCapability = mediaCapability;
             this.mimeType = mimeType;
             this.sha256 = sha256;
             this.sizeBytes = sizeBytes;
@@ -78,6 +81,7 @@ final class MediaCacheStore {
         static Asset forPrefetch(
             String assetId,
             String rawUrl,
+            String mediaCapability,
             String mimeType,
             String sha256,
             Long sizeBytes,
@@ -87,7 +91,10 @@ final class MediaCacheStore {
             extensionFor(mimeType);
             validateDigestAndSize(sha256, sizeBytes);
             URL url = validateUrl(rawUrl, allowDebugLocalhostHttp);
-            return new Asset(assetId, url, mimeType.toLowerCase(Locale.ROOT), sha256, sizeBytes);
+            if (mediaCapability == null || !MEDIA_CAPABILITY.matcher(mediaCapability).matches()) {
+                throw invalid("mediaCapability is invalid");
+            }
+            return new Asset(assetId, url, mediaCapability, mimeType.toLowerCase(Locale.ROOT), sha256, sizeBytes);
         }
 
         static void validateResolve(String assetId, String mimeType, String sha256, Long sizeBytes) throws CacheException {
@@ -226,15 +233,12 @@ final class MediaCacheStore {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) asset.url.openConnection();
-            connection.setInstanceFollowRedirects(false);
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
-            connection.setUseCaches(false);
-            connection.setRequestProperty("Accept-Encoding", "identity");
+            configureConnection(connection, asset.mediaCapability);
             int status = connection.getResponseCode();
             if (status != HttpURLConnection.HTTP_OK) {
                 throw new CacheException("DOWNLOAD_REJECTED", "Media server returned HTTP " + status);
             }
+            validateContentEncoding(connection.getHeaderField("Content-Encoding"));
             long contentLength = parseContentLength(connection.getHeaderField("Content-Length"));
             if (contentLength > MAX_ASSET_BYTES || (contentLength >= 0L && contentLength != asset.sizeBytes)) {
                 throw new CacheException("INTEGRITY_FAILURE", "Media response size does not match the manifest");
@@ -360,8 +364,8 @@ final class MediaCacheStore {
         if (rawUrl == null) throw invalid("url is required");
         try {
             URI uri = URI.create(rawUrl);
-            if (!uri.isAbsolute() || uri.getRawUserInfo() != null || uri.getRawFragment() != null || uri.getHost() == null) {
-                throw invalid("url must be an absolute media URL without credentials or fragments");
+            if (!uri.isAbsolute() || uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null || uri.getHost() == null) {
+                throw invalid("url must be an absolute media URL without credentials, query, or fragments");
             }
             String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
             boolean debugLocalhost = allowDebugLocalhostHttp && scheme.equals("http") && isLocalhost(uri.getHost());
@@ -371,6 +375,24 @@ final class MediaCacheStore {
             throw exception;
         } catch (IllegalArgumentException | IOException exception) {
             throw invalid("url is invalid");
+        }
+    }
+
+    static void configureConnection(HttpURLConnection connection, String mediaCapability) throws CacheException {
+        if (connection == null || mediaCapability == null || !MEDIA_CAPABILITY.matcher(mediaCapability).matches()) {
+            throw invalid("media authorization is invalid");
+        }
+        connection.setInstanceFollowRedirects(false);
+        connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+        connection.setReadTimeout(READ_TIMEOUT_MS);
+        connection.setUseCaches(false);
+        connection.setRequestProperty("Accept-Encoding", "identity");
+        connection.setRequestProperty("Authorization", "MediaCapability " + mediaCapability);
+    }
+
+    static void validateContentEncoding(String value) throws CacheException {
+        if (value != null && !value.equalsIgnoreCase("identity")) {
+            throw new CacheException("INTEGRITY_FAILURE", "Media response encoding is not allowed");
         }
     }
 

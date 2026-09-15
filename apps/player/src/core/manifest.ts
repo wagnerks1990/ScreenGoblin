@@ -16,6 +16,7 @@ const MAX_CONCURRENT_PREFETCHES = 2;
 // native incremental hashing and stream-to-disk activation are available.
 const MAX_ASSET_BYTES = 128 * 1024 * 1024;
 const MAX_RELEASE_BYTES = 512 * 1024 * 1024;
+const MEDIA_CAPABILITY = /^[A-Za-z0-9_-]{1,4052}\.[A-Za-z0-9_-]{43}$/;
 
 function isAllowedKindAndMime(
   item: PlayerManifest["items"][number],
@@ -80,10 +81,20 @@ function rollbackDeadline(
   return boundaries.length > 0 ? Math.min(...boundaries) : undefined;
 }
 
-function isAllowedAssetUrl(url: string, emergencyTemplate: boolean): boolean {
+function isAllowedAssetUrl(
+  url: string,
+  emergencyTemplate: boolean,
+  allowLegacyQuery: boolean,
+): boolean {
   try {
     const parsed = new URL(url);
-    if (parsed.username || parsed.password) return false;
+    if (
+      parsed.username ||
+      parsed.password ||
+      (!allowLegacyQuery && parsed.search) ||
+      parsed.hash
+    )
+      return false;
     if (parsed.protocol === "https:") return true;
     if (
       parsed.protocol === "http:" &&
@@ -98,10 +109,19 @@ function isAllowedAssetUrl(url: string, emergencyTemplate: boolean): boolean {
 
 export function assertManifest(
   value: unknown,
+  requireCurrentProtocol = false,
 ): asserts value is PlayerManifest {
   if (!value || typeof value !== "object")
     throw new ManifestError("Manifest is not an object");
   const manifest = value as Partial<PlayerManifest>;
+  const currentProtocol =
+    manifest.protocolVersion === 2 &&
+    manifest.mediaDelivery === "authorization-v1";
+  const legacyStoredProtocol =
+    manifest.protocolVersion === undefined &&
+    manifest.mediaDelivery === undefined;
+  if (!currentProtocol && (requireCurrentProtocol || !legacyStoredProtocol))
+    throw new ManifestError("Manifest media protocol is unsupported");
   if (!manifest.version || !manifest.screenId || !Array.isArray(manifest.items))
     throw new ManifestError("Manifest metadata is incomplete");
   if (
@@ -149,14 +169,22 @@ export function assertManifest(
     if (!item.id || ids.has(item.id))
       throw new ManifestError("Asset identifiers must be unique");
     ids.add(item.id);
+    const emergencyTemplate =
+      manifest.priority === "emergency" &&
+      item.kind === "template" &&
+      item.mimeType === "application/vnd.screengoblin.emergency+json";
     if (
       typeof item.url !== "string" ||
-      !isAllowedAssetUrl(
-        item.url,
-        manifest.priority === "emergency" &&
-          item.kind === "template" &&
-          item.mimeType === "application/vnd.screengoblin.emergency+json",
-      ) ||
+      !isAllowedAssetUrl(item.url, emergencyTemplate, legacyStoredProtocol) ||
+      (currentProtocol &&
+        !emergencyTemplate &&
+        (item.mediaDelivery !== "authorization-v1" ||
+          typeof item.mediaCapability !== "string" ||
+          !MEDIA_CAPABILITY.test(item.mediaCapability))) ||
+      (currentProtocol &&
+        emergencyTemplate &&
+        (item.mediaDelivery !== undefined ||
+          item.mediaCapability !== undefined)) ||
       !isAllowedKindAndMime(item, manifest.priority) ||
       !Number.isInteger(item.durationSeconds) ||
       item.durationSeconds < 1 ||
@@ -181,13 +209,18 @@ export function assertManifest(
   }
 }
 
-function normalizeSignedPayload(value: unknown): PlayerManifest {
+function normalizeSignedPayload(
+  value: unknown,
+  requireCurrentProtocol = false,
+): PlayerManifest {
   if (!value || typeof value !== "object")
     throw new ManifestError("Signed manifest payload is invalid");
   const wire = value as Record<string, unknown>;
   if (!Array.isArray(wire.items))
     throw new ManifestError("Signed manifest items are invalid");
   const manifest = {
+    protocolVersion: wire.protocolVersion,
+    mediaDelivery: wire.mediaDelivery,
     version: wire.version,
     generatedAt: wire.generatedAt,
     validUntil: wire.validUntil,
@@ -213,7 +246,7 @@ function normalizeSignedPayload(value: unknown): PlayerManifest {
       };
     }),
   };
-  assertManifest(manifest);
+  assertManifest(manifest, requireCurrentProtocol);
   return manifest;
 }
 
@@ -228,7 +261,7 @@ export function createSignedPlayerManifest(
     payloadJson,
     signatureAlgorithm,
     signature,
-    manifest: normalizeSignedPayload(unsigned),
+    manifest: normalizeSignedPayload(unsigned, true),
   };
 }
 

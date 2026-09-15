@@ -34,12 +34,15 @@ import type { PlayerAsset } from "./types";
 
 const ABC_SHA256 =
   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const MEDIA_CAPABILITY = `${"a".repeat(48)}.${"b".repeat(43)}`;
 
 function asset(overrides: Partial<PlayerAsset> = {}): PlayerAsset {
   return {
     id: "asset-1",
     kind: "image",
     url: "https://cdn.example.test/asset.png",
+    mediaDelivery: "authorization-v1",
+    mediaCapability: MEDIA_CAPABILITY,
     mimeType: "image/png",
     checksumSha256: ABC_SHA256,
     sizeBytes: 3,
@@ -106,12 +109,74 @@ describe("cache asset staging", () => {
       "https://cdn.example.test/asset.png",
       expect.objectContaining({
         cache: "no-store",
+        credentials: "omit",
+        headers: { Authorization: `MediaCapability ${MEDIA_CAPABILITY}` },
+        referrerPolicy: "no-referrer",
         redirect: "error",
         signal: expect.anything(),
       }),
     );
     expect(cache.put).toHaveBeenCalledOnce();
     expect(cache.delete).not.toHaveBeenCalled();
+  });
+
+  it("stages a signed inline emergency cache miss without credentials", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response(new TextEncoder().encode("{}"), {
+        "Content-Length": "2",
+        "Content-Type": "application/vnd.screengoblin.emergency+json",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const emergency = asset({
+      id: "emergency-1",
+      kind: "template",
+      mimeType: "application/vnd.screengoblin.emergency+json",
+      url: "data:application/json;base64,e30=",
+      checksumSha256:
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      sizeBytes: 2,
+    });
+    delete emergency.mediaDelivery;
+    delete emergency.mediaCapability;
+
+    await new CacheAssetRepository().prefetch(emergency);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("data:application/json;base64,e30=");
+    expect(init).toEqual(
+      expect.objectContaining({
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        redirect: "error",
+      }),
+    );
+    expect(init).not.toHaveProperty("headers");
+    expect(JSON.stringify(init)).not.toContain("MediaCapability");
+    expect(cache.put).toHaveBeenCalledOnce();
+  });
+
+  it("permits verified legacy cache bytes but never a legacy network fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const legacy = asset({
+      url: "https://cdn.example.test/asset.png?capability=legacy",
+    });
+    delete legacy.mediaDelivery;
+    delete legacy.mediaCapability;
+    cache.match.mockResolvedValueOnce(response());
+    await expect(
+      new CacheAssetRepository().prefetch(legacy),
+    ).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    cache.match.mockResolvedValueOnce(undefined);
+    await expect(new CacheAssetRepository().prefetch(legacy)).rejects.toThrow(
+      "authorization is invalid",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects an oversized declared Content-Length before reading the body", async () => {
@@ -449,6 +514,7 @@ describe("native asset staging", () => {
     expect(native.prefetch).toHaveBeenCalledWith({
       assetId: "asset-1",
       url: "https://cdn.example.test/asset.png",
+      mediaCapability: MEDIA_CAPABILITY,
       mimeType: "image/png",
       checksumSha256: ABC_SHA256,
       sizeBytes: 3,
@@ -499,6 +565,8 @@ describe("native asset staging", () => {
         "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       sizeBytes: 2,
     });
+    delete emergency.mediaDelivery;
+    delete emergency.mediaCapability;
     const repository = new NativeAssetRepository(legacy);
 
     await repository.prefetch(emergency);

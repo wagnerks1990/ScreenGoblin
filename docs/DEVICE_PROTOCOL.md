@@ -76,7 +76,10 @@ requested key ID differs from the current Keystore identity.
 
 For each manifest fetch or heartbeat, the Player first posts the intended
 operation and request-body digest to `/api/v1/device/challenges`, identified by
-`X-Screen-Id` and `X-Device-Key-Id`. Manifest uses the SHA-256 of an empty body.
+`X-Screen-Id` and `X-Device-Key-Id`. Manifest uses the SHA-256 of canonical JSON
+`{"mediaDelivery":"authorization-v1","protocolVersion":2}` and is fetched by
+POST; the signed response repeats those choices. GET and empty-body negotiation
+are unsupported.
 Heartbeat uses the lowercase hexadecimal SHA-256 of the shared canonical JSON
 body, whose object keys are recursively sorted. There are no query parameters on
 the proof-protected manifest endpoint.
@@ -114,7 +117,11 @@ A manifest contains:
 - screen ID, stable semantic version, generation time, and expiry;
 - the signed request challenge ID in proof-v1 mode;
 - schedule priority and ordered items;
-- per-item HTTPS delivery URLs containing short-lived signed capabilities that
+- per-item query-free HTTPS delivery URLs on the paired API origin and separate
+  short-lived signed capabilities sent only as exactly one
+  `Authorization: MediaCapability <token>` header. Query parameters, missing or
+  duplicate headers, other schemes, malformed tokens, and capability v1 are
+  rejected with the same empty 404. Capabilities
   expire at the earliest manifest lease, schedule playback boundary, or frozen
   asset expiry; capabilities bind the screen, organization, active immutable
   assignment ID/digest, asset, server-owned storage key, digest, size, and GET
@@ -125,7 +132,7 @@ A manifest contains:
   cannot complete the response;
 - a signed `withdrawn` flag; a withdrawal is an empty, normal-priority release that intentionally clears playback;
 - an optional signed `playbackEndsAt` boundary for the selected schedule, distinct from the routinely refreshed envelope lease;
-- immutable asset URL, media type, size, SHA-256, and duration;
+- immutable query-free asset URL, media type, size, SHA-256, and duration;
 - minimum compatible player version where needed;
 - a signature over a canonical representation.
 

@@ -4,6 +4,15 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Replace URL-carried private-media credentials with a strict protocol-v2
+  contract. Manifest POST negotiation is device-proof-bound; signed manifests
+  contain query-free same-origin API URLs and separate capabilities used only
+  with the exact `MediaCapability` Authorization scheme. The API rejects GET,
+  query, v1, malformed, missing, duplicate, and wrong-scheme transports without
+  storage access; browser and Android downloads preserve exact byte/hash,
+  bounded-stream, offline LKG, and rollback behavior. Verified pre-v2 records
+  are cache-only during upgrade, never a legacy network fallback.
+
 - Preserve tenant-scoped creator provenance for immutable releases and
   assignments after membership removal. A transactional migration backfills
   guarded membership-attribution tombstones, records future memberships in the

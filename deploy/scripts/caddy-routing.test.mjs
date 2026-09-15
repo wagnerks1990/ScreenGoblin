@@ -28,4 +28,9 @@ test("media is never proxied directly to private object storage", () => {
   );
   assert.doesNotMatch(caddyfile, /reverse_proxy minio:9000/);
   assert.match(caddyfile, /@api path \/api \/api\/\*/);
+  assert.match(
+    caddyfile,
+    /@compressible not path \/api\/v1\/device\/media\/\*\n  encode @compressible zstd gzip/,
+  );
+  assert.doesNotMatch(caddyfile, /^\s*log(?:\s|\{)/m);
 });

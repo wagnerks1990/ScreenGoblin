@@ -76,8 +76,14 @@ npm run build
 ```
 
 The API must expose the contract documented in
-[`docs/DEVICE_PROTOCOL.md`](../../docs/DEVICE_PROTOCOL.md). Serve asset URLs
-with CORS enabled. Asset `sizeBytes` and `checksumSha256` must describe the exact
+[`docs/DEVICE_PROTOCOL.md`](../../docs/DEVICE_PROTOCOL.md). Serve assets through
+the query-free API media path. The signed manifest carries a separate bounded
+capability that browser and Android downloads send only with the exact
+`MediaCapability` Authorization scheme; it is never placed in a URL, cache key,
+filename, or diagnostic. A verified pre-cutover manifest may recover already
+cached bytes offline but may never initiate a legacy query-token download.
+CORS must allow the Player origin and Authorization preflight. Asset `sizeBytes`
+and `checksumSha256` must describe the exact
 response bytes delivered to the native downloader. Publication, Android native
 download, and browser/PWA cache misses currently retain the 128 MiB per-asset
 ceiling; manifests retain the 512 MiB aggregate ceiling. Native

@@ -160,7 +160,15 @@ grant or credential state; clients must read the grant/screen after recovery.
 
 ### Manifest and heartbeat authorization
 
-Before each protected operation, the player sends `POST /device/challenges` with `X-Screen-Id`, `X-Device-Key-Id`, and `{ operation, bodySha256 }`. `operation` is exactly `manifest` or `heartbeat`. Manifest uses the lowercase hexadecimal SHA-256 of an empty body. Heartbeat uses the SHA-256 of the shared recursively key-sorted canonical JSON body. The API returns a fresh 32-byte challenge with a 45-second expiry and retains at most four live challenges per credential and operation.
+Before each protected operation, the player sends `POST /device/challenges` with `X-Screen-Id`, `X-Device-Key-Id`, and `{ operation, bodySha256 }`. `operation` is exactly `manifest` or `heartbeat`. Manifest uses the lowercase hexadecimal SHA-256 of canonical JSON `{"mediaDelivery":"authorization-v1","protocolVersion":2}` and is then requested by POST. Heartbeat uses the SHA-256 of the shared recursively key-sorted canonical JSON body. The API returns a fresh 32-byte challenge with a 45-second expiry and retains at most four live challenges per credential and operation.
+
+The signed protocol-v2 manifest repeats its negotiation and provides each
+ordinary asset as a query-free URL on the device API origin plus a separate
+`mediaCapability`. `GET /device/manifest`, query-carried capabilities, v1
+capabilities, and downgrade fallback are unsupported. Media delivery requires
+exactly one `Authorization: MediaCapability <token>` header and returns the same
+empty 404 for missing, duplicate, malformed, wrong-scheme, expired, withdrawn,
+or incorrectly bound credentials.
 
 The protected request repeats `X-Screen-Id` and `X-Device-Key-Id` and adds:
 

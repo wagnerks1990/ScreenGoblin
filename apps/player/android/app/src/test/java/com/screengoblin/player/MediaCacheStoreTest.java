@@ -6,8 +6,12 @@ import static org.junit.Assert.fail;
 
 import org.junit.Test;
 
+import java.net.HttpURLConnection;
+import java.net.URL;
+
 public final class MediaCacheStoreTest {
     private static final String DIGEST = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    private static final String CAPABILITY = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     @Test
     public void canonicalFileNamesUseOnlyTheMimeAllowlist() throws Exception {
@@ -28,6 +32,7 @@ public final class MediaCacheStoreTest {
         assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.validateUrl("http://media.example.test/item.mp4", false));
         assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.validateUrl("https://user:secret@media.example.test/item.mp4", false));
         assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.validateUrl("https://media.example.test/item.mp4#fragment", false));
+        assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.validateUrl("https://media.example.test/item.mp4?capability=secret", false));
         assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.validateUrl("file:///data/local/item.mp4", false));
     }
 
@@ -45,6 +50,7 @@ public final class MediaCacheStoreTest {
         MediaCacheStore.Asset asset = MediaCacheStore.Asset.forPrefetch(
             "asset-1",
             "https://media.example.test/item.mp4",
+            CAPABILITY,
             "video/mp4",
             DIGEST,
             1L,
@@ -55,7 +61,13 @@ public final class MediaCacheStoreTest {
         assertInvalidSize(0L);
         assertInvalidSize(MediaCacheStore.MAX_ASSET_BYTES + 1L);
         assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.Asset.forPrefetch(
-            "asset-1", "https://media.example.test/item.mp4", "video/mp4", DIGEST.toUpperCase(), 1L, false
+            "asset-1", "https://media.example.test/item.mp4", CAPABILITY, "video/mp4", DIGEST.toUpperCase(), 1L, false
+        ));
+        assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.Asset.forPrefetch(
+            "asset-1", "https://media.example.test/item.mp4", "bad capability", "video/mp4", DIGEST, 1L, false
+        ));
+        assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.Asset.forPrefetch(
+            "asset-1", "https://media.example.test/item.mp4", "a".repeat(4053) + "." + "b".repeat(43), "video/mp4", DIGEST, 1L, false
         ));
     }
 
@@ -69,9 +81,33 @@ public final class MediaCacheStoreTest {
         assertCode("INTEGRITY_FAILURE", () -> MediaCacheStore.parseContentLength("9223372036854775808"));
     }
 
+    @Test
+    public void connectionUsesOnlyTheExactHeaderCredentialAndIdentityEncoding() throws Exception {
+        FakeConnection connection = new FakeConnection();
+        MediaCacheStore.configureConnection(connection, CAPABILITY);
+        assertEquals("MediaCapability " + CAPABILITY, connection.getRequestProperty("Authorization"));
+        assertEquals("identity", connection.getRequestProperty("Accept-Encoding"));
+        assertTrue(!connection.getInstanceFollowRedirects());
+        assertTrue(!connection.getUseCaches());
+        assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.configureConnection(new FakeConnection(), "bad\r\nvalue"));
+        assertCode("INTEGRITY_FAILURE", () -> MediaCacheStore.validateContentEncoding("gzip"));
+        MediaCacheStore.validateContentEncoding(null);
+        MediaCacheStore.validateContentEncoding("identity");
+    }
+
+    private static final class FakeConnection extends HttpURLConnection {
+        FakeConnection() throws Exception {
+            super(new URL("https://media.example.test/item.mp4"));
+        }
+
+        @Override public void disconnect() {}
+        @Override public boolean usingProxy() { return false; }
+        @Override public void connect() {}
+    }
+
     private static void assertInvalidSize(long size) throws Exception {
         assertCode("INVALID_ARGUMENT", () -> MediaCacheStore.Asset.forPrefetch(
-            "asset-1", "https://media.example.test/item.mp4", "video/mp4", DIGEST, size, false
+            "asset-1", "https://media.example.test/item.mp4", CAPABILITY, "video/mp4", DIGEST, size, false
         ));
     }
 

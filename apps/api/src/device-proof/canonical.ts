@@ -1,6 +1,7 @@
 import {
   canonicalJson,
   canonicalPairingTranscript,
+  type DeviceManifestRequest,
   type HeartbeatRequest,
   type PairingChallengeRequest,
 } from "@screengoblin/contracts";
@@ -17,6 +18,9 @@ export const canonicalPairingDigest = (
     .digest("hex");
 
 export const canonicalHeartbeatDigest = (input: HeartbeatRequest): string =>
+  sha256Hex(Buffer.from(canonicalJson(input), "utf8"));
+
+export const canonicalManifestDigest = (input: DeviceManifestRequest): string =>
   sha256Hex(Buffer.from(canonicalJson(input), "utf8"));
 
 export const EMPTY_BODY_SHA256 = sha256Hex(new Uint8Array());

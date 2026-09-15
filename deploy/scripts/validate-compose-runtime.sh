@@ -166,9 +166,16 @@ readonly -a secret_values
 sanitize_stream() {
   local line secret
   while IFS= read -r line || [[ -n "$line" ]]; do
-    for secret in "${secret_values[@]}"; do
+    for secret in "${secret_values[@]}" \
+      "${management_token:-}" "${enrollment_secret:-}" \
+      "${valid_media_capability:-}" "${expired_media_capability:-}"; do
+      [[ -n "$secret" ]] || continue
       line="${line//"$secret"/[REDACTED]}"
     done
+    line="$(sed -E \
+      -e 's/(MediaCapability )[A-Za-z0-9._-]+/\1[REDACTED]/g' \
+      -e 's/([?&]capability=)[A-Za-z0-9._-]+/\1[REDACTED]/g' \
+      <<<"$line")"
     printf '%s\n' "$line"
   done
 }
@@ -221,11 +228,17 @@ trap 'exit 130' INT TERM
 
 assert_status() {
   local host="$1" path="$2" expected="$3" label="$4"
+  local request_header="${5:-}" second_request_header="${6:-}" request_method="${7:-}"
   local body="$work_dir/${label}.body"
   local headers="$work_dir/${label}.headers"
   local status
+  local -a request_headers=()
+  [[ -z "$request_header" ]] || request_headers+=(--header "$request_header")
+  [[ -z "$second_request_header" ]] || request_headers+=(--header "$second_request_header")
+  [[ -z "$request_method" ]] || request_headers+=(--request "$request_method")
   status="$($CURL_BIN --silent --show-error --insecure \
     --resolve "$host:443:127.0.0.1" \
+    "${request_headers[@]}" \
     --output "$body" --dump-header "$headers" --write-out '%{http_code}' \
     "https://$host$path")"
   [[ "$status" == "$expected" ]] || {
@@ -768,10 +781,63 @@ assert_status "$SCREEN_GOBLIN_HOST" "/" 200 "console"
 assert_status "$PLAYER_HOST" "/" 200 "player"
 assert_status "$SCREEN_GOBLIN_HOST" "/media/runtime-smoke.txt" 404 "legacy-media-denied"
 assert_status "$SCREEN_GOBLIN_HOST" \
-  "/api/v1/device/media/$media_asset_id?capability=$valid_media_capability" \
-  200 "private-media-valid"
+  "/api/v1/device/media/$media_asset_id" \
+  200 "private-media-valid" "Authorization: MediaCapability $valid_media_capability" \
+  "Accept-Encoding: gzip"
 [[ "$(cat "$work_dir/private-media-valid.body")" == "$media_body" ]] || {
   echo "Private media API returned unexpected bytes" >&2
+  exit 1
+}
+for expected_header in \
+  "Cache-Control: private, no-store, no-transform" \
+  "Referrer-Policy: no-referrer" \
+  "X-Content-Type-Options: nosniff" \
+  "Content-Length: $media_size"; do
+  tr -d '\r' <"$work_dir/private-media-valid.headers" |
+    grep -Fxiq "$expected_header" || {
+      echo "Private media response omitted exact $expected_header" >&2
+      exit 1
+    }
+done
+tr -d '\r' <"$work_dir/private-media-valid.headers" |
+  grep -Eiq '^Vary:.*(^|[ ,])Authorization([ ,]|$)' || {
+    echo "Private media response omitted Vary: Authorization" >&2
+    exit 1
+  }
+! tr -d '\r' <"$work_dir/private-media-valid.headers" |
+  grep -qi '^Content-Encoding:' || {
+    echo "Private media response was transformed despite identity signing" >&2
+    exit 1
+  }
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id" \
+  404 "private-media-tampered" "Authorization: MediaCapability ${valid_media_capability}x"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id" \
+  404 "private-media-expired" "Authorization: MediaCapability $expired_media_capability"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id?capability=$valid_media_capability" \
+  404 "private-media-query-rejected"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id" \
+  404 "private-media-missing-authorization-rejected"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id" \
+  404 "private-media-malformed-rejected" "Authorization: MediaCapability not-canonical"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id" \
+  404 "private-media-bearer-rejected" "Authorization: Bearer $valid_media_capability"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id" \
+  404 "private-media-duplicate-rejected" \
+  "Authorization: MediaCapability $valid_media_capability" \
+  "Authorization: MediaCapability $valid_media_capability"
+assert_status "$SCREEN_GOBLIN_HOST" \
+  "/api/v1/device/media/$media_asset_id" \
+  404 "private-media-head-rejected" \
+  "Authorization: MediaCapability $valid_media_capability" "" "HEAD"
+[[ ! -s "$work_dir/private-media-head-rejected.body" ]] || {
+  echo "Private media HEAD denial returned a body" >&2
   exit 1
 }
 "${compose[@]}" exec -T postgres psql \
@@ -783,14 +849,32 @@ INSERT INTO "ReleaseAssignmentTarget" ("organizationId", "assignmentId", "screen
 VALUES ('$media_org_id', 'compose-media-withdrawal', '$media_screen_id', '$media_screen_id', '$media_org_id');
 SQL
 assert_status "$SCREEN_GOBLIN_HOST" \
-  "/api/v1/device/media/$media_asset_id?capability=$valid_media_capability" \
-  404 "private-media-withdrawn"
-assert_status "$SCREEN_GOBLIN_HOST" \
-  "/api/v1/device/media/$media_asset_id?capability=${valid_media_capability}x" \
-  404 "private-media-tampered"
-assert_status "$SCREEN_GOBLIN_HOST" \
-  "/api/v1/device/media/$media_asset_id?capability=$expired_media_capability" \
-  404 "private-media-expired"
+  "/api/v1/device/media/$media_asset_id" \
+  404 "private-media-withdrawn" "Authorization: MediaCapability $valid_media_capability"
+media_preflight_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --request OPTIONS \
+  --header "Origin: https://$PLAYER_HOST" \
+  --header "Access-Control-Request-Method: GET" \
+  --header "Access-Control-Request-Headers: Authorization" \
+  --output "$work_dir/private-media-preflight.body" \
+  --dump-header "$work_dir/private-media-preflight.headers" \
+  --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/device/media/$media_asset_id")"
+[[ "$media_preflight_status" == 204 ]] || {
+  echo "Private media player-origin preflight returned HTTP $media_preflight_status; expected 204" >&2
+  exit 1
+}
+tr -d '\r' <"$work_dir/private-media-preflight.headers" |
+  grep -Fxiq "Access-Control-Allow-Origin: https://$PLAYER_HOST" || {
+    echo "Private media preflight did not allow the exact Player origin" >&2
+    exit 1
+  }
+tr -d '\r' <"$work_dir/private-media-preflight.headers" |
+  grep -Eiq '^Access-Control-Allow-Headers:.*(^|[ ,])Authorization([ ,]|$)' || {
+    echo "Private media preflight did not allow the Authorization header" >&2
+    exit 1
+  }
 
 grep -q '<div id="root">' "$work_dir/console.body"
 grep -q '<div id="root">' "$work_dir/player.body"

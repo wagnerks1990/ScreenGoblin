@@ -42,6 +42,7 @@ case " $* " in
     ;;
   *" logs --no-color "*)
     printf 'JWT_SECRET=%s\\n' "$JWT_SECRET"
+    printf 'Authorization: MediaCapability valid-capability\\n'
     printf '%s' "$JWT_SECRET" > "$FAKE_LEAK_CAPTURE"
     exit 0
     ;;
@@ -114,11 +115,20 @@ output=''
 headers=''
 url=''
 request='GET'
+authorization=''
+authorization_count=0
 while (($#)); do
   case "$1" in
     --output) output="$2"; shift 2 ;;
     --dump-header) headers="$2"; shift 2 ;;
     --request) request="$2"; shift 2 ;;
+    --header)
+      if [[ "$2" == Authorization:* ]]; then
+        authorization="\${2#Authorization: }"
+        authorization_count=$((authorization_count + 1))
+      fi
+      shift 2
+      ;;
     https://*) url="$1"; shift ;;
     *) shift ;;
   esac
@@ -141,8 +151,17 @@ case "$url" in
   */health/live) status=204 ;;
   */health/ready) status=404 ;;
   */media/runtime-smoke.txt) status=404 ;;
-  *capability=valid-capability) body='ScreenGoblin private media runtime smoke' ;;
-  *capability=valid-capabilityx|*capability=expired-capability) status=404 ;;
+  */api/v1/device/media/*)
+    if [[ "$request" == OPTIONS ]]; then
+      status=204
+    elif [[ "$request" == HEAD ]]; then
+      status=404
+    elif [[ "$url" == *\\?* || "$authorization_count" != 1 || "$authorization" != 'MediaCapability valid-capability' ]]; then
+      status=404
+    else
+      body='ScreenGoblin private media runtime smoke'
+    fi
+    ;;
   *) body='<div id="root"></div>' ;;
 esac
 if [[ "$output" == *enrollment-login.json ]]; then status=200; body='{"accessToken":"fixture-management-token"}'; fi
@@ -153,7 +172,14 @@ if [[ "$url" == https://player.example.test/* ]]; then
 fi
 if [[ -n "\${FAKE_CSP:-}" ]]; then csp="$FAKE_CSP"; fi
 if [[ -n "$headers" ]]; then
-  printf 'HTTP/2 %s\\r\\nContent-Security-Policy: %s\\r\\nX-Frame-Options: DENY\\r\\nStrict-Transport-Security: max-age=31536000\\r\\nX-Content-Type-Options: nosniff\\r\\n\\r\\n' "$status" "$csp" > "$headers"
+  printf 'HTTP/2 %s\\r\\nContent-Security-Policy: %s\\r\\nX-Frame-Options: DENY\\r\\nStrict-Transport-Security: max-age=31536000\\r\\nX-Content-Type-Options: nosniff\\r\\n' "$status" "$csp" > "$headers"
+  if [[ "$request" == OPTIONS ]]; then
+    printf 'Access-Control-Allow-Origin: https://player.example.test\\r\\nAccess-Control-Allow-Headers: Authorization\\r\\n' >> "$headers"
+  fi
+  if [[ "$url" == */api/v1/device/media/* && "$status" == 200 ]]; then
+    printf 'Cache-Control: private, no-store, no-transform\\r\\nReferrer-Policy: no-referrer\\r\\nVary: Authorization\\r\\nContent-Length: %s\\r\\n' "\${#body}" >> "$headers"
+  fi
+  printf '\\r\\n' >> "$headers"
 fi
 if [[ -n "$output" ]]; then
   if [[ -n "$body" ]]; then printf '%s\\n' "$body" > "$output"; else : > "$output"; fi
@@ -226,6 +252,24 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.match(scriptSource, /private-media-withdrawn/);
     assert.match(scriptSource, /private-media-tampered/);
     assert.match(scriptSource, /private-media-expired/);
+    const withdrawalMutation = scriptSource.indexOf(
+      "'compose-media-withdrawal'",
+    );
+    for (const label of [
+      "private-media-tampered",
+      "private-media-expired",
+      "private-media-query-rejected",
+      "private-media-missing-authorization-rejected",
+      "private-media-malformed-rejected",
+      "private-media-bearer-rejected",
+      "private-media-duplicate-rejected",
+      "private-media-head-rejected",
+    ]) {
+      assert.ok(scriptSource.indexOf(label) < withdrawalMutation);
+    }
+    assert.ok(
+      scriptSource.indexOf("private-media-withdrawn") > withdrawalMutation,
+    );
     assert.match(scriptSource, /releaseSnapshotDigest/);
     assert.match(scriptSource, /canonicalAssignmentSnapshot/);
     assert.doesNotMatch(scriptSource, /repeat\('[abc]', 64\)/);
@@ -304,7 +348,9 @@ test("propagates failures, redacts diagnostics, and still cleans up", () => {
       "utf8",
     );
     assert.ok(!diagnostics.includes(leakedSecret));
+    assert.ok(!diagnostics.includes("valid-capability"));
     assert.match(diagnostics, /JWT_SECRET=\[REDACTED\]/);
+    assert.match(diagnostics, /Authorization: MediaCapability \[REDACTED\]/);
     assert.ok(!`${result.stdout}\n${result.stderr}`.includes(leakedSecret));
     assert.match(result.stderr, /sanitized Compose diagnostics/);
     assert.match(result.stderr, /JWT_SECRET=\[REDACTED\]/);

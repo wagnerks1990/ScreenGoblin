@@ -20,6 +20,8 @@ vi.mock("./crypto", () => ({
 }));
 
 const valid: PlayerManifest = {
+  protocolVersion: 2,
+  mediaDelivery: "authorization-v1",
   version: "v2",
   generatedAt: "2026-09-11T00:00:00Z",
   validUntil: "2099-09-12T00:00:00Z",
@@ -31,6 +33,8 @@ const valid: PlayerManifest = {
       id: "asset-1",
       kind: "image",
       url: "https://cdn.test/one.png",
+      mediaDelivery: "authorization-v1",
+      mediaCapability: `${"a".repeat(48)}.${"b".repeat(43)}`,
       mimeType: "image/png",
       checksumSha256: "a".repeat(64),
       sizeBytes: 42,
@@ -47,6 +51,8 @@ const trust = {
 const signed = (manifest: PlayerManifest): SignedPlayerManifest =>
   createSignedPlayerManifest(
     {
+      protocolVersion: manifest.protocolVersion,
+      mediaDelivery: manifest.mediaDelivery,
       version: manifest.version,
       generatedAt: manifest.generatedAt,
       validUntil: manifest.validUntil,
@@ -250,6 +256,38 @@ describe("manifest transaction", () => {
     expect(assets.prefetched).toEqual(["asset-1"]);
     expect(assets.pruned).toEqual(["asset-1"]);
     expect(store.active).toEqual(valid);
+  });
+
+  it("stages a signed v2 emergency template without media credentials", async () => {
+    const store = new MemoryStore();
+    const assets = new MemoryAssets();
+    const emergency: PlayerManifest = {
+      ...valid,
+      version: "emergency-inline-v2",
+      priority: "emergency",
+      items: [
+        {
+          id: "emergency-inline",
+          kind: "template",
+          mimeType: "application/vnd.screengoblin.emergency+json",
+          url: "data:application/json;base64,e30=",
+          checksumSha256:
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          sizeBytes: 2,
+          durationSeconds: 15,
+        },
+      ],
+    };
+
+    await new ManifestManager(store, assets).stageAndActivate(
+      signed(emergency),
+      trust,
+    );
+
+    expect(assets.prefetched).toEqual(["emergency-inline"]);
+    expect(store.active).toEqual(emergency);
+    expect(store.active?.items[0]?.mediaCapability).toBeUndefined();
+    expect(store.active?.items[0]?.mediaDelivery).toBeUndefined();
   });
 
   it("prunes crash-orphaned assets after recovery while retaining active and rollback releases", async () => {
@@ -1027,6 +1065,22 @@ describe("manifest validation", () => {
     ).toThrow(ManifestError);
   });
 
+  it.each([
+    { url: "https://cdn.test/one.png?capability=secret" },
+    { url: "https://cdn.test/one.png#secret" },
+    { mediaCapability: undefined },
+    { mediaCapability: "not canonical" },
+    { mediaCapability: `${"a".repeat(4053)}.${"b".repeat(43)}` },
+    { mediaDelivery: undefined },
+  ])("rejects an unsafe v2 media delivery shape %#", (override) => {
+    expect(() =>
+      assertManifest({
+        ...valid,
+        items: [{ ...valid.items[0], ...override }],
+      }),
+    ).toThrow(ManifestError);
+  });
+
   it("preserves the signed emergency template exception", () => {
     expect(() =>
       assertManifest({
@@ -1038,6 +1092,8 @@ describe("manifest validation", () => {
             kind: "template",
             mimeType: "application/vnd.screengoblin.emergency+json",
             url: "data:application/json;base64,e30=",
+            mediaDelivery: undefined,
+            mediaCapability: undefined,
           },
         ],
       }),

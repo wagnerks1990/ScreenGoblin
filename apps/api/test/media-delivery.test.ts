@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
-import { PassThrough, Readable } from "node:stream";
+import { createHmac } from "node:crypto";
+import { PassThrough, Readable, Writable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
@@ -21,8 +22,11 @@ const readBody = async (body: Readable): Promise<Buffer> => {
 const expectHttpBodyFailure = async (
   url: string,
   expectedPrefix: string,
+  capability: string,
 ): Promise<void> => {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    headers: { Authorization: `MediaCapability ${capability}` },
+  });
   expect(response.status).toBe(200);
   const reader = response.body?.getReader();
   if (!reader) throw new Error("Response did not contain a body");
@@ -55,6 +59,9 @@ const claims = (overrides: Record<string, unknown> = {}) => ({
   expiresAt: new Date(Date.now() + 60_000).toISOString(),
   ...overrides,
 });
+const mediaAuthorization = (capability: string) => ({
+  Authorization: `MediaCapability ${capability}`,
+});
 
 describe("media delivery capabilities", () => {
   afterEach(() => {
@@ -65,7 +72,12 @@ describe("media delivery capabilities", () => {
   it("binds every delivery security property and rejects expiry or tampering", () => {
     const input = claims();
     const capability = issueMediaCapability(input, secret);
-    expect(verifyMediaCapability(capability, secret)).toMatchObject(input);
+    expect(verifyMediaCapability(capability, secret)).toMatchObject({
+      ...input,
+      version: 2,
+      method: "GET",
+      transport: "authorization-v1",
+    });
     expect(verifyMediaCapability(capability + "x", secret)).toBeNull();
     const expired = issueMediaCapability(
       claims({ expiresAt: new Date(Date.now() - 1).toISOString() }),
@@ -84,6 +96,16 @@ describe("media delivery capabilities", () => {
       secret,
     );
     expect(verifyMediaCapability(wrongAssignmentDigest, secret)).toBeNull();
+    const legacyPayload = Buffer.from(
+      JSON.stringify({ version: 1, method: "GET", ...input }),
+    ).toString("base64url");
+    const legacySignature = createHmac("sha256", secret)
+      .update("ScreenGoblin media delivery capability v1\n")
+      .update(legacyPayload)
+      .digest("base64url");
+    expect(
+      verifyMediaCapability(`${legacyPayload}.${legacySignature}`, secret),
+    ).toBeNull();
   });
 
   it("signs a GET only for the fixed configured S3 endpoint without redirects", async () => {
@@ -269,8 +291,9 @@ describe("media delivery capabilities", () => {
         secret,
       );
       const request = expectHttpBodyFailure(
-        `${app.listeningOrigin}/api/v1/device/media/asset-a?capability=${encodeURIComponent(capability)}`,
+        `${app.listeningOrigin}/api/v1/device/media/asset-a`,
         "ab",
+        capability,
       );
       await vi.waitFor(() => expect(getObject).toHaveBeenCalledOnce());
       finish(body);
@@ -318,7 +341,8 @@ describe("media delivery capabilities", () => {
         secret,
       );
       const response = await fetch(
-        `${app.listeningOrigin}/api/v1/device/media/asset-a?capability=${encodeURIComponent(capability)}`,
+        `${app.listeningOrigin}/api/v1/device/media/asset-a`,
+        { headers: mediaAuthorization(capability) },
       );
       expect(response.status).toBe(200);
       await expect(response.text()).resolves.toBe("abc");
@@ -334,6 +358,71 @@ describe("media delivery capabilities", () => {
     bounded.destroy(new Error("consumer disconnected"));
     await new Promise<void>((resolve) => bounded.on("close", resolve));
     expect(upstream.destroyed).toBe(true);
+  });
+
+  it("redacts media capabilities from real Fastify info and error logs", async () => {
+    let captured = "";
+    const loggerStream = new Writable({
+      write(chunk, _encoding, callback) {
+        captured += String(chunk);
+        callback();
+      },
+    });
+    const store = new MemoryStore();
+    store.screens.push({
+      id: "screen-a",
+      organizationId: "org-a",
+      name: "Screen",
+      location: "",
+      status: "online",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+      installationId: "installation-a",
+      deviceTokenHash: "present",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    vi.spyOn(store, "authorizeMediaDelivery").mockResolvedValue(true);
+    const app = await buildApp({
+      store,
+      jwtSecret: "jwt-secret-that-is-long-enough-for-the-test",
+      manifestSigningPrivateKey: signingKey,
+      pairingCodePepper: "pairing-pepper-that-is-long-enough-for-test",
+      mediaDeliverySecret: secret,
+      mediaObjectStore: {
+        getObject: vi.fn().mockRejectedValue(new Error("upstream failed")),
+      },
+      deviceAuthMode: "development-bearer",
+      logger: "info",
+      loggerStream,
+    });
+    const capability = issueMediaCapability(
+      claims({ credentialKeyId: undefined }),
+      secret,
+    );
+
+    expect(
+      (
+        await app.inject({
+          url: "/api/v1/device/media/asset-a",
+          headers: mediaAuthorization(capability),
+        })
+      ).statusCode,
+    ).toBe(500);
+    expect(
+      (
+        await app.inject({
+          url: `/api/v1/device/media/asset-a?capability=${capability}`,
+        })
+      ).statusCode,
+    ).toBe(404);
+    await app.close();
+
+    expect(captured).toContain("Unhandled request error");
+    expect(captured).toContain("request completed");
+    expect(captured).not.toContain(capability);
+    expect(captured).not.toContain("?capability=");
   });
 
   it("streams only for a live bound device and hides invalid capabilities", async () => {
@@ -379,13 +468,87 @@ describe("media delivery capabilities", () => {
       claims({ credentialKeyId: undefined }),
       secret,
     );
+    const deniedTransports = [
+      {
+        method: "HEAD" as const,
+        url: `/api/v1/device/media/asset-a`,
+        headers: mediaAuthorization(capability),
+      },
+      {
+        url: `/api/v1/device/media`,
+        headers: mediaAuthorization(capability),
+      },
+      {
+        url: `/api/v1/device/media/${"a".repeat(257)}`,
+        headers: mediaAuthorization(capability),
+      },
+      {
+        url: `/api/v1/device/media/invalid%20asset`,
+        headers: mediaAuthorization(capability),
+      },
+      { url: `/api/v1/device/media/asset-a`, headers: {} },
+      {
+        url: `/api/v1/device/media/asset-a?capability=${capability}`,
+        headers: {},
+      },
+      {
+        url: `/api/v1/device/media/asset-a?capability=${capability}`,
+        headers: mediaAuthorization(capability),
+      },
+      {
+        url: `/api/v1/device/media/asset-a`,
+        headers: { authorization: `Bearer ${capability}` },
+      },
+      {
+        url: `/api/v1/device/media/asset-a`,
+        headers: { authorization: `MediaCapability  ${capability}` },
+      },
+      {
+        url: `/api/v1/device/media/asset-a`,
+        headers: {
+          authorization: `MediaCapability ${"a".repeat(4053)}.${"b".repeat(43)}`,
+        },
+      },
+      {
+        url: `/api/v1/device/media/asset-a`,
+        headers: {
+          authorization: `MediaCapability ${capability}, MediaCapability ${capability}`,
+        },
+      },
+      {
+        url: `/api/v1/device/media/asset-a`,
+        headers: {
+          authorization: [
+            `MediaCapability ${capability}`,
+            `MediaCapability ${capability}`,
+          ] as unknown as string,
+        },
+      },
+    ];
+    for (const request of deniedTransports) {
+      const denied = await app.inject(request);
+      expect(denied.statusCode, request.url).toBe(404);
+      expect(denied.body).toBe("");
+      expect(denied.headers["www-authenticate"]).toBeUndefined();
+    }
+    expect(getObject).not.toHaveBeenCalled();
     const valid = await app.inject({
-      url: `/api/v1/device/media/asset-a?capability=${encodeURIComponent(capability)}`,
+      url: `/api/v1/device/media/asset-a`,
+      headers: {
+        ...mediaAuthorization(capability),
+        origin: "http://localhost:5173",
+      },
     });
     expect(valid.statusCode).toBe(200);
     expect(valid.body).toBe("abc");
     expect(valid.headers["content-type"]).toContain("image/png");
     expect(valid.headers["x-content-type-options"]).toBe("nosniff");
+    expect(valid.headers["cache-control"]).toBe(
+      "private, no-store, no-transform",
+    );
+    expect(valid.headers["referrer-policy"]).toBe("no-referrer");
+    expect(valid.headers.vary).toContain("Origin");
+    expect(valid.headers.vary).toContain("Authorization");
     expect(getObject).toHaveBeenCalledWith(claims().storageKey);
     expect(authorizeMediaDelivery).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -402,14 +565,16 @@ describe("media delivery capabilities", () => {
       secret,
     );
     const mismatched = await app.inject({
-      url: `/api/v1/device/media/asset-a?capability=${encodeURIComponent(wrongSize)}`,
+      url: `/api/v1/device/media/asset-a`,
+      headers: mediaAuthorization(wrongSize),
     });
     expect(mismatched.statusCode).toBe(404);
     expect(mismatchedBody.destroyed).toBe(true);
 
     authorizeMediaDelivery.mockResolvedValueOnce(false);
     const withdrawn = await app.inject({
-      url: `/api/v1/device/media/asset-a?capability=${encodeURIComponent(capability)}`,
+      url: `/api/v1/device/media/asset-a`,
+      headers: mediaAuthorization(capability),
     });
     expect(withdrawn.statusCode).toBe(404);
     expect(getObject).toHaveBeenCalledTimes(2);
@@ -417,12 +582,14 @@ describe("media delivery capabilities", () => {
     store.screens[0]!.credentialRevokedAt = new Date().toISOString();
     store.screens[0]!.deviceTokenHash = undefined;
     const revoked = await app.inject({
-      url: `/api/v1/device/media/asset-a?capability=${encodeURIComponent(capability)}`,
+      url: `/api/v1/device/media/asset-a`,
+      headers: mediaAuthorization(capability),
     });
     expect(revoked.statusCode).toBe(404);
 
     const tampered = await app.inject({
-      url: `/api/v1/device/media/asset-b?capability=${encodeURIComponent(capability)}`,
+      url: `/api/v1/device/media/asset-b`,
+      headers: mediaAuthorization(capability),
     });
     expect(tampered.statusCode).toBe(404);
 
@@ -431,7 +598,8 @@ describe("media delivery capabilities", () => {
       secret,
     );
     const crossScreenResponse = await app.inject({
-      url: `/api/v1/device/media/asset-a?capability=${encodeURIComponent(crossScreen)}`,
+      url: `/api/v1/device/media/asset-a`,
+      headers: mediaAuthorization(crossScreen),
     });
     expect(crossScreenResponse.statusCode).toBe(404);
     await app.close();

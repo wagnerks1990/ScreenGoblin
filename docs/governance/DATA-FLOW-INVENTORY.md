@@ -41,7 +41,9 @@
 4. **Device enrollment:** owner/admin precreates tenant Screen → API creates an issuer/epoch-bound grant without storing its plaintext code → Player submits canonical P-256 identity and transcript-bound proof → pending candidate only → current owner/admin activates the exact fingerprint → PostgreSQL credential. A stolen code cannot activate a credential by itself. Fingerprint comparison remains a manual custody check, not server-verified attestation or physical identity.
 5. **Playback delivery:** player → API for a fresh manifest-bound proof
    challenge → screen-bound signed manifest → short-lived assignment-bound API
-   media capability → API-mediated private object read. The API rechecks the
+   query-free API media URL plus separate signed capability → exact
+   `MediaCapability` Authorization header → API-mediated private object read.
+   The API rechecks the
    active credential and latest assignment before reading the server-derived
    object key; the Player verifies the manifest signature and asset hashes
    before activation and retains last-known-good content.
