@@ -2,6 +2,7 @@
 
 - [Architecture](architecture/ADR-001-platform-architecture.md)
 - [Scoped authorization and immutable release plan](architecture/AUTHORIZATION_RELEASE_PLAN.md)
+- [UX reference and approved ScreenGoblin renderings](UX_REFERENCE.md)
 - [API overview](API.md)
 - [Device protocol](DEVICE_PROTOCOL.md)
 - [Threat model](THREAT_MODEL.md)
