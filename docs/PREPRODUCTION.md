@@ -28,6 +28,10 @@ An unchecked item is a known gap, not an implicit approval.
 
 - [ ] Organization isolation has positive and negative API tests.
 - [ ] Production SSO/MFA and least-privilege roles are enabled.
+      Tenant-bound grant/group tables and a pure deny-by-default evaluator are
+      present, but a database latch keeps policy in legacy mode. Backfill,
+      shadow evidence, scoped read/mutation enforcement, administration,
+      SSO/MFA, and human access review remain incomplete.
 - [ ] Pairing is single-use, short-lived, rate-limited, transcript/key-bound, proof-verified, and audited on representative managed Android hardware.
 - [ ] Device revocation, targeted re-enrollment, credential/key rotation, offline recovery, and verified local media/state erasure pass operational and physical-device tests.
 - [ ] Android hardware/application attestation policy is implemented, or its absence has a named risk owner, compensating controls, and an approved review date.

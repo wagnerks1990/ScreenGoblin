@@ -26,6 +26,10 @@ test("recovery drill shell remains syntactically valid", () => {
 
 test("recovery drill migrates and restores representative application relations", () => {
   assert.match(script, /npm run prisma:migrate -w @screengoblin\/api/);
+  assert.match(
+    script,
+    /mv apps\/api\/prisma\/migrations\/20260915210000_scoped_authorization_foundation \/tmp\/scoped-authorization-foundation/,
+  );
   assert.match(script, /"_prisma_migrations"/);
   for (const table of [
     "Organization",
@@ -33,6 +37,9 @@ test("recovery drill migrates and restores representative application relations"
     "Location",
     "User",
     "Screen",
+    "ScreenGroup",
+    "ScreenGroupMember",
+    "AccessGrant",
     "PairingCode",
     "PairingAttempt",
     "MediaAsset",
@@ -69,6 +76,8 @@ test("recovery drill migrates and restores representative application relations"
     /ReleaseCandidate mutation guard allowed snapshot drift/,
   );
   assert.match(script, /restored_tenant_residue_count/);
+  assert.match(script, /authorizationMode\\\" = 'LEGACY'/);
+  assert.match(script, /recovery-access-grant/);
   assert.match(script, /rc\.state = 'PUBLISHED'/);
   assert.match(script, /rap\.\\\"approverUserId\\\" = 'recovery-approver'/);
   assert.match(script, /rcp\.\\\"publisherUserId\\\" = 'recovery-user'/);

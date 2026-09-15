@@ -109,6 +109,14 @@ window in bounded batches while retaining audit events and tombstones.
 The policy currently covers the whole organization; do not claim location,
 group, or screen-scoped grants. Keep emergency publishing disabled.
 
+The scoped-authorization foundation migration is additive and intentionally
+adds a `LEGACY`-only database check on `Organization.authorizationMode`. Do not
+drop or alter that safety latch, manually insert grants as if they were
+effective, or advertise scoped access. A later reviewed migration must add
+runtime grant loading, compatibility backfill verification, shadow evidence,
+all affected read/mutation enforcement, epoch invalidation, and explicit tenant
+promotion before `SHADOW` or `SCOPED` can be selected.
+
 ## Verifying interrupted historical migrations
 
 The following already-shipped migrations contain multiple statements and were

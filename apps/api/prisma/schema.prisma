@@ -84,15 +84,32 @@ enum ReleaseCandidateState {
   PUBLISHED
 }
 
+enum AuthorizationMode {
+  LEGACY
+  SHADOW
+  SCOPED
+}
+
+enum AuthorizationScopeType {
+  ORGANIZATION
+  LOCATION
+  SCREEN_GROUP
+  SCREEN
+}
+
 model Organization {
   id                     String                  @id @default(cuid())
   name                   String
   slug                   String                  @unique
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
+  authorizationMode      AuthorizationMode       @default(LEGACY)
   memberships            Membership[]
   membershipAttributions MembershipAttribution[]
   locations              Location[]
+  screenGroups           ScreenGroup[]
+  screenGroupMembers     ScreenGroupMember[]
+  accessGrants           AccessGrant[]
   screens                Screen[]
   media                  MediaAsset[]
   playlists              Playlist[]
@@ -130,13 +147,14 @@ model IdempotencyRecord {
 }
 
 model Location {
-  id             String       @id @default(cuid())
+  id             String        @id @default(cuid())
   organizationId String
   name           String
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   screens        Screen[]
+  accessGrants   AccessGrant[]
 
   @@unique([id, organizationId])
   @@unique([organizationId, name])
@@ -169,6 +187,7 @@ model Membership {
   userSessions       UserSession[]
 
   @@unique([organizationId, userId])
+  @@unique([id, organizationId, userId])
   @@index([userId])
 }
 
@@ -185,6 +204,8 @@ model MembershipAttribution {
   authoredReleaseCandidates ReleaseCandidate[]            @relation("ReleaseCandidateAuthorAttribution")
   releaseApprovals          ReleaseApproval[]             @relation("ReleaseApprovalApproverAttribution")
   releasePublications       ReleaseCandidatePublication[] @relation("ReleaseCandidatePublisherAttribution")
+  accessGrants              AccessGrant[]                 @relation("AccessGrantSubjectAttribution")
+  createdAccessGrants       AccessGrant[]                 @relation("AccessGrantCreatorAttribution")
 
   @@id([organizationId, userId])
   @@index([userId])
@@ -251,10 +272,78 @@ model Screen {
   releaseAssignmentTargets ReleaseAssignmentTarget[]
   releaseCandidateTargets  ReleaseCandidateTarget[]
   deviceCredentials        DeviceCredential[]
+  screenGroupMembers       ScreenGroupMember[]
+  accessGrants             AccessGrant[]
 
   @@unique([id, organizationId])
   @@index([organizationId, status])
   @@index([organizationId, locationId])
+}
+
+/// A flat, tenant-bound screen collection. Nested groups are deliberately not
+/// supported; deleted groups remain as provenance until their grants are
+/// explicitly revoked.
+model ScreenGroup {
+  id             String              @id @default(cuid())
+  organizationId String
+  name           String
+  version        Int                 @default(0)
+  deletedAt      DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members        ScreenGroupMember[]
+  accessGrants   AccessGrant[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, deletedAt, name])
+}
+
+model ScreenGroupMember {
+  organizationId String
+  groupId        String
+  screenId       String
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  group          ScreenGroup  @relation(fields: [groupId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  screen         Screen       @relation(fields: [screenId, organizationId], references: [id, organizationId], onDelete: NoAction)
+
+  @@id([groupId, screenId])
+  @@index([organizationId, screenId])
+}
+
+/// Additive grant foundation. Runtime enforcement remains on the legacy role
+/// adapter until a later reviewed migration enables shadow/scoped modes.
+model AccessGrant {
+  id                  String                 @id @default(cuid())
+  organizationId      String
+  subjectUserId       String
+  /// Exact live Membership instance. A custom composite foreign key clears
+  /// only this field on membership deletion so a later re-add cannot revive
+  /// the retained grant. Prisma cannot express column-selective SET NULL.
+  subjectMembershipId String?
+  capability          String
+  scopeType           AuthorizationScopeType
+  locationId          String?
+  screenGroupId       String?
+  screenId            String?
+  startsAt            DateTime               @default(now())
+  expiresAt           DateTime?
+  revokedAt           DateTime?
+  createdByUserId     String
+  createdAt           DateTime               @default(now())
+  organization        Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subject             MembershipAttribution  @relation("AccessGrantSubjectAttribution", fields: [organizationId, subjectUserId], references: [organizationId, userId], onDelete: NoAction)
+  createdBy           MembershipAttribution  @relation("AccessGrantCreatorAttribution", fields: [organizationId, createdByUserId], references: [organizationId, userId], onDelete: NoAction)
+  location            Location?              @relation(fields: [locationId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  screenGroup         ScreenGroup?           @relation(fields: [screenGroupId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  screen              Screen?                @relation(fields: [screenId, organizationId], references: [id, organizationId], onDelete: NoAction)
+
+  @@unique([id, organizationId])
+  @@index([organizationId, subjectUserId, capability, revokedAt, startsAt, expiresAt], map: "AccessGrant_active_subject_capability_idx")
+  @@index([organizationId, locationId])
+  @@index([organizationId, screenGroupId])
+  @@index([organizationId, screenId])
 }
 
 model PairingCode {
@@ -599,36 +688,36 @@ model FrozenReleaseItem {
 }
 
 model ReleaseAssignment {
-  id                     String                       @id @default(cuid())
-  organizationId         String
-  releaseId              String
-  scheduleId             String
-  state                  ReleaseAssignmentState
-  digestSha256           String
-  previousAssignmentId   String?                      @unique
-  createdById            String
-  scheduleName           String
-  priority               SchedulePriority
-  startsAt               DateTime
-  endsAt                 DateTime?
-  timezone               String
-  daysOfWeek             Int[]
-  dailyStartMinutes      Int?
-  dailyEndMinutes        Int?
-  enabled                Boolean
-  approvalRequired       Boolean                      @default(true)
-  candidatePublicationId String?                      @unique
+  id                             String                       @id @default(cuid())
+  organizationId                 String
+  releaseId                      String
+  scheduleId                     String
+  state                          ReleaseAssignmentState
+  digestSha256                   String
+  previousAssignmentId           String?                      @unique
+  createdById                    String
+  scheduleName                   String
+  priority                       SchedulePriority
+  startsAt                       DateTime
+  endsAt                         DateTime?
+  timezone                       String
+  daysOfWeek                     Int[]
+  dailyStartMinutes              Int?
+  dailyEndMinutes                Int?
+  enabled                        Boolean
+  approvalRequired               Boolean                      @default(true)
+  candidatePublicationId         String?                      @unique
   expectedWithdrawalDigestSha256 String?
-  createdAt              DateTime                     @default(now())
-  organization           Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  release                PublishedRelease             @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: NoAction)
-  schedule               Schedule                     @relation(fields: [scheduleId, organizationId], references: [id, organizationId], onDelete: NoAction)
-  createdBy              MembershipAttribution        @relation("ReleaseAssignmentCreatorAttribution", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: NoAction)
-  previousAssignment     ReleaseAssignment?           @relation("ReleaseAssignmentHistory", fields: [previousAssignmentId, organizationId], references: [id, organizationId], onDelete: NoAction)
-  nextAssignments        ReleaseAssignment[]          @relation("ReleaseAssignmentHistory")
-  candidatePublication   ReleaseCandidatePublication? @relation("PublicationAssignmentEvidence")
-  finalPublication       ReleaseCandidatePublication? @relation("AssignmentFinalPublication", fields: [candidatePublicationId, id, organizationId], references: [id, assignmentId, organizationId], onDelete: NoAction)
-  targets                ReleaseAssignmentTarget[]
+  createdAt                      DateTime                     @default(now())
+  organization                   Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  release                        PublishedRelease             @relation(fields: [releaseId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  schedule                       Schedule                     @relation(fields: [scheduleId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  createdBy                      MembershipAttribution        @relation("ReleaseAssignmentCreatorAttribution", fields: [organizationId, createdById], references: [organizationId, userId], onDelete: NoAction)
+  previousAssignment             ReleaseAssignment?           @relation("ReleaseAssignmentHistory", fields: [previousAssignmentId, organizationId], references: [id, organizationId], onDelete: NoAction)
+  nextAssignments                ReleaseAssignment[]          @relation("ReleaseAssignmentHistory")
+  candidatePublication           ReleaseCandidatePublication? @relation("PublicationAssignmentEvidence")
+  finalPublication               ReleaseCandidatePublication? @relation("AssignmentFinalPublication", fields: [candidatePublicationId, id, organizationId], references: [id, assignmentId, organizationId], onDelete: NoAction)
+  targets                        ReleaseAssignmentTarget[]
 
   @@unique([id, organizationId])
   @@unique([candidatePublicationId, id, organizationId])

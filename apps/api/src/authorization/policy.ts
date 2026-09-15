@@ -3,6 +3,13 @@ import type { Role } from "../domain/types.js";
 
 const ROLE_CAPABILITIES = {
   OWNER: [
+    CAPABILITIES.authorizationManage,
+    CAPABILITIES.screenRead,
+    CAPABILITIES.locationRead,
+    CAPABILITIES.mediaRead,
+    CAPABILITIES.playlistRead,
+    CAPABILITIES.scheduleRead,
+    CAPABILITIES.releaseCandidateRead,
     CAPABILITIES.releaseCandidateCreate,
     CAPABILITIES.releaseCandidateSubmit,
     CAPABILITIES.releaseApprove,
@@ -12,6 +19,12 @@ const ROLE_CAPABILITIES = {
     CAPABILITIES.screenCredentialReenroll,
   ],
   ADMIN: [
+    CAPABILITIES.screenRead,
+    CAPABILITIES.locationRead,
+    CAPABILITIES.mediaRead,
+    CAPABILITIES.playlistRead,
+    CAPABILITIES.scheduleRead,
+    CAPABILITIES.releaseCandidateRead,
     CAPABILITIES.releaseCandidateCreate,
     CAPABILITIES.releaseCandidateSubmit,
     CAPABILITIES.releaseApprove,
@@ -21,12 +34,25 @@ const ROLE_CAPABILITIES = {
     CAPABILITIES.screenCredentialReenroll,
   ],
   PUBLISHER: [
+    CAPABILITIES.screenRead,
+    CAPABILITIES.locationRead,
+    CAPABILITIES.mediaRead,
+    CAPABILITIES.playlistRead,
+    CAPABILITIES.scheduleRead,
+    CAPABILITIES.releaseCandidateRead,
     CAPABILITIES.releaseCandidateCreate,
     CAPABILITIES.releaseCandidateSubmit,
     CAPABILITIES.releasePublish,
     CAPABILITIES.releaseWithdraw,
   ],
-  VIEWER: [],
+  VIEWER: [
+    CAPABILITIES.screenRead,
+    CAPABILITIES.locationRead,
+    CAPABILITIES.mediaRead,
+    CAPABILITIES.playlistRead,
+    CAPABILITIES.scheduleRead,
+    CAPABILITIES.releaseCandidateRead,
+  ],
 } as const satisfies Record<Role, readonly Capability[]>;
 
 const knownCapabilities = new Set<unknown>(Object.values(CAPABILITIES));
