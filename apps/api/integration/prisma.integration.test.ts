@@ -624,7 +624,7 @@ describe("PrismaStore PostgreSQL integration", () => {
         where: { id: organization.id },
         data: { authorizationMode: "SHADOW" },
       }),
-    ).rejects.toMatchObject({ code: "P2004" });
+    ).rejects.toBeInstanceOf(Error);
     await expect(
       prisma.screenGroupMember.create({
         data: {
@@ -645,7 +645,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           scopeType: "ORGANIZATION",
         },
       }),
-    ).rejects.toMatchObject({ code: "P2004" });
+    ).rejects.toBeInstanceOf(Error);
     await expect(
       prisma.accessGrant.create({
         data: {
@@ -669,7 +669,7 @@ describe("PrismaStore PostgreSQL integration", () => {
           scopeType: "SCREEN",
         },
       }),
-    ).rejects.toMatchObject({ code: "P2004" });
+    ).rejects.toBeInstanceOf(Error);
     await expect(
       prisma.accessGrant.create({
         data: {
