@@ -120,7 +120,8 @@ staging restore. It deliberately aborts if any preexisting grant cannot be
 proved to be the exact deterministic system bundle; investigate and reconcile
 that data instead of bypassing the preflight. The bootstrap does not revoke
 sessions or increment authorization epochs. A later reviewed migration must add
-runtime grant loading, shadow evidence, all affected read/mutation enforcement,
+runtime grant loading beyond the candidate-create canary, all affected
+read/mutation enforcement,
 grant-administration epoch invalidation, and explicit tenant promotion before
 `SHADOW` or `SCOPED` can be selected.
 

@@ -4,6 +4,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Add a bounded, non-authoritative scoped-access comparison for successful,
+  non-replayed release-candidate creation. It uses the locked current
+  membership, database time, server-resolved screen classifications, and
+  persisted grants inside the mutation transaction, then stores only sanitized
+  evidence in the existing audit event. Legacy authorization remains the sole
+  decision; the database remains latched to `LEGACY`.
+
 - Add an idempotent, exact-membership compatibility-grant backfill with
   explicit system provenance, bounded deterministic identifiers, role-change
   rebundling, and no bootstrap epoch/session changes. The database remains

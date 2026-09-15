@@ -76,6 +76,7 @@ import {
 import { mediaUrlMatchesAllowedOrigin } from "../utils/media-url.js";
 import { mediaPublicationFailure } from "../utils/media-policy.js";
 import { hasCapability } from "../authorization/policy.js";
+import { unavailableAuthorizationShadow } from "../authorization/shadow.js";
 import { CAPABILITIES } from "@screengoblin/contracts";
 import { isApprovedPasswordHash, randomToken } from "../utils/crypto.js";
 import { mediaStorageKey } from "../media/delivery.js";
@@ -3058,6 +3059,10 @@ export class MemoryStore implements DataStore {
         releaseDigestSha256,
         screenCount: screenIds.length,
         policyVersion: candidate.policyVersion,
+        authorizationShadow: unavailableAuthorizationShadow(
+          "LOAD_FAILED",
+          screenIds.length,
+        ),
       },
     });
     if (!this.releases.includes(release)) this.releases.push(release);

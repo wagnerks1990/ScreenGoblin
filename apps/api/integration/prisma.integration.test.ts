@@ -808,6 +808,203 @@ describe("PrismaStore PostgreSQL integration", () => {
     ).resolves.toEqual([0, 0, 0]);
   });
 
+  it("keeps candidate-create shadow denial and loader failure non-authoritative", async () => {
+    const organization = await createOrganization("candidate-create-shadow");
+    const actor = await createMember(
+      organization.id,
+      "PUBLISHER",
+      "candidate-create-shadow",
+    );
+    const screen = await store.createScreen(organization.id, {
+      name: "Shadow screen",
+      location: "",
+      orientation: "landscape",
+      resolution: "1920x1080",
+      tags: [],
+    });
+    const media = await store.createMedia(organization.id, {
+      name: "Shadow asset",
+      kind: "image",
+      mimeType: "image/png",
+      url: "https://media.example.test/shadow.png",
+      checksumSha256: "e".repeat(64),
+      sizeBytes: 100,
+    });
+    const playlist = await store.createPlaylist(organization.id, {
+      name: "Shadow playlist",
+      description: "",
+      items: [
+        {
+          id: "ignored",
+          assetId: media.id,
+          position: 0,
+          durationSeconds: 10,
+        },
+      ],
+    });
+    const createCandidate = () =>
+      store.createReleaseCandidateAndAudit(
+        organization.id,
+        {
+          playlistId: playlist.id,
+          name: "Shadow candidate",
+          priority: "normal",
+          startsAt: new Date(Date.now() + 60_000).toISOString(),
+          timezone: "UTC",
+          daysOfWeek: [],
+          enabled: true,
+          screenIds: [screen.id],
+          expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+        },
+        { actorUserId: actor.id },
+        { mediaAllowedOrigins: ["https://media.example.test"] },
+        publicationIdempotency(),
+      );
+
+    const deniedShadow = await createCandidate();
+    expect(deniedShadow.completed).toBe(true);
+    if (!deniedShadow.completed) throw new Error(deniedShadow.reason);
+    await expect(
+      prisma.auditEvent.findFirstOrThrow({
+        where: {
+          organizationId: organization.id,
+          action: "release.candidate.created",
+          entityId: deniedShadow.candidate.id,
+        },
+        select: { metadata: true },
+      }),
+    ).resolves.toMatchObject({
+      metadata: {
+        authorizationShadow: {
+          status: "EVALUATED",
+          legacyAllowed: true,
+          scopedAllowed: false,
+          mismatchKind: "LEGACY_ALLOW_SCOPED_DENY",
+          reason: "SCOPE_DENIED",
+          targetCount: 1,
+        },
+      },
+    });
+
+    const membership = await prisma.membership.findUniqueOrThrow({
+      where: {
+        organizationId_userId: {
+          organizationId: organization.id,
+          userId: actor.id,
+        },
+      },
+    });
+    const coveringGrant = await prisma.accessGrant.create({
+      data: {
+        organizationId: organization.id,
+        subjectUserId: actor.id,
+        subjectMembershipId: membership.id,
+        capability: "release.candidate.create",
+        scopeType: "ORGANIZATION",
+        createdByUserId: actor.id,
+      },
+    });
+    const allowedShadow = await createCandidate();
+    expect(allowedShadow.completed).toBe(true);
+    if (!allowedShadow.completed) throw new Error(allowedShadow.reason);
+    await expect(
+      prisma.auditEvent.findFirstOrThrow({
+        where: {
+          organizationId: organization.id,
+          action: "release.candidate.created",
+          entityId: allowedShadow.candidate.id,
+        },
+        select: { metadata: true },
+      }),
+    ).resolves.toMatchObject({
+      metadata: {
+        authorizationShadow: {
+          status: "EVALUATED",
+          legacyAllowed: true,
+          scopedAllowed: true,
+          mismatchKind: "NONE",
+          reason: "ALLOWED",
+          targetCount: 1,
+        },
+      },
+    });
+
+    const blockerStore = new PrismaStore();
+    const acquired = deferred();
+    const release = deferred();
+    const blocker = blockerStore.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT grant_row."id"
+        FROM "AccessGrant" grant_row
+        WHERE grant_row."id" = ${coveringGrant.id}
+        FOR UPDATE OF grant_row`;
+      acquired.resolve();
+      await release.promise;
+    });
+    try {
+      await acquired.promise;
+      const startedAt = Date.now();
+      const contendedShadow = await createCandidate();
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(contendedShadow.completed).toBe(true);
+      if (!contendedShadow.completed) throw new Error(contendedShadow.reason);
+      await expect(
+        prisma.auditEvent.findFirstOrThrow({
+          where: {
+            organizationId: organization.id,
+            action: "release.candidate.created",
+            entityId: contendedShadow.candidate.id,
+          },
+          select: { metadata: true },
+        }),
+      ).resolves.toMatchObject({
+        metadata: {
+          authorizationShadow: {
+            status: "UNAVAILABLE",
+            legacyAllowed: true,
+            failureClass: "LOAD_FAILED",
+          },
+        },
+      });
+    } finally {
+      release.resolve();
+      await blocker;
+      await blockerStore.close();
+    }
+
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AccessGrant" RENAME TO "AccessGrant_shadow_fault"',
+    );
+    try {
+      const unavailableShadow = await createCandidate();
+      expect(unavailableShadow.completed).toBe(true);
+      if (!unavailableShadow.completed)
+        throw new Error(unavailableShadow.reason);
+      await expect(
+        prisma.auditEvent.findFirstOrThrow({
+          where: {
+            organizationId: organization.id,
+            action: "release.candidate.created",
+            entityId: unavailableShadow.candidate.id,
+          },
+          select: { metadata: true },
+        }),
+      ).resolves.toMatchObject({
+        metadata: {
+          authorizationShadow: {
+            status: "UNAVAILABLE",
+            legacyAllowed: true,
+            failureClass: "LOAD_FAILED",
+            targetCount: 1,
+          },
+        },
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AccessGrant_shadow_fault" RENAME TO "AccessGrant"',
+      );
+    }
+  });
+
   it("bounds audit rows and preserves deterministic equal-time reads", async () => {
     const organization = await createOrganization("audit-bounds");
     const createdAt = new Date("2026-09-12T12:00:00.000Z");

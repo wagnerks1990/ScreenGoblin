@@ -157,8 +157,10 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   CRUD and optional Screen linkage. Additive screen-group and access-grant
   tables plus a pure all-target evaluator now exist, but a database latch keeps
   every organization in `LEGACY`; system-attributed organization-scope
-  compatibility grants mirror current non-emergency roles, while request-time
-  stores do not load grants and no route/list enforces them. Effective authorization remains organization-role-
+  compatibility grants mirror current non-emergency roles. Successful,
+  non-replayed candidate creation now computes bounded transaction-local
+  comparison evidence from current grants, but no result controls the mutation
+  and no other route/list loads or enforces grants. Effective authorization remains organization-role-
   wide, and UI or docs must not claim scoped enforcement. The legacy
   Screen.location label remains compatible.
 - Production media must match an explicit canonical HTTPS origin. The current

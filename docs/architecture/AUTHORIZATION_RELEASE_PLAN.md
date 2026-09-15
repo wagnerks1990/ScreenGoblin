@@ -7,8 +7,10 @@ tenant-constrained flat screen-group and access-grant records, and a pure
 deny-by-default evaluator implements role ceilings plus exact all-target scope
 coverage. A database safety latch keeps every organization in `LEGACY`;
 system-attributed organization-scope compatibility grants now mirror the
-non-emergency legacy role ceiling, but they are not loaded by request-time
-stores, exposed, or enforced. Ordinary release
+non-emergency legacy role ceiling. Successful non-replayed candidate creation
+loads them in a bounded transaction-local canary and records sanitized
+comparison evidence, but the result is not authoritative; other request-time
+stores do not load grants, expose them, or enforce them. Ordinary release
 publication now uses immutable candidates and a different-person approval,
 while publication and withdrawal use a closed, deny-by-default capability
 adapter backed by current organization membership. Only `OWNER`/`ADMIN` may
@@ -212,7 +214,7 @@ without removing fields until the oldest supported console/player is migrated.
 ## Shadow-to-enforced rollout
 
 1. **Schema foundation:** introduce scope/release tables, tenant composite constraints, idempotency and outbox. First-class Location records, optional screen classification, and exact-membership system compatibility grants are implemented with no authorization behavior change. The compatibility rows are organization-wide migration input; custom least-privilege administration, request-time grant loading, and filtering remain unimplemented.
-2. **Policy shadow:** compute the proposed capability decision beside the legacy role decision. Enforce legacy result, record privacy-safe mismatch metrics with decision IDs, and alert on unexpected grants/denials.
+2. **Policy shadow:** successful non-replayed candidate creation now computes the proposed decision beside the authoritative legacy role result and records privacy-safe evidence in its existing audit event. Submit, approve, publish, withdraw, reads, monitoring, and alerting remain uninstrumented.
 3. **Grant preview:** expose administrator read-only effective-access reports. Have organization owners validate publisher/viewer scopes; do not auto-grant emergency or destructive fleet capabilities.
 4. **Dual-write releases:** ordinary publishing creates immutable records while existing delivery remains compatible. Compare generated manifests/digests and repair transaction boundaries.
 5. **Scoped enforcement:** enable per organization after zero unexplained mismatch, explicit grant review, database constraint validation, and regression evidence. Fail closed; maintain an audited, time-limited human break-glass process rather than a hidden bypass.
