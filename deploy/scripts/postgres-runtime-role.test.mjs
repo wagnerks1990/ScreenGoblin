@@ -232,6 +232,30 @@ test("CI supplies every runtime-role provisioning identity", () => {
   }
 });
 
+test("CI supplies distinct migration and runtime identities to Compose", () => {
+  const containerJob = ciWorkflow.match(/\n  containers:[\s\S]*?\n    steps:/);
+  assert.ok(containerJob, "missing containers job");
+  for (const variable of [
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_RUNTIME_USER",
+    "POSTGRES_RUNTIME_PASSWORD",
+    "MIGRATION_DATABASE_URL",
+    "DATABASE_URL",
+  ]) {
+    assert.match(containerJob[0], new RegExp(`\\n\\s+${variable}:`));
+  }
+  assert.match(
+    containerJob[0],
+    /MIGRATION_DATABASE_URL: postgresql:\/\/screengoblin:/,
+  );
+  assert.match(
+    containerJob[0],
+    /DATABASE_URL: postgresql:\/\/screengoblin_runtime:/,
+  );
+});
+
 test("deployment URL verifies runtime identity and denied capabilities", () => {
   assert.match(verificationSql, /session_user = :'runtime_role'/);
   assert.match(verificationSql, /current_user = :'runtime_role'/);

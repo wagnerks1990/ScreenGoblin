@@ -183,7 +183,10 @@ jobs:
       POSTGRES_DB: screengoblin
       POSTGRES_USER: screengoblin
       POSTGRES_PASSWORD: ci-compose-password
-      DATABASE_URL: postgresql://screengoblin:ci-compose-password@postgres:5432/screengoblin?schema=public
+      POSTGRES_RUNTIME_USER: screengoblin_runtime
+      POSTGRES_RUNTIME_PASSWORD: ci-only-compose-runtime-password
+      MIGRATION_DATABASE_URL: postgresql://screengoblin:ci-compose-password@postgres:5432/screengoblin?schema=public
+      DATABASE_URL: postgresql://screengoblin_runtime:ci-only-compose-runtime-password@postgres:5432/screengoblin?schema=public
       JWT_SECRET: ci-only-jwt-secret-at-least-32-characters
       PAIRING_CODE_PEPPER: ci-only-pairing-pepper-at-least-32-characters
       MEDIA_DELIVERY_SECRET: ci-only-media-delivery-secret-at-least-32-characters
