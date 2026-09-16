@@ -53,6 +53,7 @@ jobs:
         env:
           MIGRATION_DATABASE_URL: postgresql://screengoblin:test-only-password@127.0.0.1:5432/screengoblin_test?schema=public
           DATABASE_URL: postgresql://screengoblin_runtime:ci-only-runtime-password@127.0.0.1:5432/screengoblin_test?schema=public
+          POSTGRES_DB: screengoblin_test
           POSTGRES_USER: screengoblin
           POSTGRES_RUNTIME_USER: screengoblin_runtime
           POSTGRES_RUNTIME_PASSWORD: ci-only-runtime-password

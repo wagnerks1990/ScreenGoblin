@@ -25,6 +25,10 @@ const verificationSql = readFileSync(
   new URL("../postgres/verify-runtime-role.sql", import.meta.url),
   "utf8",
 );
+const ciWorkflow = readFileSync(
+  new URL("../../.github/workflows/ci.yml", import.meta.url),
+  "utf8",
+);
 
 test("runtime role provisioning is identifier-safe and least privilege", () => {
   assert.match(sql, /format\(\s*'CREATE ROLE %I/);
@@ -204,6 +208,23 @@ test("wrapper rejects ambiguous or unsupported Prisma URL queries", () => {
     });
     assert.equal(result.status, 64);
     assert.doesNotMatch(result.stderr, /postgresql:\/\//);
+  }
+});
+
+test("CI supplies every runtime-role provisioning identity", () => {
+  const provisioningStep = ciWorkflow.match(
+    /- name: Provision least-privilege PostgreSQL runtime role[\s\S]*?run: deploy\/postgres\/provision-runtime-role\.sh/,
+  );
+  assert.ok(provisioningStep, "missing runtime-role provisioning step");
+  for (const variable of [
+    "MIGRATION_DATABASE_URL",
+    "DATABASE_URL",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_RUNTIME_USER",
+    "POSTGRES_RUNTIME_PASSWORD",
+  ]) {
+    assert.match(provisioningStep[0], new RegExp(`\\n\\s+${variable}:`));
   }
 });
 
