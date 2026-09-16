@@ -18,6 +18,28 @@ const composeSource = readFileSync(
   new URL("../../docker-compose.yml", import.meta.url),
   "utf8",
 );
+const deploymentEnvironmentSource = readFileSync(
+  new URL("../.env.example", import.meta.url),
+  "utf8",
+);
+
+test("documents every environment value required by Compose", () => {
+  const requiredVariables = [
+    ...composeSource.matchAll(/\$\{([A-Z][A-Z0-9_]*):\?[^}]+\}/g),
+  ].map((match) => match[1]);
+  const documentedVariables = new Set(
+    [...deploymentEnvironmentSource.matchAll(/^([A-Z][A-Z0-9_]*)=/gm)].map(
+      (match) => match[1],
+    ),
+  );
+
+  assert.deepEqual(
+    [...new Set(requiredVariables)].filter(
+      (variable) => !documentedVariables.has(variable),
+    ),
+    [],
+  );
+});
 
 const dockerFixture = `#!/usr/bin/env bash
 set -eu

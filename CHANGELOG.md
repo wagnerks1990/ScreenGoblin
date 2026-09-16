@@ -4,6 +4,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Keep the deployment environment template aligned with every required Compose
+  input, including an independent private-media delivery secret, and make the
+  Console release-evidence test portable across host time zones.
+
 - Add a bounded, non-authoritative scoped-access comparison for successful,
   non-replayed release-candidate creation. It uses the locked current
   membership, database time, server-resolved screen classifications, and

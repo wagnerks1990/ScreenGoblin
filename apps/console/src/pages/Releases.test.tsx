@@ -109,7 +109,9 @@ it("renders exact immutable evidence and lets only the author submit the draft",
     screen.getByRole("dialog", { name: "Exact campaign" }),
   ).toHaveTextContent("release-exact");
   expect(document.body).toHaveTextContent("c".repeat(64));
-  expect(document.body).toHaveTextContent("1/1/2030");
+  expect(document.body).toHaveTextContent(
+    new Date("2030-01-01T00:00:00.000Z").toLocaleString(),
+  );
   expect(document.body).toHaveTextContent(
     "https://media.invalid/never-fetch-this.png",
   );
