@@ -39,19 +39,24 @@
 
         <!-- ProfileInstaller is an optional performance aid. Keep the shared
              App Startup provider for lifecycle/emoji initialization, but do
-             not package its benchmark receiver or automatic initializer. -->
+             not package its benchmark receiver or automatic initializer.
+             These runtime-only class names exist solely for manifest merge
+             control, so keep MissingClass ignores local to these exact nodes. -->
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
             android:exported="false"
+            tools:ignore="MissingClass"
             tools:node="merge">
             <meta-data
                 android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+                tools:ignore="MissingClass"
                 tools:node="remove" />
         </provider>
 
         <receiver
             android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            tools:ignore="MissingClass"
             tools:node="remove" />
 
     </application>

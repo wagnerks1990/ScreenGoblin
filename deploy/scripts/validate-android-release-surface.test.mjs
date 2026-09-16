@@ -307,19 +307,32 @@ test("rejects XML entities and malformed duplicate attributes", () => {
 });
 
 test("CI validates and retains the exact release APK evidence", async () => {
-  const [workflow, sourceManifest] = await Promise.all([
-    readFile(
-      new URL("../../.github/workflows/ci.yml", import.meta.url),
-      "utf8",
-    ),
-    readFile(
-      new URL(
-        "../../apps/player/android/app/src/main/AndroidManifest.xml",
-        import.meta.url,
+  const [workflow, sourceManifest, appBuild, rootBuild, gradleProperties] =
+    await Promise.all([
+      readFile(
+        new URL("../../.github/workflows/ci.yml", import.meta.url),
+        "utf8",
       ),
-      "utf8",
-    ),
-  ]);
+      readFile(
+        new URL(
+          "../../apps/player/android/app/src/main/AndroidManifest.xml",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../apps/player/android/app/build.gradle", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../apps/player/android/build.gradle", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../apps/player/android/gradle.properties", import.meta.url),
+        "utf8",
+      ),
+    ]);
   const build = workflow.indexOf("assembleDebug assembleRelease");
   const validate = workflow.indexOf(
     "node ../../../deploy/scripts/validate-android-release-surface.mjs",
@@ -349,14 +362,19 @@ test("CI validates and retains the exact release APK evidence", async () => {
   );
   assert.match(
     sourceManifest,
-    /<meta-data\b[^>]*android:name="androidx\.profileinstaller\.ProfileInstallerInitializer"[^>]*tools:node="remove"[^>]*\/>/,
+    /<meta-data\b[^>]*android:name="androidx\.profileinstaller\.ProfileInstallerInitializer"[^>]*tools:ignore="MissingClass"[^>]*tools:node="remove"[^>]*\/>/,
   );
   assert.match(
     sourceManifest,
-    /<receiver\b[^>]*android:name="androidx\.profileinstaller\.ProfileInstallReceiver"[^>]*tools:node="remove"[^>]*\/>/,
+    /<receiver\b[^>]*android:name="androidx\.profileinstaller\.ProfileInstallReceiver"[^>]*tools:ignore="MissingClass"[^>]*tools:node="remove"[^>]*\/>/,
   );
   assert.match(
     sourceManifest,
-    /<provider\b[^>]*android:name="androidx\.startup\.InitializationProvider"[^>]*tools:node="merge"[^>]*>/,
+    /<provider\b[^>]*android:name="androidx\.startup\.InitializationProvider"[^>]*tools:ignore="MissingClass"[^>]*tools:node="merge"[^>]*>/,
+  );
+  assert.equal(sourceManifest.match(/tools:ignore="MissingClass"/g)?.length, 3);
+  assert.doesNotMatch(
+    [workflow, appBuild, rootBuild, gradleProperties].join("\n"),
+    /MissingClass/,
   );
 });
