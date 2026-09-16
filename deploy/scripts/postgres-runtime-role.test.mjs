@@ -112,7 +112,7 @@ printf '%s\\n' "$PGSERVICEFILE" >> "$SERVICE_PATH_CAPTURE"
 cat "$PGSERVICEFILE" >> "$SERVICE_CONTENT_CAPTURE"
 [ "$(stat -c '%a' "$PGSERVICEFILE")" = 600 ]
 [ "\${PGDATABASE+x}" != x ]
-[ "$POSTGRES_RUNTIME_PASSWORD" = 'runtime secret with spaces' ]
+[ "$POSTGRES_RUNTIME_PASSWORD" = 'runtime-secret-with-symbol+' ]
 `,
     );
     chmodSync(fakePsql, 0o755);
@@ -127,18 +127,20 @@ cat "$PGSERVICEFILE" >> "$SERVICE_CONTENT_CAPTURE"
         SERVICE_PATH_CAPTURE: join(fixture, "service-paths"),
         SERVICE_CONTENT_CAPTURE: join(fixture, "service-contents"),
         MIGRATION_DATABASE_URL:
-          "postgresql://migration@example.test/screen?schema=public",
-        DATABASE_URL: "postgresql://runtime@example.test/screen?schema=public",
-        POSTGRES_USER: "migration owner",
-        POSTGRES_RUNTIME_USER: 'runtime "role"',
-        POSTGRES_RUNTIME_PASSWORD: "runtime secret with spaces",
+          "postgresql://migration:migration-secret@example.test:5432/screen?schema=public",
+        DATABASE_URL:
+          "postgresql://runtime:runtime-secret-with-symbol%2B@example.test:5432/screen?schema=public",
+        POSTGRES_DB: "screen",
+        POSTGRES_USER: "migration",
+        POSTGRES_RUNTIME_USER: "runtime",
+        POSTGRES_RUNTIME_PASSWORD: "runtime-secret-with-symbol+",
       },
     });
     assert.equal(result.status, 0, result.stderr);
 
     const argumentsUsed = readFileSync(join(fixture, "arguments"), "utf8");
-    assert.match(argumentsUsed, /--set=migrator_role=migration owner/);
-    assert.match(argumentsUsed, /--set=runtime_role=runtime "role"/);
+    assert.match(argumentsUsed, /--set=migrator_role=migration/);
+    assert.match(argumentsUsed, /--set=runtime_role=runtime/);
     assert.match(argumentsUsed, /--file=.*provision-runtime-role\.sql/);
     assert.match(argumentsUsed, /--file=.*verify-runtime-role\.sql/);
     assert.doesNotMatch(argumentsUsed, /runtime secret/);
@@ -149,7 +151,7 @@ cat "$PGSERVICEFILE" >> "$SERVICE_CONTENT_CAPTURE"
     );
     assert.equal(
       readFileSync(join(fixture, "service-contents"), "utf8"),
-      "[migration]\ndbname=postgresql://migration@example.test/screen\n[runtime]\ndbname=postgresql://runtime@example.test/screen\n".repeat(
+      "[migration]\nhost=example.test\nport=5432\ndbname=screen\nuser=migration\npassword=migration-secret\n[runtime]\nhost=example.test\nport=5432\ndbname=screen\nuser=runtime\npassword=runtime-secret-with-symbol+\n".repeat(
         2,
       ),
     );
@@ -171,6 +173,7 @@ test("wrapper fails before psql when identities are not separated", () => {
       ...process.env,
       MIGRATION_DATABASE_URL: "postgresql://migration@example.test/screen",
       DATABASE_URL: "postgresql://same-role@example.test/screen",
+      POSTGRES_DB: "screen",
       POSTGRES_USER: "same-role",
       POSTGRES_RUNTIME_USER: "same-role",
       POSTGRES_RUNTIME_PASSWORD: "not-a-real-secret",
@@ -193,6 +196,7 @@ test("wrapper rejects ambiguous or unsupported Prisma URL queries", () => {
         ...process.env,
         MIGRATION_DATABASE_URL: "postgresql://migration@example.test/screen",
         DATABASE_URL: databaseUrl,
+        POSTGRES_DB: "screen",
         POSTGRES_USER: "migration",
         POSTGRES_RUNTIME_USER: "runtime",
         POSTGRES_RUNTIME_PASSWORD: "not-a-real-secret",
