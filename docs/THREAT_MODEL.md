@@ -129,6 +129,31 @@ identity-administration routes currently expose the internal lifecycle methods.
 External IdP, SSO, MFA, and step-up authentication remain separate
 pre-production requirements.
 
+Deployment-seeded owner passwords are explicitly temporary. The seed records a
+24-hour database-time deadline and the
+`auth.bootstrap_password_containment_enabled` audit event in each affected
+organization; a matching legacy seeded owner is marked once with an
+authentication-epoch advance and all existing sessions revoked. While marked,
+login can issue only a purpose-limited rotation session capped at ten minutes
+and the remaining deadline. Database and request guards deny that token
+ordinary API authority. Rotation requires the current credential and a
+different password of at least 16 Unicode code points and at most 72 UTF-8
+bytes. One transaction clears the marker, advances the
+authentication epoch, revokes every session and the user's pending enrollment
+authority across memberships, and audits each affected organization. The token
+is never promoted into a full session. Expiry fails closed; rerunning the seed
+cannot extend or reset it, so loss or missed rotation requires the separately
+controlled offline recovery procedure. That command requires an exact operator
+acknowledgement and an eligible unambiguous active owner, then atomically issues
+a fresh 30-minute temporary marker, advances the authentication epoch, revokes
+all sessions and pending issuer authority across memberships, cancels unbound
+attempts, and writes a system audit event in every membership organization. It
+never exposes the password or hash in output. The command's database access is
+a privileged trust boundary; acknowledgement and audit are not dual control or
+proof of recipient identity. This containment reduces exposure from a
+deployment-delivered secret; it is not MFA, SSO, password-strength screening, a
+secret manager, or an account-recovery approval policy.
+
 The database and shared policy library contain an additive scoped-
 authorization foundation: tenant-constrained flat screen groups, exact grant
 scope shapes, a closed non-emergency grant vocabulary, role ceilings, and

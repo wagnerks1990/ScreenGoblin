@@ -12,6 +12,7 @@ import { isApprovedPasswordHash } from "../utils/crypto.js";
 import type {
   ActiveOrdinaryRelease,
   AuditRecord,
+  BootstrapPasswordRotationInput,
   DataStore,
   DeleteResult,
   DeviceAuthChallengeRecord,
@@ -676,6 +677,7 @@ export class PrismaStore implements DataStore {
         membershipId: string;
         role: string;
         authenticationEpoch: number;
+        bootstrapPasswordExpiresAt: Date | null;
         authorizationEpoch: number;
       }>
     >`SELECT membership."id" AS "membershipId",
@@ -1199,6 +1201,7 @@ export class PrismaStore implements DataStore {
         name: string;
         passwordHash: string;
         authenticationEpoch: number;
+        bootstrapPasswordExpiresAt: Date | null;
         disabledAt: Date | null;
         organizationId: string | null;
         role: SessionUser["role"] | null;
@@ -1210,6 +1213,7 @@ export class PrismaStore implements DataStore {
              identity."name",
              identity."passwordHash",
              identity."authenticationEpoch",
+             identity."bootstrapPasswordExpiresAt",
              identity."disabledAt",
              membership."organizationId",
              membership."role"::text AS "role",
@@ -1243,6 +1247,12 @@ export class PrismaStore implements DataStore {
           role: x.role,
           authenticationEpoch: x.authenticationEpoch,
           authorizationEpoch: x.authorizationEpoch,
+          ...(x.bootstrapPasswordExpiresAt
+            ? {
+                bootstrapPasswordExpiresAt:
+                  x.bootstrapPasswordExpiresAt.toISOString(),
+              }
+            : {}),
         } satisfies SessionUser)
       : null;
   }
@@ -1303,6 +1313,12 @@ export class PrismaStore implements DataStore {
           role: membership.role,
           authenticationEpoch: x.authenticationEpoch,
           authorizationEpoch: membership.authorizationEpoch,
+          ...(x.bootstrapPasswordExpiresAt
+            ? {
+                bootstrapPasswordExpiresAt:
+                  x.bootstrapPasswordExpiresAt.toISOString(),
+              }
+            : {}),
         }
       : null;
   }
@@ -1312,6 +1328,7 @@ export class PrismaStore implements DataStore {
     audit: UserMutationAuditContext,
   ) {
     return this.prisma.$transaction(async (tx) => {
+      const purpose = input.purpose ?? "FULL";
       const [current] = await tx.$queryRaw<
         Array<{
           id: string;
@@ -1319,6 +1336,7 @@ export class PrismaStore implements DataStore {
           role: string;
           authenticationEpoch: number;
           authorizationEpoch: number;
+          bootstrapPasswordExpiresAt: Date | null;
           databaseNow: Date;
         }>
       >`
@@ -1327,6 +1345,7 @@ export class PrismaStore implements DataStore {
                actor."authenticationEpoch",
                membership."role"::text AS "role",
                membership."authorizationEpoch",
+               actor."bootstrapPasswordExpiresAt",
                CURRENT_TIMESTAMP AS "databaseNow"
         FROM "Membership" membership
         INNER JOIN "User" actor ON actor."id" = membership."userId"
@@ -1335,12 +1354,25 @@ export class PrismaStore implements DataStore {
           AND actor."disabledAt" IS NULL
         FOR UPDATE OF membership, actor`;
       const expiresAt = new Date(input.expiresAt);
+      const expectedBootstrapPasswordExpiresAt =
+        input.expectedBootstrapPasswordExpiresAt === undefined
+          ? null
+          : new Date(input.expectedBootstrapPasswordExpiresAt);
       if (
         !current ||
         current.passwordHash !== input.expectedPasswordHash ||
         current.role !== input.expectedRole ||
         current.authenticationEpoch !== input.expectedAuthenticationEpoch ||
         current.authorizationEpoch !== input.expectedAuthorizationEpoch ||
+        current.bootstrapPasswordExpiresAt?.getTime() !==
+          expectedBootstrapPasswordExpiresAt?.getTime() ||
+        (purpose === "FULL" && current.bootstrapPasswordExpiresAt !== null) ||
+        (purpose === "BOOTSTRAP_PASSWORD_ROTATION" &&
+          (!current.bootstrapPasswordExpiresAt ||
+            current.bootstrapPasswordExpiresAt <= current.databaseNow ||
+            expiresAt > current.bootstrapPasswordExpiresAt ||
+            expiresAt.getTime() - current.databaseNow.getTime() >
+              10 * 60 * 1000)) ||
         !Number.isFinite(expiresAt.getTime()) ||
         expiresAt <= current.databaseNow
       )
@@ -1359,6 +1391,7 @@ export class PrismaStore implements DataStore {
           tokenHash: input.tokenHash,
           authenticationEpoch: current.authenticationEpoch,
           authorizationEpoch: current.authorizationEpoch,
+          purpose,
           expiresAt,
         },
       });
@@ -1372,7 +1405,7 @@ export class PrismaStore implements DataStore {
           entityId: session.id,
           ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
           ...(audit.requestId ? { requestId: audit.requestId } : {}),
-          metadata: { expiresAt: input.expiresAt },
+          metadata: { expiresAt: input.expiresAt, purpose },
         },
       });
       return {
@@ -1384,6 +1417,7 @@ export class PrismaStore implements DataStore {
           tokenHash: session.tokenHash,
           authenticationEpoch: session.authenticationEpoch,
           authorizationEpoch: session.authorizationEpoch,
+          purpose: session.purpose,
           expiresAt: session.expiresAt.toISOString(),
           ...(session.revokedAt
             ? { revokedAt: session.revokedAt.toISOString() }
@@ -1407,6 +1441,8 @@ export class PrismaStore implements DataStore {
         role: SessionUser["role"];
         authenticationEpoch: number;
         authorizationEpoch: number;
+        bootstrapPasswordExpiresAt: Date | null;
+        sessionPurpose: "FULL" | "BOOTSTRAP_PASSWORD_ROTATION";
       }>
     >`
       SELECT actor."id",
@@ -1415,7 +1451,9 @@ export class PrismaStore implements DataStore {
              actor."passwordHash",
              membership."role"::text AS "role",
              actor."authenticationEpoch",
-             membership."authorizationEpoch"
+             membership."authorizationEpoch",
+             actor."bootstrapPasswordExpiresAt",
+             session."purpose"::text AS "sessionPurpose"
       FROM "UserSession" session
       INNER JOIN "Membership" membership
         ON membership."organizationId" = session."organizationId"
@@ -1429,13 +1467,27 @@ export class PrismaStore implements DataStore {
         AND actor."disabledAt" IS NULL
         AND session."authenticationEpoch" = actor."authenticationEpoch"
         AND session."authorizationEpoch" = membership."authorizationEpoch"
+        AND (
+          (session."purpose" = 'FULL'::"UserSessionPurpose"
+            AND actor."bootstrapPasswordExpiresAt" IS NULL)
+          OR
+          (session."purpose" = 'BOOTSTRAP_PASSWORD_ROTATION'::"UserSessionPurpose"
+            AND actor."bootstrapPasswordExpiresAt" > CURRENT_TIMESTAMP
+            AND session."expiresAt" <= actor."bootstrapPasswordExpiresAt")
+        )
     `;
-    return current
-      ? {
-          ...current,
-          organizationId,
-        }
-      : null;
+    if (!current) return null;
+    const { bootstrapPasswordExpiresAt, ...principal } = current;
+    return {
+      ...principal,
+      organizationId,
+      ...(bootstrapPasswordExpiresAt
+        ? {
+            bootstrapPasswordExpiresAt:
+              bootstrapPasswordExpiresAt.toISOString(),
+          }
+        : {}),
+    };
   }
   async revokeUserSessionAndAudit(
     userId: string,
@@ -1487,6 +1539,120 @@ export class PrismaStore implements DataStore {
         },
       });
       return { revoked: true as const };
+    });
+  }
+  async rotateBootstrapPasswordAndAudit(
+    userId: string,
+    organizationId: string,
+    input: BootstrapPasswordRotationInput,
+    audit: UserMutationAuditContext,
+  ) {
+    if (!isApprovedPasswordHash(input.passwordHash))
+      throw new Error("An approved bcrypt password hash is required");
+    if (audit.actorUserId !== userId)
+      return { rotated: false as const, reason: "FORBIDDEN" as const };
+    return this.prisma.$transaction(async (tx) => {
+      const memberships = await tx.$queryRaw<
+        Array<{
+          organizationId: string;
+          passwordHash: string;
+          authenticationEpoch: number;
+          bootstrapPasswordExpiresAt: Date | null;
+          authorizationEpoch: number;
+          disabledAt: Date | null;
+          databaseNow: Date;
+        }>
+      >`
+        SELECT membership."organizationId",
+               actor."passwordHash",
+               actor."authenticationEpoch",
+               actor."bootstrapPasswordExpiresAt",
+               membership."authorizationEpoch",
+               actor."disabledAt",
+               CURRENT_TIMESTAMP AS "databaseNow"
+        FROM "User" actor
+        INNER JOIN "Membership" membership
+          ON membership."userId" = actor."id"
+        WHERE actor."id" = ${userId}
+        ORDER BY membership."organizationId" ASC
+        FOR UPDATE OF actor, membership`;
+      const current = memberships.find(
+        (membership) => membership.organizationId === organizationId,
+      );
+      const expectedMarker = new Date(input.expectedBootstrapPasswordExpiresAt);
+      if (
+        !current ||
+        current.disabledAt ||
+        current.passwordHash !== input.expectedPasswordHash ||
+        current.authenticationEpoch !== input.expectedAuthenticationEpoch ||
+        current.authorizationEpoch !== input.expectedAuthorizationEpoch ||
+        !Number.isFinite(expectedMarker.getTime()) ||
+        current.bootstrapPasswordExpiresAt?.getTime() !==
+          expectedMarker.getTime() ||
+        !current.bootstrapPasswordExpiresAt ||
+        current.bootstrapPasswordExpiresAt <= current.databaseNow
+      )
+        return { rotated: false as const, reason: "FORBIDDEN" as const };
+      const [session] = await tx.$queryRaw<
+        Array<{
+          id: string;
+          authenticationEpoch: number;
+          authorizationEpoch: number;
+        }>
+      >`
+        SELECT session."id",
+               session."authenticationEpoch",
+               session."authorizationEpoch"
+        FROM "UserSession" session
+        WHERE session."tokenHash" = ${input.tokenHash}
+          AND session."userId" = ${userId}
+          AND session."organizationId" = ${organizationId}
+          AND session."purpose" = 'BOOTSTRAP_PASSWORD_ROTATION'::"UserSessionPurpose"
+          AND session."revokedAt" IS NULL
+          AND session."expiresAt" > CURRENT_TIMESTAMP
+        FOR UPDATE OF session`;
+      if (
+        !session ||
+        session.authenticationEpoch !== input.expectedAuthenticationEpoch ||
+        session.authorizationEpoch !== input.expectedAuthorizationEpoch
+      )
+        return { rotated: false as const, reason: "FORBIDDEN" as const };
+      const organizationIds = memberships.map(({ organizationId: id }) => id);
+      await this.revokePendingIssuerGrants(
+        tx,
+        userId,
+        organizationIds,
+        current.databaseNow,
+      );
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          passwordHash: input.passwordHash,
+          bootstrapPasswordExpiresAt: null,
+          authenticationEpoch: { increment: 1 },
+        },
+      });
+      await tx.userSession.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: current.databaseNow },
+      });
+      await tx.auditEvent.createMany({
+        data: organizationIds.map((id) => ({
+          organizationId: id,
+          actorUserId: userId,
+          actorType: "user" as const,
+          action: "auth.bootstrap_password_rotated",
+          entityType: "user",
+          entityId: userId,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: {},
+        })),
+      });
+      return {
+        rotated: true as const,
+        affectedOrganizationIds: organizationIds,
+      };
     });
   }
   async rotateUserPasswordAndAudit(

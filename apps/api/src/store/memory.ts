@@ -1,6 +1,7 @@
 import type {
   AuditRecord,
   ActiveOrdinaryRelease,
+  BootstrapPasswordRotationInput,
   DataStore,
   DeviceAuthChallengeRecord,
   DeviceCredentialEnrollment,
@@ -269,7 +270,9 @@ export class MemoryStore implements DataStore {
           user.email !== identity.email ||
           user.name !== identity.name ||
           user.passwordHash !== identity.passwordHash ||
-          user.authenticationEpoch !== identity.authenticationEpoch,
+          user.authenticationEpoch !== identity.authenticationEpoch ||
+          user.bootstrapPasswordExpiresAt !==
+            identity.bootstrapPasswordExpiresAt,
       ) ||
       new Set(matches.map((user) => user.organizationId)).size !==
         matches.length
@@ -317,6 +320,9 @@ export class MemoryStore implements DataStore {
     audit: UserMutationAuditContext,
   ) {
     const timestamp = now();
+    const timestampMs = Date.parse(timestamp);
+    const expiresAtMs = Date.parse(input.expiresAt);
+    const purpose = input.purpose ?? "FULL";
     const user = await this.findSessionUser(audit.actorUserId, organizationId);
     if (
       !user ||
@@ -324,7 +330,16 @@ export class MemoryStore implements DataStore {
       user.role !== input.expectedRole ||
       user.authenticationEpoch !== input.expectedAuthenticationEpoch ||
       user.authorizationEpoch !== input.expectedAuthorizationEpoch ||
-      input.expiresAt <= timestamp
+      user.bootstrapPasswordExpiresAt !==
+        input.expectedBootstrapPasswordExpiresAt ||
+      (purpose === "FULL" && user.bootstrapPasswordExpiresAt) ||
+      (purpose === "BOOTSTRAP_PASSWORD_ROTATION" &&
+        (!user.bootstrapPasswordExpiresAt ||
+          Date.parse(user.bootstrapPasswordExpiresAt) <= timestampMs ||
+          expiresAtMs > Date.parse(user.bootstrapPasswordExpiresAt) ||
+          expiresAtMs - timestampMs > 10 * 60 * 1000)) ||
+      !Number.isFinite(expiresAtMs) ||
+      expiresAtMs <= timestampMs
     )
       return { created: false, reason: "FORBIDDEN" } as const;
     const session: UserSessionRecord = {
@@ -334,6 +349,7 @@ export class MemoryStore implements DataStore {
       tokenHash: input.tokenHash,
       authenticationEpoch: user.authenticationEpoch,
       authorizationEpoch: user.authorizationEpoch,
+      purpose,
       expiresAt: input.expiresAt,
       createdAt: timestamp,
     };
@@ -346,7 +362,7 @@ export class MemoryStore implements DataStore {
       entityId: session.id,
       ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
       ...(audit.requestId ? { requestId: audit.requestId } : {}),
-      metadata: { expiresAt: session.expiresAt },
+      metadata: { expiresAt: session.expiresAt, purpose: session.purpose },
     });
     this.userSessions = [
       ...this.userSessions.filter(
@@ -376,8 +392,15 @@ export class MemoryStore implements DataStore {
       : null;
     return user &&
       user.authenticationEpoch === session?.authenticationEpoch &&
-      user.authorizationEpoch === session.authorizationEpoch
-      ? user
+      user.authorizationEpoch === session.authorizationEpoch &&
+      ((session.purpose ?? "FULL") === "FULL"
+        ? !user.bootstrapPasswordExpiresAt
+        : Boolean(
+            user.bootstrapPasswordExpiresAt &&
+            user.bootstrapPasswordExpiresAt > timestamp &&
+            session.expiresAt <= user.bootstrapPasswordExpiresAt,
+          ))
+      ? { ...user, sessionPurpose: session.purpose ?? "FULL" }
       : null;
   }
   async revokeUserSessionAndAudit(
@@ -412,6 +435,88 @@ export class MemoryStore implements DataStore {
     session.revokedAt = timestamp;
     this.auditRecords.push(auditRecord);
     return { revoked: true } as const;
+  }
+  async rotateBootstrapPasswordAndAudit(
+    userId: string,
+    organizationId: string,
+    input: BootstrapPasswordRotationInput,
+    audit: UserMutationAuditContext,
+  ) {
+    if (!isApprovedPasswordHash(input.passwordHash))
+      throw new Error("An approved bcrypt password hash is required");
+    const timestamp = now();
+    const memberships = this.users.filter((user) => user.id === userId);
+    const current = memberships.find(
+      (user) => user.organizationId === organizationId,
+    );
+    const session = this.userSessions.find(
+      (candidate) =>
+        candidate.userId === userId &&
+        candidate.organizationId === organizationId &&
+        candidate.tokenHash === input.tokenHash &&
+        candidate.purpose === "BOOTSTRAP_PASSWORD_ROTATION" &&
+        !candidate.revokedAt &&
+        candidate.expiresAt > timestamp,
+    );
+    if (
+      audit.actorUserId !== userId ||
+      !current ||
+      current.disabledAt ||
+      !session ||
+      memberships.some(
+        (membership) =>
+          membership.disabledAt ||
+          membership.passwordHash !== input.expectedPasswordHash ||
+          membership.bootstrapPasswordExpiresAt !==
+            input.expectedBootstrapPasswordExpiresAt ||
+          membership.authenticationEpoch !== input.expectedAuthenticationEpoch,
+      ) ||
+      current.passwordHash !== input.expectedPasswordHash ||
+      current.bootstrapPasswordExpiresAt !==
+        input.expectedBootstrapPasswordExpiresAt ||
+      current.bootstrapPasswordExpiresAt <= timestamp ||
+      current.authenticationEpoch !== input.expectedAuthenticationEpoch ||
+      current.authorizationEpoch !== input.expectedAuthorizationEpoch ||
+      session.authenticationEpoch !== input.expectedAuthenticationEpoch ||
+      session.authorizationEpoch !== input.expectedAuthorizationEpoch
+    )
+      return { rotated: false, reason: "FORBIDDEN" } as const;
+    const organizationIds = [
+      ...new Set(memberships.map(({ organizationId: id }) => id)),
+    ].sort();
+    const authenticationEpoch = current.authenticationEpoch + 1;
+    this.revokePendingIssuerGrants(userId, organizationIds, timestamp);
+    this.users = this.users.map((user) => {
+      if (user.id !== userId) return user;
+      const retained = { ...user };
+      delete retained.bootstrapPasswordExpiresAt;
+      return {
+        ...retained,
+        passwordHash: input.passwordHash,
+        authenticationEpoch,
+      };
+    });
+    this.userSessions = this.userSessions.map((candidate) =>
+      candidate.userId === userId && !candidate.revokedAt
+        ? { ...candidate, revokedAt: timestamp }
+        : candidate,
+    );
+    this.auditRecords.push(
+      ...organizationIds.map((id) =>
+        this.buildAuditRecord({
+          organizationId: id,
+          actorUserId: userId,
+          actorType: "user",
+          action: "auth.bootstrap_password_rotated",
+          entityType: "user",
+          entityId: userId,
+          ...(audit.ipAddress ? { ipAddress: audit.ipAddress } : {}),
+          ...(audit.requestId ? { requestId: audit.requestId } : {}),
+          metadata: {},
+        }),
+      ),
+    );
+    return { rotated: true, affectedOrganizationIds: organizationIds } as const;
   }
   private identityAudit(
     organizationId: string,

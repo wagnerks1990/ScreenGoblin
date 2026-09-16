@@ -92,6 +92,13 @@ test("recovery drill migrates and restores representative application relations"
   assert.match(script, /upgrade_authorization_epoch_result/);
   assert.match(script, /seed_fingerprint_before/);
   assert.match(script, /seed_fingerprint_after/);
+  assert.match(script, /bootstrapPasswordExpiresAt/);
+  assert.match(script, /unsafe-bootstrap-full/);
+  assert.match(script, /unsafe-bootstrap-long/);
+  assert.match(script, /unsafe-bootstrap-nonpositive/);
+  assert.match(script, /unsafe-bootstrap-expired-marker/);
+  assert.match(script, /valid-bootstrap-rotation/);
+  assert.match(script, /BOOTSTRAP_PASSWORD_ROTATION/);
   assert.match(script, /npm run prisma:seed -w @screengoblin\/api/);
   assert.match(script, /Restored AuditEvent mutation guard allowed/);
   assert.match(script, /restoredAuditGuardCount/);

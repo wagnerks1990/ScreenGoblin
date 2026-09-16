@@ -167,9 +167,9 @@ docker run --rm --pull never --network "$network" \
   npm run prisma:seed -w @screengoblin/api >/dev/null
 seed_fingerprint_before="$(
   docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
-    "SELECT member.\"authorizationEpoch\"::text || '|' || actor.\"authenticationEpoch\"::text || '|' || (SELECT count(*) FROM \"UserSession\" session WHERE session.\"userId\" = actor.id)::text || '|' || (SELECT count(*) FROM \"AccessGrant\" grant_row WHERE grant_row.\"organizationId\" = member.\"organizationId\" AND grant_row.\"subjectMembershipId\" = member.id AND grant_row.\"creatorKind\" = 'SYSTEM' AND grant_row.\"createdBySystemKey\" = 'legacy-role-backfill-v1' AND grant_row.\"scopeType\" = 'ORGANIZATION' AND grant_row.\"revokedAt\" IS NULL)::text || '|' || actor.\"passwordHash\" FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'"
+    "SELECT member.\"authorizationEpoch\"::text || '|' || actor.\"authenticationEpoch\"::text || '|' || (SELECT count(*) FROM \"UserSession\" session WHERE session.\"userId\" = actor.id)::text || '|' || (SELECT count(*) FROM \"AccessGrant\" grant_row WHERE grant_row.\"organizationId\" = member.\"organizationId\" AND grant_row.\"subjectMembershipId\" = member.id AND grant_row.\"creatorKind\" = 'SYSTEM' AND grant_row.\"createdBySystemKey\" = 'legacy-role-backfill-v1' AND grant_row.\"scopeType\" = 'ORGANIZATION' AND grant_row.\"revokedAt\" IS NULL)::text || '|' || (actor.\"bootstrapPasswordExpiresAt\" > CURRENT_TIMESTAMP AND actor.\"bootstrapPasswordExpiresAt\" <= CURRENT_TIMESTAMP + INTERVAL '24 hours')::text || '|' || (SELECT count(*) FROM \"AuditEvent\" audit WHERE audit.\"organizationId\" = organization.id AND audit.\"entityId\" = actor.id AND audit.\"actorType\" = 'system' AND audit.action = 'auth.bootstrap_password_containment_enabled')::text || '|' || actor.\"passwordHash\" FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'"
 )"
-[[ "$seed_fingerprint_before" == 0\|0\|0\|13\|* ]]
+[[ "$seed_fingerprint_before" == 0\|0\|0\|13\|true\|1\|* ]]
 docker run --rm --pull never --network "$network" \
   --env DATABASE_URL="$DATABASE_URL" \
   --env SEED_ADMIN_EMAIL=upgrade-seed@example.test \
@@ -181,9 +181,31 @@ docker run --rm --pull never --network "$network" \
   npm run prisma:seed -w @screengoblin/api >/dev/null
 seed_fingerprint_after="$(
   docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
-    "SELECT member.\"authorizationEpoch\"::text || '|' || actor.\"authenticationEpoch\"::text || '|' || (SELECT count(*) FROM \"UserSession\" session WHERE session.\"userId\" = actor.id)::text || '|' || (SELECT count(*) FROM \"AccessGrant\" grant_row WHERE grant_row.\"organizationId\" = member.\"organizationId\" AND grant_row.\"subjectMembershipId\" = member.id AND grant_row.\"creatorKind\" = 'SYSTEM' AND grant_row.\"createdBySystemKey\" = 'legacy-role-backfill-v1' AND grant_row.\"scopeType\" = 'ORGANIZATION' AND grant_row.\"revokedAt\" IS NULL)::text || '|' || actor.\"passwordHash\" FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'"
+    "SELECT member.\"authorizationEpoch\"::text || '|' || actor.\"authenticationEpoch\"::text || '|' || (SELECT count(*) FROM \"UserSession\" session WHERE session.\"userId\" = actor.id)::text || '|' || (SELECT count(*) FROM \"AccessGrant\" grant_row WHERE grant_row.\"organizationId\" = member.\"organizationId\" AND grant_row.\"subjectMembershipId\" = member.id AND grant_row.\"creatorKind\" = 'SYSTEM' AND grant_row.\"createdBySystemKey\" = 'legacy-role-backfill-v1' AND grant_row.\"scopeType\" = 'ORGANIZATION' AND grant_row.\"revokedAt\" IS NULL)::text || '|' || (actor.\"bootstrapPasswordExpiresAt\" > CURRENT_TIMESTAMP AND actor.\"bootstrapPasswordExpiresAt\" <= CURRENT_TIMESTAMP + INTERVAL '24 hours')::text || '|' || (SELECT count(*) FROM \"AuditEvent\" audit WHERE audit.\"organizationId\" = organization.id AND audit.\"entityId\" = actor.id AND audit.\"actorType\" = 'system' AND audit.action = 'auth.bootstrap_password_containment_enabled')::text || '|' || actor.\"passwordHash\" FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'"
 )"
 [[ "$seed_fingerprint_after" == "$seed_fingerprint_before" ]]
+if docker exec "$pg_container" psql -v ON_ERROR_STOP=1 -U screengoblin -d screengoblin -c \
+  "INSERT INTO \"UserSession\" (id, \"organizationId\", \"userId\", \"tokenHash\", \"authenticationEpoch\", \"authorizationEpoch\", \"expiresAt\") SELECT 'unsafe-bootstrap-full', organization.id, actor.id, repeat('1', 64), actor.\"authenticationEpoch\", member.\"authorizationEpoch\", CURRENT_TIMESTAMP + INTERVAL '30 minutes' FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'" >/dev/null 2>&1; then
+  echo "Bootstrap marker allowed a FULL session" >&2
+  exit 1
+fi
+if docker exec "$pg_container" psql -v ON_ERROR_STOP=1 -U screengoblin -d screengoblin -c \
+  "INSERT INTO \"UserSession\" (id, \"organizationId\", \"userId\", \"tokenHash\", \"authenticationEpoch\", \"authorizationEpoch\", purpose, \"expiresAt\") SELECT 'unsafe-bootstrap-long', organization.id, actor.id, repeat('2', 64), actor.\"authenticationEpoch\", member.\"authorizationEpoch\", 'BOOTSTRAP_PASSWORD_ROTATION', CURRENT_TIMESTAMP + INTERVAL '11 minutes' FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'" >/dev/null 2>&1; then
+  echo "Bootstrap rotation session exceeded its maximum lifetime" >&2
+  exit 1
+fi
+if docker exec "$pg_container" psql -v ON_ERROR_STOP=1 -U screengoblin -d screengoblin -c \
+  "INSERT INTO \"UserSession\" (id, \"organizationId\", \"userId\", \"tokenHash\", \"authenticationEpoch\", \"authorizationEpoch\", purpose, \"expiresAt\", \"createdAt\") SELECT 'unsafe-bootstrap-nonpositive', organization.id, actor.id, repeat('4', 64), actor.\"authenticationEpoch\", member.\"authorizationEpoch\", 'BOOTSTRAP_PASSWORD_ROTATION', CURRENT_TIMESTAMP + INTERVAL '5 minutes', CURRENT_TIMESTAMP + INTERVAL '6 minutes' FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'" >/dev/null 2>&1; then
+  echo "Bootstrap rotation session accepted a non-positive lifetime" >&2
+  exit 1
+fi
+if docker exec "$pg_container" psql -v ON_ERROR_STOP=1 -U screengoblin -d screengoblin -c \
+  "BEGIN; UPDATE \"User\" SET \"bootstrapPasswordExpiresAt\" = CURRENT_TIMESTAMP - INTERVAL '1 minute' WHERE email = 'upgrade-seed@example.test'; INSERT INTO \"UserSession\" (id, \"organizationId\", \"userId\", \"tokenHash\", \"authenticationEpoch\", \"authorizationEpoch\", purpose, \"expiresAt\") SELECT 'unsafe-bootstrap-expired-marker', organization.id, actor.id, repeat('5', 64), actor.\"authenticationEpoch\", member.\"authorizationEpoch\", 'BOOTSTRAP_PASSWORD_ROTATION', CURRENT_TIMESTAMP + INTERVAL '5 minutes' FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'; COMMIT" >/dev/null 2>&1; then
+  echo "Expired bootstrap marker allowed a rotation session" >&2
+  exit 1
+fi
+docker exec "$pg_container" psql -v ON_ERROR_STOP=1 -U screengoblin -d screengoblin -c \
+  "INSERT INTO \"UserSession\" (id, \"organizationId\", \"userId\", \"tokenHash\", \"authenticationEpoch\", \"authorizationEpoch\", purpose, \"expiresAt\") SELECT 'valid-bootstrap-rotation', organization.id, actor.id, repeat('3', 64), actor.\"authenticationEpoch\", member.\"authorizationEpoch\", 'BOOTSTRAP_PASSWORD_ROTATION', LEAST(CURRENT_TIMESTAMP + INTERVAL '5 minutes', actor.\"bootstrapPasswordExpiresAt\") FROM \"User\" actor JOIN \"Membership\" member ON member.\"userId\" = actor.id JOIN \"Organization\" organization ON organization.id = member.\"organizationId\" WHERE actor.email = 'upgrade-seed@example.test' AND organization.slug = 'upgrade-seed-organization'" >/dev/null
 upgrade_authority_result="$(
   docker exec "$pg_container" psql -U screengoblin -d screengoblin -Atc \
     "SELECT pending.status::text || '|' || (attempt.\"cancelledAt\" IS NOT NULL)::text || '|' || claimed.status::text FROM \"PairingCode\" pending JOIN \"PairingAttempt\" attempt ON attempt.\"pairingCodeId\" = pending.id CROSS JOIN \"PairingCode\" claimed WHERE pending.id = 'upgrade-pending-grant' AND claimed.id = 'upgrade-claimed-grant'"
@@ -424,7 +446,7 @@ VALUES ('recovery-membership', 'recovery-org', 'recovery-user', 'OWNER');
 INSERT INTO "Membership" ("id", "organizationId", "userId", "role")
 VALUES ('recovery-approver-membership', 'recovery-org', 'recovery-approver', 'ADMIN');
 INSERT INTO "UserSession" ("id", "organizationId", "userId", "tokenHash", "authenticationEpoch", "authorizationEpoch", "expiresAt", "createdAt")
-VALUES ('recovery-session', 'recovery-org', 'recovery-user', repeat('c', 64), 0, 0, '2099-01-01T00:00:00Z', CURRENT_TIMESTAMP);
+VALUES ('recovery-session', 'recovery-org', 'recovery-user', repeat('c', 64), 0, 0, CURRENT_TIMESTAMP + INTERVAL '30 minutes', CURRENT_TIMESTAMP);
 INSERT INTO "Location" ("id", "organizationId", "name", "createdAt", "updatedAt")
 VALUES ('recovery-location', 'recovery-org', 'Recovery location', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO "Screen" ("id", "organizationId", "name", "location", "locationId", "status", "orientation", "resolution", "tags", "createdAt", "updatedAt")

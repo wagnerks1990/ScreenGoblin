@@ -836,6 +836,195 @@ describe("ScreenGoblin console", () => {
     expect(screen.getByLabelText("Password")).toHaveValue("");
   });
 
+  it("blocks the Console for bootstrap rotation and never persists the restricted credential", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            accessToken: "rotation-only-token",
+            nextAction: "CHANGE_BOOTSTRAP_PASSWORD",
+            changeBefore: "2030-01-01T00:15:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: { message: "Password was rejected" } }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /connect live/i }));
+    await user.type(screen.getByLabelText("Email"), "owner@example.test");
+    await user.type(screen.getByLabelText("Password"), "bootstrap-password");
+    await user.click(screen.getByRole("button", { name: "Connect live" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Change bootstrap password" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("navigation")).toBeNull();
+    expect(document.body).not.toHaveTextContent("rotation-only-token");
+    expect(window.sessionStorage.getItem("sg_access_token")).toBeNull();
+    expect(window.sessionStorage.getItem("sg_session_user")).toBeNull();
+
+    await user.type(
+      screen.getByLabelText("Current bootstrap password"),
+      "bootstrap-password",
+    );
+    await user.type(screen.getByLabelText("New password"), "short");
+    await user.type(screen.getByLabelText("Confirm new password"), "short");
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "at least 16 characters",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Current bootstrap password")).toHaveValue("");
+    expect(screen.getByLabelText("New password")).toHaveValue("");
+    expect(screen.getByLabelText("Confirm new password")).toHaveValue("");
+
+    await user.type(
+      screen.getByLabelText("Current bootstrap password"),
+      "bootstrap-password",
+    );
+    await user.type(screen.getByLabelText("New password"), "😀".repeat(19));
+    await user.type(
+      screen.getByLabelText("Confirm new password"),
+      "😀".repeat(19),
+    );
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "no more than 72 bytes",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Current bootstrap password")).toHaveValue("");
+    expect(screen.getByLabelText("New password")).toHaveValue("");
+    expect(screen.getByLabelText("Confirm new password")).toHaveValue("");
+
+    await user.type(
+      screen.getByLabelText("Current bootstrap password"),
+      "bootstrap-password",
+    );
+    await user.type(
+      screen.getByLabelText("New password"),
+      "a-new-unique-password",
+    );
+    await user.type(
+      screen.getByLabelText("Confirm new password"),
+      "a-new-unique-password",
+    );
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Password was rejected",
+    );
+    expect(screen.getByLabelText("Current bootstrap password")).toHaveValue("");
+    expect(screen.getByLabelText("New password")).toHaveValue("");
+    expect(screen.getByLabelText("Confirm new password")).toHaveValue("");
+    expect(window.sessionStorage.getItem("sg_access_token")).toBeNull();
+  });
+
+  it("discards the restricted token after rotation and returns to ordinary sign in", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            accessToken: "rotation-only-token",
+            nextAction: "CHANGE_BOOTSTRAP_PASSWORD",
+            changeBefore: "2030-01-01T00:15:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /connect live/i }));
+    await user.type(screen.getByLabelText("Email"), "owner@example.test");
+    await user.type(screen.getByLabelText("Password"), "bootstrap-password");
+    await user.click(screen.getByRole("button", { name: "Connect live" }));
+    await user.type(
+      await screen.findByLabelText("Current bootstrap password"),
+      "bootstrap-password",
+    );
+    await user.type(
+      screen.getByLabelText("New password"),
+      "a-new-unique-password",
+    );
+    await user.type(
+      screen.getByLabelText("Confirm new password"),
+      "a-new-unique-password",
+    );
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "Connect to ScreenGoblin" }),
+    ).toBeTruthy();
+    expect(window.sessionStorage.getItem("sg_access_token")).toBeNull();
+    expect(document.body).not.toHaveTextContent("rotation-only-token");
+  });
+
+  it("best-effort revokes the restricted token when rotation is abandoned", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            accessToken: "rotation-only-token",
+            nextAction: "CHANGE_BOOTSTRAP_PASSWORD",
+            changeBefore: "2030-01-01T00:15:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockRejectedValueOnce(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /connect live/i }));
+    await user.type(screen.getByLabelText("Email"), "owner@example.test");
+    await user.type(screen.getByLabelText("Password"), "bootstrap-password");
+    await user.click(screen.getByRole("button", { name: "Connect live" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Return to sign in" }),
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: "Connect to ScreenGoblin" }),
+    ).toBeTruthy();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/v1/auth/logout",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer rotation-only-token",
+        }),
+      }),
+    );
+    expect(window.sessionStorage.getItem("sg_access_token")).toBeNull();
+  });
+
   it("warns precisely and clears local state when logout revocation is unconfirmed", async () => {
     setAdminSession();
     const fetchMock = vi.fn(

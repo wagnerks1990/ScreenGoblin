@@ -20,11 +20,33 @@ rotation, user disablement, role change, and membership removal exist only as
 trusted internal, system-audited store operations in this prototype; there are
 no public identity-administration endpoints.
 
+A seeded owner is the narrow exception to the ordinary session contract. Until
+its bootstrap password is changed, `POST /auth/login` returns a token with
+`nextAction: "CHANGE_BOOTSTRAP_PASSWORD"` and an RFC 3339 `changeBefore`
+deadline. The deadline is 24 hours from the database-recorded bootstrap event;
+the seed appends `auth.bootstrap_password_containment_enabled` in each affected
+membership organization. The token expires after at most ten minutes and is accepted only by
+`POST /auth/bootstrap-password` and `POST /auth/logout`. All other authenticated
+routes reject it with `PASSWORD_ROTATION_REQUIRED`. The rotation request is
+`{ "currentPassword": string, "newPassword": string }`; the new value must
+differ, contain at least 16 Unicode code points, and be no more than 72 bytes in
+UTF-8. Success is an empty `204` and atomically changes the password, clears the
+bootstrap marker, advances the authentication epoch, revokes every session and
+pending initial/replacement enrollment authority for the user across all
+memberships, and appends `auth.bootstrap_password_rotated` in every affected
+organization. The used token is revoked, so the client must discard it and sign
+in again. Expired bootstrap credentials fail closed and require the supported
+offline operator-recovery procedure in the runbook; repeating the seed does not
+extend the deadline or reset the password. Recovery is not an API: the trusted
+command issues a new temporary credential with a 30-minute marker, revokes all
+sessions and pending issuer authority, and writes
+`auth.bootstrap_password_recovery_issued` in every membership organization.
+
 ## Main resource groups
 
 | Group          | Purpose                                                          | Principal       |
 | -------------- | ---------------------------------------------------------------- | --------------- |
-| Authentication | Sign-in and current session                                      | User            |
+| Authentication | Sign-in, bootstrap rotation, and current session                 | User            |
 | Screens        | Fleet inventory, state, tags, and assignment                     | User            |
 | Media          | Bounded pre-provisioned metadata; Console inventory is read-only | User            |
 | Playlists      | Ordered media and durations                                      | User            |

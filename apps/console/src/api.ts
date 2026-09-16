@@ -17,6 +17,7 @@ import { demoFleet, screens, type DemoScreen } from "./data";
 export type ApiResult<T> = { data: T; source: "live" | "demo" };
 export interface LiveSession {
   accessToken: string;
+  nextAction?: never;
   user: {
     id: string;
     name: string;
@@ -25,6 +26,14 @@ export interface LiveSession {
     organizationId: string;
   };
 }
+
+export interface BootstrapPasswordAction {
+  accessToken: string;
+  nextAction: "CHANGE_BOOTSTRAP_PASSWORD";
+  changeBefore: string;
+}
+
+export type LoginResult = LiveSession | BootstrapPasswordAction;
 
 export interface LogoutResult {
   revocationConfirmed: boolean;
@@ -233,25 +242,98 @@ export const api = {
       return undefined;
     }
   },
-  login: async (email: string, password: string): Promise<LiveSession> => {
-    const session = await mutate<LiveSession>("/auth/login", {
+  login: async (email: string, password: string): Promise<LoginResult> => {
+    const session = await mutate<unknown>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
+    const candidate =
+      session !== null && typeof session === "object" && !Array.isArray(session)
+        ? (session as Record<string, unknown>)
+        : null;
+    if (candidate && "nextAction" in candidate) {
+      clearSession(false);
+      if (
+        candidate.nextAction !== "CHANGE_BOOTSTRAP_PASSWORD" ||
+        typeof candidate.accessToken !== "string" ||
+        candidate.accessToken === "" ||
+        typeof candidate.changeBefore !== "string" ||
+        candidate.changeBefore === "" ||
+        !Number.isFinite(Date.parse(candidate.changeBefore)) ||
+        candidate.user !== undefined
+      )
+        throw new Error(
+          "Live API returned an invalid bootstrap password action",
+        );
+      return candidate as unknown as BootstrapPasswordAction;
+    }
     if (
-      !session ||
-      typeof session.accessToken !== "string" ||
-      !session.accessToken ||
-      !isLiveUser(session.user)
+      !candidate ||
+      Array.isArray(candidate) ||
+      typeof candidate.accessToken !== "string" ||
+      !candidate.accessToken ||
+      !isLiveUser(candidate.user)
     )
       throw new Error("Live API returned an invalid session principal");
-    window.sessionStorage.setItem("sg_access_token", session.accessToken);
+    window.sessionStorage.setItem("sg_access_token", candidate.accessToken);
     window.sessionStorage.removeItem(invalidatedSessionKey);
     window.sessionStorage.setItem(
       "sg_session_user",
-      JSON.stringify(session.user),
+      JSON.stringify(candidate.user),
     );
-    return session;
+    return candidate as unknown as LiveSession;
+  },
+  changeBootstrapPassword: async (
+    accessToken: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      mutationTimeoutMs,
+    );
+    try {
+      const response = await fetch(`${baseUrl}/auth/bootstrap-password`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ currentPassword, newPassword }),
+        signal: controller.signal,
+      });
+      if (response.status === 204) return;
+      const payload = (await response.json().catch(() => undefined)) as
+        { error?: { code?: string; message?: string } } | undefined;
+      throw new ApiRequestError(
+        payload?.error?.message ?? `API returned ${response.status}`,
+        response.status,
+        payload?.error?.code,
+      );
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  },
+  abandonBootstrapPassword: async (accessToken: string): Promise<void> => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 2500);
+    try {
+      await fetch(`${baseUrl}/auth/logout`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        signal: controller.signal,
+      });
+    } catch {
+      // This restricted credential is held only in React memory and is
+      // discarded even when server revocation cannot be confirmed.
+    } finally {
+      window.clearTimeout(timeout);
+    }
   },
   logout: async (): Promise<LogoutResult> => {
     const accessToken = window.sessionStorage.getItem("sg_access_token");

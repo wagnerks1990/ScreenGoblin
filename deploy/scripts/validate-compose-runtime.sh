@@ -79,6 +79,8 @@ export S3_ACCESS_KEY_ID="screengoblin-smoke-api"
 export S3_SECRET_ACCESS_KEY="$(random_hex 32)"
 export SEED_ADMIN_EMAIL="admin@smoke.example.test"
 export SEED_ADMIN_PASSWORD="$(random_hex 32)"
+bootstrap_replacement_password="$(random_hex 32)"
+readonly bootstrap_replacement_password
 export SEED_ADMIN_NAME="Compose Smoke Administrator"
 export SEED_ORGANIZATION_NAME="Compose Smoke"
 export SEED_ORGANIZATION_SLUG="compose-smoke"
@@ -160,6 +162,7 @@ secret_values=(
   "$MINIO_ROOT_PASSWORD"
   "$S3_SECRET_ACCESS_KEY"
   "$SEED_ADMIN_PASSWORD"
+  "$bootstrap_replacement_password"
 )
 readonly -a secret_values
 
@@ -168,6 +171,7 @@ sanitize_stream() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     for secret in "${secret_values[@]}" \
       "${management_token:-}" "${enrollment_secret:-}" \
+      "${bootstrap_rotation_token:-}" "${bootstrap_full_token:-}" \
       "${valid_media_capability:-}" "${expired_media_capability:-}"; do
       [[ -n "$secret" ]] || continue
       line="${line//"$secret"/[REDACTED]}"
@@ -467,6 +471,7 @@ run_unauthenticated_dast() {
 "${compose[@]}" config --quiet
 attempted_start=true
 "${compose[@]}" up --detach --wait --wait-timeout "$WAIT_TIMEOUT_SECONDS"
+"${compose[@]}" --profile bootstrap run --rm api-seed
 
 for service_port in \
   "postgres 5432" "redis 6379" "minio 9000" "minio 9001" \
@@ -493,6 +498,86 @@ for caddy_port in 80 443; do
 done
 [[ "$($DOCKER_BIN network inspect "${project_name}_backend" --format '{{.Internal}}')" == true ]] || {
   echo "Compose backend network is not internal" >&2
+  exit 1
+}
+
+bootstrap_login_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --request POST --header "Content-Type: application/json" \
+  --data "{\"email\":\"$SEED_ADMIN_EMAIL\",\"password\":\"$SEED_ADMIN_PASSWORD\"}" \
+  --output "$work_dir/bootstrap-login.json" --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/auth/login")"
+[[ "$bootstrap_login_status" == 200 ]] || {
+  echo "Bootstrap owner login returned HTTP $bootstrap_login_status" >&2
+  exit 1
+}
+bootstrap_rotation_token="$("${compose[@]}" exec -T api node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const value = JSON.parse(readFileSync(0, "utf8"));
+  if (value.nextAction !== "CHANGE_BOOTSTRAP_PASSWORD" ||
+      typeof value.accessToken !== "string" || value.accessToken.length < 20) process.exit(2);
+  process.stdout.write(value.accessToken);
+' < "$work_dir/bootstrap-login.json")"
+readonly bootstrap_rotation_token
+
+bootstrap_restricted_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --header "Authorization: Bearer $bootstrap_rotation_token" \
+  --output "$work_dir/bootstrap-restricted.body" --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/auth/me")"
+[[ "$bootstrap_restricted_status" == 403 ]] || {
+  echo "Bootstrap rotation token reached an operational route with HTTP $bootstrap_restricted_status" >&2
+  exit 1
+}
+
+bootstrap_rotation_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --request POST --header "Authorization: Bearer $bootstrap_rotation_token" \
+  --header "Content-Type: application/json" \
+  --data "{\"currentPassword\":\"$SEED_ADMIN_PASSWORD\",\"newPassword\":\"$bootstrap_replacement_password\"}" \
+  --output "$work_dir/bootstrap-rotation.body" --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/auth/bootstrap-password")"
+[[ "$bootstrap_rotation_status" == 204 ]] || {
+  echo "Bootstrap password rotation returned HTTP $bootstrap_rotation_status" >&2
+  exit 1
+}
+
+bootstrap_old_login_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --request POST --header "Content-Type: application/json" \
+  --data "{\"email\":\"$SEED_ADMIN_EMAIL\",\"password\":\"$SEED_ADMIN_PASSWORD\"}" \
+  --output "$work_dir/bootstrap-old-login.body" --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/auth/login")"
+[[ "$bootstrap_old_login_status" == 401 ]] || {
+  echo "Bootstrap password remained valid after rotation (HTTP $bootstrap_old_login_status)" >&2
+  exit 1
+}
+
+bootstrap_new_login_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --request POST --header "Content-Type: application/json" \
+  --data "{\"email\":\"$SEED_ADMIN_EMAIL\",\"password\":\"$bootstrap_replacement_password\"}" \
+  --output "$work_dir/bootstrap-new-login.json" --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/auth/login")"
+[[ "$bootstrap_new_login_status" == 200 ]] || {
+  echo "Rotated owner login returned HTTP $bootstrap_new_login_status" >&2
+  exit 1
+}
+bootstrap_full_token="$("${compose[@]}" exec -T api node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const value = JSON.parse(readFileSync(0, "utf8"));
+  if (value.nextAction !== undefined || typeof value.user !== "object" ||
+      typeof value.accessToken !== "string" || value.accessToken.length < 20) process.exit(2);
+  process.stdout.write(value.accessToken);
+' < "$work_dir/bootstrap-new-login.json")"
+readonly bootstrap_full_token
+bootstrap_logout_status="$($CURL_BIN --silent --show-error --insecure \
+  --resolve "$SCREEN_GOBLIN_HOST:443:127.0.0.1" \
+  --request POST --header "Authorization: Bearer $bootstrap_full_token" \
+  --output "$work_dir/bootstrap-logout.body" --write-out '%{http_code}' \
+  "https://$SCREEN_GOBLIN_HOST/api/v1/auth/logout")"
+[[ "$bootstrap_logout_status" == 204 ]] || {
+  echo "Rotated owner logout returned HTTP $bootstrap_logout_status" >&2
   exit 1
 }
 

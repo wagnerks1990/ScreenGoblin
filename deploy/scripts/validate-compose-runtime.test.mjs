@@ -74,6 +74,7 @@ case " $* " in
   *" exec -T postgres "*) exit 0 ;;
   *" exec -T minio "*) printf '403'; exit 0 ;;
   *" exec -T api "*"bcrypt"*) printf '\$2b\$12\$fixture'; exit 0 ;;
+  *" exec -T api "*"nextAction"*) printf 'fixture-bootstrap-token'; exit 0 ;;
   *" exec -T api "*"accessToken"*) printf 'fixture-management-token'; exit 0 ;;
   *" exec -T api "*".code"*) printf '123456'; exit 0 ;;
   *" exec -T api "*) printf 'valid-capability\nexpired-capability\n'; exit 0 ;;
@@ -162,6 +163,9 @@ fi
 status=200
 body=''
 case "$url" in
+  */api/v1/auth/bootstrap-password) status=204; body='' ;;
+  */api/v1/auth/me) status=403; body='{"error":{"code":"PASSWORD_ROTATION_REQUIRED"}}' ;;
+  */api/v1/auth/logout) status=204; body='' ;;
   */api/v1/auth/login)
     if [[ "$request" == TRACE ]]; then status=405; body=''; fi
     if [[ "$request" == POST ]]; then status=400; body='{"error":"invalid request"}'; fi
@@ -191,6 +195,11 @@ case "$url" in
     ;;
   *) body='<div id="root"></div>' ;;
 esac
+if [[ "$output" == *bootstrap-login.json ]]; then
+  status=200; body='{"accessToken":"fixture-bootstrap-token","nextAction":"CHANGE_BOOTSTRAP_PASSWORD","changeBefore":"2099-01-01T00:00:00Z"}'
+fi
+if [[ "$output" == *bootstrap-old-login.body ]]; then status=401; body='{"error":{"code":"INVALID_CREDENTIALS"}}'; fi
+if [[ "$output" == *bootstrap-new-login.json ]]; then status=200; body='{"accessToken":"fixture-management-token","user":{"id":"owner"}}'; fi
 if [[ "$output" == *enrollment-login.json ]]; then status=200; body='{"accessToken":"fixture-management-token"}'; fi
 if [[ "$output" == *private-media-withdrawn.body ]]; then status=404; body=''; fi
 csp="default-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'none'"
@@ -267,6 +276,15 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.match(result.stdout, /production-runtime smoke passed/);
     assert.match(scriptSource, /UNTARGETED_ENROLLMENT_REMOVED|expected 410/);
     assert.match(scriptSource, /device-enrollment/);
+    assert.match(scriptSource, /auth\/bootstrap-password/);
+    assert.match(
+      scriptSource,
+      /Bootstrap password remained valid after rotation/,
+    );
+    assert.match(
+      scriptSource,
+      /Bootstrap rotation token reached an operational route/,
+    );
     assert.match(scriptSource, /authorizedByAuthenticationEpoch/);
     assert.match(scriptSource, /authorizedByAuthorizationEpoch/);
     assert.match(scriptSource, /export ACME_EMAIL="ops@smoke\.example\.test"/);
@@ -344,6 +362,12 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.doesNotMatch(scriptSource, /repeat\('[abc]', 64\)/);
     const commands = readFileSync(f.commandLog, "utf8");
     assert.match(commands, /up --detach --wait --wait-timeout 180/);
+    assert.match(commands, /--profile bootstrap run --rm api-seed/);
+    assert.ok(
+      commands.indexOf("--profile bootstrap run --rm api-seed") <
+        commands.indexOf("exec -T api node --input-type=module"),
+      "bootstrap seeding must precede parsing the first owner login",
+    );
     assert.match(commands, /network inspect screengoblin-smoke-test_backend/);
     assert.match(commands, /ps --quiet console/);
     assert.match(commands, /inspect container-console/);

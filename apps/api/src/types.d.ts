@@ -1,5 +1,10 @@
 import "@fastify/jwt";
-import type { DataStore, Role, ScreenRecord } from "./domain/types.js";
+import type {
+  ActiveUserSession,
+  DataStore,
+  Role,
+  ScreenRecord,
+} from "./domain/types.js";
 import type { RateLimitBudget } from "./utils/rate-limit.js";
 import type { MediaObjectStore } from "./media/delivery.js";
 declare module "@fastify/jwt" {
@@ -38,6 +43,14 @@ declare module "fastify" {
       request: FastifyRequest,
       reply: FastifyReply,
     ) => Promise<void>;
+    authenticateAnySession: (
+      request: FastifyRequest,
+      reply: FastifyReply,
+    ) => Promise<void>;
+    authenticateBootstrapRotation: (
+      request: FastifyRequest,
+      reply: FastifyReply,
+    ) => Promise<void>;
     authenticateDevice: (
       request: FastifyRequest,
       reply: FastifyReply,
@@ -45,5 +58,6 @@ declare module "fastify" {
   }
   interface FastifyRequest {
     device?: ScreenRecord;
+    sessionUser?: ActiveUserSession;
   }
 }

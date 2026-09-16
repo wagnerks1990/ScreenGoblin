@@ -377,6 +377,65 @@ a:focus-visible {
   color: #fecaca;
 }
 
+.bootstrap-password-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.bootstrap-password-card {
+  width: min(520px, 100%);
+  padding: clamp(24px, 5vw, 40px);
+  border: 1px solid #2d4358;
+  border-radius: 14px;
+  background: #0d1b2a;
+  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.4);
+}
+
+.bootstrap-password-card > img {
+  display: block;
+  width: min(210px, 60%);
+  margin-bottom: 32px;
+}
+
+.bootstrap-password-card h1 {
+  margin: 4px 0 12px;
+  font-size: clamp(1.5rem, 5vw, 2rem);
+}
+
+.bootstrap-password-card > p:not(.eyebrow, .error-message) {
+  color: var(--text-muted);
+}
+
+.bootstrap-deadline {
+  margin-bottom: 24px;
+}
+
+.bootstrap-password-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 24px;
+}
+
+@media (max-width: 480px) {
+  .bootstrap-password-page {
+    padding: 0;
+  }
+
+  .bootstrap-password-card {
+    min-height: 100vh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .bootstrap-password-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+}
+
 .pairing-result {
   display: grid;
   justify-items: center;

@@ -6,10 +6,10 @@ const apiBaseUrl =
 
 function requiredOwnerCredentials() {
   const email = process.env.SEED_ADMIN_EMAIL?.trim();
-  const password = process.env.SEED_ADMIN_PASSWORD;
+  const password = process.env.E2E_OWNER_PASSWORD;
   if (!email || !password) {
     throw new Error(
-      "SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD are required for Console E2E tests",
+      "The Console E2E bootstrap setup did not provide owner credentials",
     );
   }
   return { email, password };
@@ -51,6 +51,35 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/dashboard");
   await page.evaluate(() => window.sessionStorage.clear());
   await page.reload();
+});
+
+test("bootstrap password rotation meets automated WCAG 2.1 A/AA checks", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/auth/login", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        accessToken: "rotation-only-token",
+        nextAction: "CHANGE_BOOTSTRAP_PASSWORD",
+        changeBefore: "2030-01-01T00:15:00.000Z",
+      }),
+    });
+  });
+  await page.getByRole("button", { name: /connect live/i }).click();
+  await page.getByLabel("Email").fill("owner@example.test");
+  await page.getByLabel("Password").fill("bootstrap-password");
+  await page.getByRole("button", { name: "Connect live" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "Change bootstrap password" }),
+  ).toBeVisible();
+  await expect(page.getByRole("navigation")).toHaveCount(0);
+  await expectNoWcag21AAViolations(page, "bootstrap password rotation");
+  await expect(
+    page.evaluate(() => window.sessionStorage.getItem("sg_access_token")),
+  ).resolves.toBeNull();
 });
 
 test("demo, dialog, drawer, and live fleet states meet automated WCAG 2.1 A/AA checks", async ({

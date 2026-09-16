@@ -59,7 +59,11 @@ Unknown capabilities fail closed. Capabilities should be referenced through shar
 The compatibility migration materializes organization-scope grants equivalent
 to current non-emergency access, binds them to exact Membership instances, and
 attributes the migration to `legacy-role-backfill-v1` rather than a human
-owner. The bootstrap does not change authorization epochs or sessions. Later
+owner. That compatibility-grant bootstrap does not change authorization epochs
+or sessions. It is distinct from deployment owner-password containment, which
+advances the user's authentication epoch and revokes all sessions and pending
+issuer authority when an existing seed credential is first contained and again
+when it is rotated. Later
 role changes revoke and replace only this system bundle inside the existing
 epoch/session-invalidating transaction. It does not infer emergency or
 `authorization.manage` authority.

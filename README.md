@@ -55,8 +55,16 @@ docker compose --env-file deploy/.env ps
 ```
 
 Run the bootstrap profile only for the first organization owner. It refuses
-placeholder/short credentials and never resets an existing password. Remove the
-`SEED_*` values from the deployment environment after the owner can sign in.
+placeholder/short credentials and never resets an existing password. The seeded
+credential must be replaced within 24 hours of the database-recorded bootstrap
+time. Its sign-in can open only the password-change screen; it cannot call the
+management API. Choose a replacement of at least 16 Unicode code points and no
+more than 72 UTF-8 bytes. A successful one-time change revokes every session and
+pending enrollment authority held by that user, so sign in again afterward.
+Remove the `SEED_*` values from the deployment environment immediately after
+the seed command succeeds; deliver the temporary credential separately through
+an approved channel. See the runbook before deploying or upgrading an
+installation that has not completed this transition.
 Changing the manifest signing key requires controlled re-enrollment of players;
 players pin its public verification key during pairing.
 

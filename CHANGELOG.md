@@ -4,6 +4,20 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Contain deployment-seeded owner passwords with a database-time 24-hour
+  first-use deadline and purpose-limited rotation sessions that cannot access
+  operational APIs. The blocking Console flow requires a different password of
+  at least 16 Unicode code points and at most 72 UTF-8 bytes. One atomic change
+  clears the marker, advances the authentication epoch, revokes every user
+  session and pending enrollment authority across memberships, and appends a
+  tenant audit event for each membership; the user must then sign in again.
+  Existing matching seed owners are contained once without silently resetting
+  their password, reruns cannot extend the deadline, and expired credentials
+  fail closed into an acknowledged offline recovery command that issues a
+  separately audited 30-minute temporary credential and repeats the global
+  revocation boundary. This does not add SSO, MFA, general self-service password
+  changes, dual-control recovery, or production readiness.
+
 - Fail production startup on wildcard, opaque, malformed, credentialed,
   path-bearing, insecure network, local/private, or arbitrary custom-scheme
   CORS origins. Canonical exact origins are bounded and deduplicated, while the

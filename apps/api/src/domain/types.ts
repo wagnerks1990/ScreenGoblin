@@ -1,4 +1,5 @@
 export type Role = "OWNER" | "ADMIN" | "PUBLISHER" | "VIEWER";
+export type UserSessionPurpose = "FULL" | "BOOTSTRAP_PASSWORD_ROTATION";
 export type Priority = "normal" | "campaign" | "priority" | "emergency";
 export type MediaKind = "image" | "video" | "web" | "template";
 
@@ -12,6 +13,7 @@ export interface SessionUser {
   authenticationEpoch: number;
   authorizationEpoch: number;
   membershipId?: string;
+  bootstrapPasswordExpiresAt?: string;
   disabledAt?: string;
 }
 export const LOGIN_FAILURE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -36,6 +38,7 @@ export interface UserSessionRecord {
   tokenHash: string;
   authenticationEpoch: number;
   authorizationEpoch: number;
+  purpose?: UserSessionPurpose;
   expiresAt: string;
   revokedAt?: string | undefined;
   createdAt: string;
@@ -48,7 +51,26 @@ export interface UserSessionCreateInput {
   expectedRole: Role;
   expectedAuthenticationEpoch: number;
   expectedAuthorizationEpoch: number;
+  purpose?: UserSessionPurpose;
+  expectedBootstrapPasswordExpiresAt?: string;
 }
+
+export interface ActiveUserSession extends SessionUser {
+  sessionPurpose: UserSessionPurpose;
+}
+
+export interface BootstrapPasswordRotationInput {
+  tokenHash: string;
+  expectedPasswordHash: string;
+  expectedBootstrapPasswordExpiresAt: string;
+  expectedAuthenticationEpoch: number;
+  expectedAuthorizationEpoch: number;
+  passwordHash: string;
+}
+
+export type BootstrapPasswordRotationResult =
+  | { rotated: true; affectedOrganizationIds: string[] }
+  | { rotated: false; reason: "FORBIDDEN" };
 
 export type UserSessionCreateResult =
   | { created: true; session: UserSessionRecord }
@@ -717,13 +739,19 @@ export interface DataStore {
     userId: string,
     organizationId: string,
     tokenHash: string,
-  ): Promise<SessionUser | null>;
+  ): Promise<ActiveUserSession | null>;
   revokeUserSessionAndAudit(
     userId: string,
     organizationId: string,
     tokenHash: string,
     audit: UserMutationAuditContext,
   ): Promise<UserSessionRevokeResult>;
+  rotateBootstrapPasswordAndAudit(
+    userId: string,
+    organizationId: string,
+    input: BootstrapPasswordRotationInput,
+    audit: UserMutationAuditContext,
+  ): Promise<BootstrapPasswordRotationResult>;
   rotateUserPasswordAndAudit(
     userId: string,
     passwordHash: string,

@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
-import { compare } from "bcryptjs";
+import { compare, hash } from "bcryptjs";
 import { z } from "zod";
 import type {
   DataStore,
@@ -19,6 +19,8 @@ import {
 const DUMMY_PASSWORD_HASH =
   "$2b$12$C6UzMDM.H6dfI/f/IKcEe.82jG7y4g4AY8I8HibLFSWafVkx8S4hS";
 const SESSION_LIFETIME_SECONDS = 60 * 60;
+const BOOTSTRAP_ROTATION_SESSION_LIFETIME_SECONDS = 10 * 60;
+const PASSWORD_HASH_ROUNDS = 12;
 
 type PasswordComparator = (
   password: string,
@@ -48,6 +50,34 @@ const loginSchema = z
     password: z.string().min(8).max(200),
   })
   .strict();
+const strongPassword = z.string().superRefine((value, context) => {
+  if ([...value].length < 16)
+    context.addIssue({
+      code: "too_small",
+      origin: "string",
+      minimum: 16,
+      inclusive: true,
+      message: "Password must contain at least 16 characters",
+    });
+  if (Buffer.byteLength(value, "utf8") > 72)
+    context.addIssue({
+      code: "too_big",
+      origin: "string",
+      maximum: 72,
+      inclusive: true,
+      message: "Password must contain at most 72 UTF-8 bytes",
+    });
+});
+const bootstrapPasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(200),
+    newPassword: strongPassword,
+  })
+  .strict()
+  .refine((input) => input.currentPassword !== input.newPassword, {
+    path: ["newPassword"],
+    message: "New password must differ from the bootstrap password",
+  });
 export const authRoutes: FastifyPluginAsync = async (app) => {
   const recordLoginFailure = async (
     request: FastifyRequest,
@@ -129,9 +159,30 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           "Email or password is incorrect",
         );
       }
+      const issueTime = Date.now();
+      const bootstrapExpiry = user.bootstrapPasswordExpiresAt
+        ? Date.parse(user.bootstrapPasswordExpiresAt)
+        : null;
+      const sessionPurpose = bootstrapExpiry
+        ? ("BOOTSTRAP_PASSWORD_ROTATION" as const)
+        : ("FULL" as const);
+      const lifetimeSeconds = bootstrapExpiry
+        ? Math.min(
+            BOOTSTRAP_ROTATION_SESSION_LIFETIME_SECONDS,
+            Math.floor((bootstrapExpiry - issueTime) / 1000),
+          )
+        : SESSION_LIFETIME_SECONDS;
+      if (lifetimeSeconds < 1) {
+        await recordLoginFailure(request, input.email, "INVALID_CREDENTIALS");
+        throw new ApiError(
+          401,
+          "INVALID_CREDENTIALS",
+          "Email or password is incorrect",
+        );
+      }
       const sessionId = randomToken();
       const expiresAt = new Date(
-        Date.now() + SESSION_LIFETIME_SECONDS * 1000,
+        issueTime + lifetimeSeconds * 1000,
       ).toISOString();
       const accessToken = await request.server.jwt.sign(
         {
@@ -141,7 +192,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           role: user.role,
           sessionId,
         },
-        { expiresIn: SESSION_LIFETIME_SECONDS },
+        { expiresIn: lifetimeSeconds },
       );
       const created = await app.store.createUserSessionAndAudit(
         user.organizationId,
@@ -152,6 +203,13 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           expectedRole: user.role,
           expectedAuthenticationEpoch: user.authenticationEpoch,
           expectedAuthorizationEpoch: user.authorizationEpoch,
+          purpose: sessionPurpose,
+          ...(user.bootstrapPasswordExpiresAt
+            ? {
+                expectedBootstrapPasswordExpiresAt:
+                  user.bootstrapPasswordExpiresAt,
+              }
+            : {}),
         },
         {
           actorUserId: user.id,
@@ -167,10 +225,19 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           "Email or password is incorrect",
         );
       }
+      if (
+        sessionPurpose === "BOOTSTRAP_PASSWORD_ROTATION" &&
+        user.bootstrapPasswordExpiresAt
+      )
+        return {
+          accessToken,
+          nextAction: "CHANGE_BOOTSTRAP_PASSWORD" as const,
+          changeBefore: user.bootstrapPasswordExpiresAt,
+        };
       return {
         accessToken,
         tokenType: "Bearer",
-        expiresIn: SESSION_LIFETIME_SECONDS,
+        expiresIn: lifetimeSeconds,
         user: {
           id: user.id,
           email: user.email,
@@ -190,8 +257,108 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     },
   }));
   app.post(
+    "/auth/bootstrap-password",
+    {
+      onRequest: [app.authenticateBootstrapRotation],
+      preHandler: async (request) => {
+        const email = request.sessionUser!.email.trim().toLowerCase();
+        try {
+          await enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "bootstrap-password-session",
+              request.user.sessionId,
+            ),
+            10,
+          );
+          await enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "login-source",
+              request.ip,
+            ),
+            10,
+          );
+          await enforceRateLimitBudget(
+            app.rateLimitBudget,
+            opaqueRateLimitKey(
+              app.config.pairingCodePepper,
+              "login-account",
+              email,
+            ),
+            10,
+          );
+        } catch (error) {
+          if (error instanceof ApiError && error.code === "RATE_LIMITED")
+            await recordLoginFailure(request, email, "RATE_LIMITED");
+          throw error;
+        }
+      },
+    },
+    async (request, reply) => {
+      const input = bootstrapPasswordSchema.parse(request.body);
+      const principal = request.sessionUser;
+      if (!principal?.bootstrapPasswordExpiresAt)
+        throw new ApiError(
+          401,
+          "SESSION_REVOKED",
+          "This session is no longer valid",
+        );
+      const currentPasswordValid = await compare(
+        input.currentPassword,
+        principal.passwordHash,
+      );
+      if (!currentPasswordValid) {
+        await recordLoginFailure(
+          request,
+          principal.email.trim().toLowerCase(),
+          "INVALID_CREDENTIALS",
+        );
+        throw new ApiError(
+          401,
+          "INVALID_CREDENTIALS",
+          "Email or password is incorrect",
+        );
+      }
+      if (await compare(input.newPassword, principal.passwordHash))
+        throw new ApiError(
+          400,
+          "NEW_PASSWORD_REUSES_BOOTSTRAP_CREDENTIAL",
+          "New password must differ from the bootstrap password",
+        );
+      const passwordHash = await hash(input.newPassword, PASSWORD_HASH_ROUNDS);
+      const rotated = await app.store.rotateBootstrapPasswordAndAudit(
+        request.user.sub,
+        request.user.organizationId,
+        {
+          tokenHash: sha256(request.user.sessionId),
+          expectedPasswordHash: principal.passwordHash,
+          expectedBootstrapPasswordExpiresAt:
+            principal.bootstrapPasswordExpiresAt,
+          expectedAuthenticationEpoch: principal.authenticationEpoch,
+          expectedAuthorizationEpoch: principal.authorizationEpoch,
+          passwordHash,
+        },
+        {
+          actorUserId: request.user.sub,
+          ipAddress: request.ip,
+          requestId: request.id,
+        },
+      );
+      if (!rotated.rotated)
+        throw new ApiError(
+          401,
+          "SESSION_REVOKED",
+          "This session is no longer valid",
+        );
+      return reply.code(204).send();
+    },
+  );
+  app.post(
     "/auth/logout",
-    { onRequest: [app.authenticate] },
+    { onRequest: [app.authenticateAnySession] },
     async (request, reply) => {
       await app.store.revokeUserSessionAndAudit(
         request.user.sub,

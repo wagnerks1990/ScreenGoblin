@@ -4,7 +4,7 @@ import { ApiError } from "../utils/http.js";
 import { secureHashEquals, sha256 } from "../utils/crypto.js";
 
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
-  app.decorate("authenticate", async (request) => {
+  app.decorate("authenticateAnySession", async (request) => {
     try {
       await request.jwtVerify();
     } catch {
@@ -28,6 +28,25 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
         401,
         "SESSION_REVOKED",
         "This session is no longer valid",
+      );
+    request.sessionUser = session;
+  });
+  app.decorate("authenticate", async (request, reply) => {
+    await app.authenticateAnySession(request, reply);
+    if (request.sessionUser?.sessionPurpose !== "FULL")
+      throw new ApiError(
+        403,
+        "PASSWORD_ROTATION_REQUIRED",
+        "The bootstrap password must be changed before continuing",
+      );
+  });
+  app.decorate("authenticateBootstrapRotation", async (request, reply) => {
+    await app.authenticateAnySession(request, reply);
+    if (request.sessionUser?.sessionPurpose !== "BOOTSTRAP_PASSWORD_ROTATION")
+      throw new ApiError(
+        403,
+        "BOOTSTRAP_PASSWORD_ROTATION_SESSION_REQUIRED",
+        "A bootstrap password rotation session is required",
       );
   });
   app.decorate("authenticateDevice", async (request) => {

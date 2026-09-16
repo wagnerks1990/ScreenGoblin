@@ -23,6 +23,12 @@
           "seedPath": "/api/v1/auth/login"
         },
         {
+          "label": "auth-bootstrap-password",
+          "method": "POST",
+          "template": "/api/v1/auth/bootstrap-password",
+          "seedPath": "/api/v1/auth/bootstrap-password"
+        },
+        {
           "label": "auth-me",
           "method": "GET",
           "template": "/api/v1/auth/me",

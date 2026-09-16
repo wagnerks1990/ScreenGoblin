@@ -34,6 +34,11 @@ An unchecked item is a known gap, not an implicit approval.
       policy in legacy mode. Candidate creation has a non-authoritative bounded
       comparison canary; remaining shadow evidence, scoped read/mutation enforcement, administration,
       SSO/MFA, and human access review remain incomplete.
+      Deployment-seeded owner credentials are now time-bound to 24 hours and
+      restricted to one-time password rotation; that rotation revokes sessions
+      and pending issuer authority across memberships. This containment does
+      not provide SSO, MFA, breached-password screening, secret-store delivery,
+      or an approved human recovery process, so the gate remains unchecked.
 - [ ] Pairing is single-use, short-lived, rate-limited, transcript/key-bound, proof-verified, and audited on representative managed Android hardware.
 - [ ] Device revocation, targeted re-enrollment, credential/key rotation, offline recovery, and verified local media/state erasure pass operational and physical-device tests.
 - [ ] Android hardware/application attestation policy is implemented, or its absence has a named risk owner, compensating controls, and an approved review date.

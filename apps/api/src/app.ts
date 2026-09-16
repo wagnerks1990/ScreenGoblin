@@ -82,6 +82,8 @@ export async function buildApp(
             "req.headers.x-device-signature",
             "req.headers.idempotency-key",
             "body.password",
+            "body.currentPassword",
+            "body.newPassword",
             "req.url",
           ],
           ...(options.loggerStream ? { stream: options.loggerStream } : {}),
