@@ -110,6 +110,11 @@ describe("offline member provisioning", () => {
         disabledAt: null,
         bootstrapPasswordExpiresAt: result.changeBefore,
       });
+      const evidenceTimestamp = user.createdAt.getTime();
+      expect(user.updatedAt.getTime()).toBe(evidenceTimestamp);
+      expect(result.changeBefore.getTime() - evidenceTimestamp).toBe(
+        24 * 60 * 60_000,
+      );
       await expect(
         compare(input.temporaryPassword, user.passwordHash),
       ).resolves.toBe(true);
@@ -168,8 +173,8 @@ describe("offline member provisioning", () => {
       expect(
         grants.every(
           ({ startsAt, createdAt }) =>
-            startsAt.getTime() === user.createdAt.getTime() &&
-            createdAt.getTime() === user.createdAt.getTime(),
+            startsAt.getTime() === evidenceTimestamp &&
+            createdAt.getTime() === evidenceTimestamp,
         ),
       ).toBe(true);
 
@@ -220,7 +225,7 @@ describe("offline member provisioning", () => {
       );
       expect(
         audits.every(
-          ({ createdAt }) => createdAt.getTime() === user.createdAt.getTime(),
+          ({ createdAt }) => createdAt.getTime() === evidenceTimestamp,
         ),
       ).toBe(true);
       expect(JSON.stringify(audits)).not.toContain(input.temporaryPassword);
@@ -467,7 +472,31 @@ describe("offline member provisioning", () => {
       "UNCHANGED",
       "UNCHANGED",
     ]);
-    expect(new Set(identicalResults.map(({ userId }) => userId)).size).toBe(1);
+    const created = identicalResults.find(({ status }) => status === "CREATED");
+    if (!created) throw new Error("Concurrent creation result was unavailable");
+    expect(
+      identicalResults.every(
+        (result) =>
+          result.userId === created.userId &&
+          result.membershipId === created.membershipId &&
+          result.organizationId === created.organizationId &&
+          result.normalizedEmail === created.normalizedEmail &&
+          result.role === created.role &&
+          result.changeBefore.getTime() === created.changeBefore.getTime(),
+      ),
+    ).toBe(true);
+    const concurrentUser = await prisma.user.findUniqueOrThrow({
+      where: { id: created.userId },
+    });
+    expect(concurrentUser.updatedAt).toEqual(concurrentUser.createdAt);
+    expect(
+      created.changeBefore.getTime() - concurrentUser.createdAt.getTime(),
+    ).toBe(24 * 60 * 60_000);
+    expect(await prisma.user.count()).toBe(1);
+    expect(await prisma.membership.count()).toBe(1);
+    expect(await prisma.accessGrant.count()).toBe(
+      COMPATIBILITY_GRANT_CAPABILITIES.PUBLISHER.length,
+    );
     expect(await prisma.auditEvent.count()).toBe(2);
 
     const otherOrganization = await createOrganization("concurrent-conflict");

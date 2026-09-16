@@ -1,8 +1,99 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
 import type { FullConfig } from "@playwright/test";
 
 const apiBaseUrl =
   process.env.E2E_API_BASE_URL ?? "http://127.0.0.1:3000/api/v1";
+const loginBudgetWindowMs = 60_000;
+const loginBudgetWindowSafetyMs = 500;
+
+type E2ePrismaClient = {
+  organization: {
+    findUnique(input: {
+      where: { slug: string };
+      select: { id: true };
+    }): Promise<{ id: string } | null>;
+  };
+  mediaAsset: {
+    create(input: {
+      data: {
+        id: string;
+        organizationId: string;
+        name: string;
+        kind: "IMAGE";
+        mimeType: "image/png";
+        url: string;
+        storageKey: string;
+        checksumSha256: string;
+        sizeBytes: bigint;
+      };
+    }): Promise<unknown>;
+  };
+  $disconnect(): Promise<void>;
+};
+
+const apiRequire = createRequire(resolve("apps/api/package.json"));
+const { PrismaClient } = apiRequire("@prisma/client") as {
+  PrismaClient: new () => E2ePrismaClient;
+};
+
+async function provisionE2eMediaAsset() {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("The browser media fixture is restricted to NODE_ENV=test");
+  const organizationSlug = process.env.SEED_ORGANIZATION_SLUG?.trim();
+  const configuredOrigin =
+    process.env.MEDIA_ALLOWED_ORIGINS?.split(",")[0]?.trim();
+  if (!organizationSlug || !configuredOrigin)
+    throw new Error(
+      "SEED_ORGANIZATION_SLUG and MEDIA_ALLOWED_ORIGINS are required for the browser media fixture",
+    );
+  const allowedOrigin = new URL(configuredOrigin).origin;
+  if (allowedOrigin !== configuredOrigin)
+    throw new Error(
+      "The first MEDIA_ALLOWED_ORIGINS entry must be a canonical origin",
+    );
+
+  const prisma = new PrismaClient();
+  try {
+    const organization = await prisma.organization.findUnique({
+      where: { slug: organizationSlug },
+      select: { id: true },
+    });
+    if (!organization)
+      throw new Error(`E2E organization ${organizationSlug} was not seeded`);
+    const id = randomUUID();
+    const checksumSha256 = createHash("sha256")
+      .update(`screengoblin-maker-checker-e2e\0${id}`)
+      .digest("hex");
+    await prisma.mediaAsset.create({
+      data: {
+        id,
+        organizationId: organization.id,
+        name: `Maker-checker fixture ${id}`,
+        kind: "IMAGE",
+        mimeType: "image/png",
+        url: `${allowedOrigin}/e2e/maker-checker-${id}.png`,
+        storageKey: `organizations/${organization.id}/assets/${id}/${checksumSha256}`,
+        checksumSha256,
+        sizeBytes: 68n,
+      },
+    });
+    process.env.E2E_MAKER_CHECKER_ASSET_ID = id;
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+async function waitForFreshLoginBudgetWindow(firstLoginStartedAt: number) {
+  const remainingMs =
+    firstLoginStartedAt +
+    loginBudgetWindowMs +
+    loginBudgetWindowSafetyMs -
+    Date.now();
+  if (remainingMs > 0)
+    await new Promise<void>((resolve) => setTimeout(resolve, remainingMs));
+}
 
 function requiredOwnerCredentials() {
   const email = process.env.SEED_ADMIN_EMAIL?.trim();
@@ -141,10 +232,12 @@ async function rotateBootstrapPrincipal(principal: BootstrapPrincipal) {
 }
 
 export default async function globalSetup(_config: FullConfig) {
+  await provisionE2eMediaAsset();
   const owner = requiredOwnerCredentials();
   const replacementPassword = createHmac("sha256", owner.password)
     .update(`screengoblin-console-e2e\0${owner.email}\0${apiBaseUrl}`)
     .digest("base64url");
+  const firstLoginStartedAt = Date.now();
   const loginResponse = await fetch(`${apiBaseUrl}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -231,4 +324,5 @@ export default async function globalSetup(_config: FullConfig) {
 
   await rotateBootstrapPrincipal(requiredProvisionedPrincipal("E2E_PUBLISHER"));
   await rotateBootstrapPrincipal(requiredProvisionedPrincipal("E2E_ADMIN"));
+  await waitForFreshLoginBudgetWindow(firstLoginStartedAt);
 }

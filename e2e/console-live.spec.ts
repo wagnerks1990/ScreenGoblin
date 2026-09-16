@@ -39,6 +39,15 @@ function requiredEvidencePrincipal(prefix: "E2E_PUBLISHER" | "E2E_ADMIN") {
   return { email, password };
 }
 
+function requiredMakerCheckerAssetId() {
+  const assetId = process.env.E2E_MAKER_CHECKER_ASSET_ID?.trim();
+  if (!assetId)
+    throw new Error(
+      "The Console E2E bootstrap setup did not provide a maker-checker media asset",
+    );
+  return assetId;
+}
+
 async function clearBrowserSession(page: Page) {
   await page.goto("/dashboard");
   await page.evaluate(() => window.sessionStorage.clear());
@@ -418,6 +427,7 @@ test("distinct publisher and administrator principals complete an exact maker-ch
   const screenName = `Maker-checker screen ${evidenceSuffix}`;
   const playlistName = `Maker-checker playlist ${evidenceSuffix}`;
   const scheduleName = `Maker-checker release ${evidenceSuffix}`;
+  const assetId = requiredMakerCheckerAssetId();
 
   try {
     await loginAs(publisherPage, requiredEvidencePrincipal("E2E_PUBLISHER"));
@@ -451,8 +461,8 @@ test("distinct publisher and administrator principals complete an exact maker-ch
         headers: { Authorization: `Bearer ${publisher.token}` },
         data: {
           name: playlistName,
-          description: "Empty immutable playlist for maker-checker evidence",
-          items: [],
+          description: "Playable immutable playlist for maker-checker evidence",
+          items: [{ assetId, position: 0, durationSeconds: 15 }],
         },
       },
     );
@@ -481,11 +491,17 @@ test("distinct publisher and administrator principals complete an exact maker-ch
     await createDialog
       .getByRole("button", { name: "Freeze candidate" })
       .click();
-    await expect(
-      publisherPage.getByText(
-        "Draft candidate created. Review its frozen evidence before submission.",
-      ),
-    ).toBeVisible();
+    const creationStatus = publisherPage.getByText(
+      "Draft candidate created. Review its frozen evidence before submission.",
+    );
+    await expect
+      .poll(async () => {
+        const alert = createDialog.getByRole("alert");
+        if (await alert.isVisible())
+          return `creation failed: ${(await alert.textContent())?.trim()}`;
+        return (await creationStatus.isVisible()) ? "created" : "pending";
+      })
+      .toBe("created");
     const publisherEvidence = publisherPage.getByRole("dialog", {
       name: scheduleName,
     });

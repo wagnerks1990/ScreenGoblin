@@ -200,6 +200,7 @@ export const provisionMember = async (
               bootstrapPasswordExpiresAt: Date | null;
               disabledAt: Date | null;
               createdAt: Date;
+              updatedAt: Date;
             }>
           >`SELECT actor."id",
                actor."email",
@@ -208,7 +209,8 @@ export const provisionMember = async (
                actor."authenticationEpoch",
                actor."bootstrapPasswordExpiresAt",
                actor."disabledAt",
-               actor."createdAt"
+               actor."createdAt",
+               actor."updatedAt"
           FROM "User" actor
          WHERE LOWER(actor."email") = ${input.normalizedEmail}
          ORDER BY actor."id" ASC
@@ -275,6 +277,7 @@ export const provisionMember = async (
               existing.name === input.name &&
               existing.authenticationEpoch === 0 &&
               existing.disabledAt === null &&
+              datesEqual(existing.updatedAt, existing.createdAt) &&
               existing.bootstrapPasswordExpiresAt !== null &&
               existing.bootstrapPasswordExpiresAt > clock.databaseNow &&
               exactlyOneDayAfter(
@@ -301,7 +304,8 @@ export const provisionMember = async (
                   grant.creatorKind === "SYSTEM" &&
                   grant.createdByUserId === null &&
                   grant.createdBySystemKey === COMPATIBILITY_GRANT_SYSTEM_KEY &&
-                  datesEqual(grant.startsAt, grant.createdAt),
+                  datesEqual(grant.startsAt, existing.createdAt) &&
+                  datesEqual(grant.createdAt, existing.createdAt),
               ) &&
               audits.length === 2 &&
               provisionAudit !== undefined &&
@@ -342,6 +346,8 @@ export const provisionMember = async (
               name: input.name,
               passwordHash,
               bootstrapPasswordExpiresAt: clock.bootstrapDeadline,
+              createdAt: clock.databaseNow,
+              updatedAt: clock.databaseNow,
               memberships: {
                 create: { organizationId: organization.id, role: input.role },
               },
@@ -375,6 +381,8 @@ export const provisionMember = async (
               scopeType: "ORGANIZATION",
               creatorKind: "SYSTEM",
               createdBySystemKey: COMPATIBILITY_GRANT_SYSTEM_KEY,
+              startsAt: clock.databaseNow,
+              createdAt: clock.databaseNow,
             })),
           });
           await tx.auditEvent.createMany({
@@ -386,6 +394,7 @@ export const provisionMember = async (
                 entityType: "membership",
                 entityId: membership.id,
                 metadata: provisionMetadata(input, grantCapabilities.length),
+                createdAt: clock.databaseNow,
               },
               {
                 organizationId: organization.id,
@@ -394,6 +403,7 @@ export const provisionMember = async (
                 entityType: "user",
                 entityId: created.id,
                 metadata: containmentMetadata(),
+                createdAt: clock.databaseNow,
               },
             ],
           });
