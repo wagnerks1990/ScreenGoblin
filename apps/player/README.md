@@ -29,6 +29,13 @@ Offline-first signage runtime for Android TV, HDMI dongles, Chromium kiosks, and
   on the legacy verifier only in non-production builds where emergency support
   is explicitly enabled.
 - Web media is disabled in the metadata-only pilot.
+- A newly activated credential sends its first online heartbeat immediately;
+  ordinary process starts spread their first attempt uniformly across the saved
+  cadence. The Player then uses one recursive, single-flight timer. Each accepted server interval is an integer
+  from 5 seconds through one day and receives bounded cadence jitter of up to
+  plus or minus 10%. Reconnect, visibility, and page-resume signals coalesce
+  into one catch-up distributed uniformly across the current interval without
+  postponing an earlier healthy send.
 
 The current API/player integration supports codes bound to a precreated tenant
 screen and the current issuing administrator's identity epochs,
@@ -121,6 +128,14 @@ Deterministic clock-jump tests cover local forward and backward corrections for
 signed playback deadlines. They do not provide a trusted time source, prove
 behavior across device sleep/firmware combinations, or close the physical-device
 clock-drift gate.
+
+Heartbeat retries use bounded exponential backoff for retryable failures and
+honor a valid `Retry-After` as a floor. A non-retryable protocol failure keeps
+the current cadence instead of adopting untrusted response data. Every
+attempt samples current telemetry and obtains a fresh one-use proof; no failed
+heartbeat body or proof is replayed. Automated host tests cover timer,
+lifecycle, and retry behavior, but representative Android suspend/resume and
+network-transition evidence remains an open fleet gate.
 
 Initial enrollment and manual targeted re-enrollment both stage the proved key
 for current OWNER/ADMIN exact-fingerprint activation before it can authenticate.

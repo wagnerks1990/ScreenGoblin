@@ -4,6 +4,17 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Make Player heartbeat scheduling fleet-safe with an immediate first send for
+  a newly activated credential, phase-spread process restarts, one recursive
+  single-flight timeout, strict 5-second-to-one-day server
+  cadence acceptance, bounded plus-or-minus-10% cadence jitter, and coalesced
+  reconnect/visibility/page-resume catch-up uniformly within the current
+  interval without postponing an earlier healthy send. Retryable failures use bounded exponential backoff with
+  `Retry-After` as a floor; non-retryable protocol failures retain the current
+  cadence. Every attempt rebuilds current telemetry and obtains fresh one-use
+  proof instead of replaying a heartbeat. Representative Android
+  suspend/resume evidence remains an open pre-production fleet gate.
+
 - Separate the protected PostgreSQL migration/schema owner from the non-owning
   API runtime identity. Reconcile runtime role attributes and exact object/default
   privileges after migrations; run the API, bootstrap seed, and offline recovery

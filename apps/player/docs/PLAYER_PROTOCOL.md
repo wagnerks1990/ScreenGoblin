@@ -90,7 +90,37 @@ The protected call echoes the opaque challenge and sends these headers:
 `X-Device-Challenge-Id`, `X-Device-Challenge`, `X-Device-Key-Id`,
 `X-Device-Signature-Format: ES256-DER`, and `X-Device-Signature`. Manifest POST
 retries obtain a fresh challenge and signature for every attempt. Heartbeats
-are never automatically replayed.
+are never automatically replayed: every scheduled or retry attempt samples
+fresh telemetry, creates fresh canonical bytes, and obtains a new one-use
+challenge and signature.
+
+A newly activated credential sends its first online heartbeat immediately.
+Ordinary process startup distributes its first attempt uniformly across the
+saved cadence. After a strict
+response containing exactly `accepted: true`, a canonical ISO server time, and
+an integer `nextHeartbeatSeconds` from `5` through `86400`, it schedules the
+next attempt from that accepted cadence with bounded jitter of up to plus or
+minus 10% (and never beyond the one-day bound). Scheduling uses one recursive
+timeout and permits at most one request in flight; it does not use an interval
+that can accumulate requests. Invalid or additional response fields are a
+non-retryable protocol failure and cannot replace the current cadence.
+
+While offline or hidden, future heartbeat work is suspended. Online, visible,
+and `pageshow` wakeups coalesce into one catch-up attempt distributed uniformly
+from now through the current interval, including when a wakeup arrives during
+an in-flight request. A wakeup may pull a healthy timer earlier but never
+postpones it. Retryable transport and HTTP failures use bounded exponential
+backoff with jitter. A valid `Retry-After` is an uncapped minimum delay and is
+preserved across lifecycle/network wakeups. Long floors are scheduled in safe
+timer chunks. Non-retryable
+failures return to the jittered current cadence. Stopping the scheduler cancels
+its timer and aborts its in-flight request. Host tests do not yet establish
+behavior across representative Android hardware suspend, resume, and network
+transitions; that evidence remains required before fleet rollout.
+
+Playback telemetry binds `nowPlayingAssetId` to the same manifest version sent
+in that heartbeat. A 401 blanks playback immediately but does not expose the
+pairing UI until credential and cached-media cleanup completes successfully.
 
 Browser bearer authentication exists only for local development. It requires
 the explicit build-time `VITE_DEVICE_AUTH_DEVELOPMENT_BEARER=true` flag and an

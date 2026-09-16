@@ -86,6 +86,18 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
   invokes bounded single-shot recovery for silent stalls or render failures.
   Heartbeat uptime uses monotonic elapsed time and must not depend on wall-clock
   corrections.
+- A newly activated credential sends its first online heartbeat immediately;
+  ordinary process startup is phase-spread uniformly across the saved cadence.
+  Heartbeats then use one recursive single-flight timeout. Accept only an exact response with `accepted: true`, a
+  canonical server time, and an integer interval from 5 through 86400 seconds.
+  Apply bounded cadence jitter of up to plus or minus 10%; coalesce reconnect,
+  visible, and `pageshow` wakeups into one catch-up uniformly within the current
+  interval without postponing an earlier healthy timer. Retry retryable failures
+  with bounded exponential backoff and treat the complete `Retry-After` as a
+  floor; non-retryable protocol failures retain the current
+  cadence. Build fresh telemetry and fresh one-use proof for every attempt;
+  never replay a heartbeat. Host tests do not close the representative Android
+  suspend/resume evidence gate.
 - The production Player build injects exact shell assets into a content-derived
   service-worker cache. API requests and verified manifest media never enter or
   read that shell namespace, and activation prunes shell generations only.

@@ -259,7 +259,7 @@ credential.
 
 ## Observe
 
-Monitor API readiness and latency, HTTP 5xx/429 rates, failed logins, pairing failures, database/storage capacity, backup freshness, manifest build failures, offline/fallback screen counts, stale heartbeats, and command acknowledgement latency. Route emergency activation and authorization anomalies to a staffed channel.
+Monitor API readiness and latency, HTTP 5xx/429 rates, failed logins, pairing failures, database/storage capacity, backup freshness, manifest build failures, offline/fallback screen counts, stale heartbeats, and command acknowledgement latency. Distinguish sustained heartbeat loss from the expected bounded cadence jitter, uniformly distributed lifecycle catch-up, and retry backoff. Route emergency activation and authorization anomalies to a staffed channel.
 
 Failed-login rows are tenant-neutral and contain only opaque HMAC account/source
 keys, reason, and server time. They intentionally contain no raw email,
@@ -423,8 +423,15 @@ cache errors, or heartbeat loss exceeds the agreed threshold. Before fleet use,
 capture representative physical-device evidence for low-space/full-disk
 behavior, process death and power loss during streaming and atomic publication,
 reboot recovery, completed-orphan pruning, abandoned-staging cleanup, and
-telemetry accuracy. Host tests and a successful APK build do not close these
-gates.
+telemetry accuracy. Also exercise Android suspend/resume, background and visible
+transitions, `pageshow`, offline/online changes, and reconnect bursts. Verify
+that a newly activated credential sends immediately while ordinary process
+restarts phase-spread their first attempt; later sends remain single-flight;
+wakeups coalesce into one catch-up within the current interval without
+postponing a healthy send or bypassing cooldown; retryable failures back off
+and honor the full `Retry-After`; and every attempt carries fresh
+telemetry and proof. Host tests and a successful APK build do not close these
+gates; the suspend/resume evidence is still open.
 
 The release-evidence workflow retains checksum-bound local Docker archives for tags/manual runs, but those artifacts are explicitly unsigned and are not production releases. A production rollback must use an approved, signed, immutable registry digest whose schema compatibility and retention have been verified. See `docs/RELEASE_EVIDENCE.md`.
 

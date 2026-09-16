@@ -15,6 +15,7 @@ import {
   networkType,
 } from "./core/device";
 import { ManifestManager, manifestPlaybackEndsAt } from "./core/manifest";
+import { HeartbeatScheduler } from "./core/heartbeat-scheduler";
 import { watchSignedDeadline } from "./core/signed-deadline";
 import { createMonotonicUptime } from "./core/uptime";
 import { SingleFlight } from "./core/single-flight";
@@ -40,8 +41,12 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [fallback, setFallback] = useState(false);
   const [fatal, setFatal] = useState<string>();
-  const playingRef = useRef<string | undefined>(undefined);
+  const [deprovisioning, setDeprovisioning] = useState(false);
+  const playingRef = useRef<
+    { manifestVersion: string; assetId: string } | undefined
+  >(undefined);
   const activeManifestVersionRef = useRef<string | undefined>(undefined);
+  const heartbeatImmediateRef = useRef(false);
   const manifestSyncRef = useRef(new SingleFlight());
   const deprovisionRef = useRef<Promise<void> | undefined>(undefined);
   const credentialEpochRef = useRef(0);
@@ -53,6 +58,13 @@ export default function App() {
         : undefined,
     [credentials],
   );
+  const heartbeatContextRef = useRef({
+    api,
+    credentials,
+    manifest,
+    fallback,
+  });
+  heartbeatContextRef.current = { api, credentials, manifest, fallback };
 
   useEffect(() => {
     Promise.all([
@@ -146,6 +158,7 @@ export default function App() {
   const deprovision = useCallback(async () => {
     if (!deprovisionRef.current) {
       credentialEpochRef.current += 1;
+      setDeprovisioning(true);
       deprovisionRef.current = (async () => {
         manager.cancelPendingStages();
         playingRef.current = undefined;
@@ -155,8 +168,11 @@ export default function App() {
         setFatal(undefined);
         try {
           await Promise.all([store.clear(), assetRepository.removeAll()]);
+          deprovisionRef.current = undefined;
         } catch {
           setFatal("Revoked device data could not be securely cleared");
+        } finally {
+          setDeprovisioning(false);
         }
       })();
     }
@@ -271,37 +287,66 @@ export default function App() {
 
   useEffect(() => {
     if (!api || !credentials) return;
-    const send = async () => {
-      if (!navigator.onLine) return;
-      try {
+    const scheduler = new HeartbeatScheduler({
+      send: async (signal) => {
+        const current = heartbeatContextRef.current;
+        if (!current.api || !current.credentials)
+          throw new DOMException("Heartbeat owner changed", "AbortError");
         const heartbeat: Heartbeat = {
-          installationId: credentials.installationId,
+          installationId: current.credentials.installationId,
           playerVersion: __APP_VERSION__,
           uptimeSeconds: uptimeSeconds(),
           freeStorageBytes: await freeStorageBytes(),
           networkType: networkType(),
           occurredAt: new Date().toISOString(),
-          state: manifest ? (fallback ? "fallback" : "playing") : "pairing",
-          ...(manifest ? { manifestVersion: manifest.version } : {}),
-          ...(playingRef.current
-            ? { nowPlayingAssetId: playingRef.current }
+          state: current.manifest
+            ? current.fallback
+              ? "fallback"
+              : "playing"
+            : "pairing",
+          ...(current.manifest
+            ? { manifestVersion: current.manifest.version }
+            : {}),
+          ...(playingRef.current &&
+          playingRef.current.manifestVersion === current.manifest?.version
+            ? { nowPlayingAssetId: playingRef.current.assetId }
             : {}),
         };
-        await api.heartbeat(heartbeat);
-      } catch (reason) {
+        return current.api.heartbeat(heartbeat, { signal });
+      },
+      onError: async (reason) => {
         if (reason instanceof PlayerApiFailure && reason.status === 401)
           await deprovision();
-      }
+      },
+      initialIntervalSeconds: credentials.heartbeatIntervalSeconds,
+    });
+    const connected = () => {
+      if (!document.hidden) scheduler.resume();
     };
-    void send();
-    const timer = window.setInterval(
-      send,
-      credentials.heartbeatIntervalSeconds * 1_000,
-    );
-    return () => clearInterval(timer);
-  }, [api, credentials, deprovision, fallback, manifest]);
+    const disconnected = () => scheduler.suspend();
+    const lifecycleChanged = () => {
+      if (navigator.onLine && !document.hidden) scheduler.resume();
+      else scheduler.suspend();
+    };
+    window.addEventListener("online", connected);
+    window.addEventListener("offline", disconnected);
+    window.addEventListener("pageshow", lifecycleChanged);
+    document.addEventListener("visibilitychange", lifecycleChanged);
+    const immediate = heartbeatImmediateRef.current;
+    heartbeatImmediateRef.current = false;
+    scheduler.start(navigator.onLine && !document.hidden, immediate);
+    return () => {
+      scheduler.stop();
+      window.removeEventListener("online", connected);
+      window.removeEventListener("offline", disconnected);
+      window.removeEventListener("pageshow", lifecycleChanged);
+      document.removeEventListener("visibilitychange", lifecycleChanged);
+    };
+  }, [api, credentials, deprovision]);
 
   const paired = useCallback(async (value: Credentials) => {
+    if (deprovisionRef.current)
+      throw new Error("Revoked device cleanup is still in progress");
     await store.completePairing(value);
     if (value.authMode === "proof-v1") {
       try {
@@ -316,6 +361,7 @@ export default function App() {
     }
     credentialEpochRef.current += 1;
     deprovisionRef.current = undefined;
+    heartbeatImmediateRef.current = true;
     setPendingPairing(undefined);
     setCredentials(value);
   }, []);
@@ -353,7 +399,8 @@ export default function App() {
     }
   }, [credentials, manifest]);
   const nowPlaying = useCallback((id: string) => {
-    playingRef.current = id;
+    const manifestVersion = activeManifestVersionRef.current;
+    if (manifestVersion) playingRef.current = { manifestVersion, assetId: id };
   }, []);
 
   if (!ready)
@@ -361,6 +408,13 @@ export default function App() {
       <div className="boot">
         <img src="/brand/mascot.png" alt="" />
         <p>Starting player…</p>
+      </div>
+    );
+  if (deprovisioning)
+    return (
+      <div className="boot">
+        <img src="/brand/mascot.png" alt="" />
+        <p>Clearing revoked device data…</p>
       </div>
     );
   if (fatal && !manifest)
