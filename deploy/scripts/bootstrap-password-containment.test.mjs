@@ -71,21 +71,17 @@ test("Compose can interpolate without retained bootstrap secrets while explicit 
     assert.ok(!compose.includes(`\${${name}:?`));
   }
 
-  const seedEnvironment = { ...process.env };
-  for (const name of [
-    "SEED_ADMIN_EMAIL",
-    "SEED_ADMIN_PASSWORD",
-    "SEED_ADMIN_NAME",
-    "SEED_ORGANIZATION_NAME",
-    "SEED_ORGANIZATION_SLUG",
-  ])
-    delete seedEnvironment[name];
   const result = spawnSync(
     process.execPath,
-    ["--import", "tsx", fileURLToPath(seedUrl)],
+    [
+      "--import",
+      "tsx",
+      "--eval",
+      `import(${JSON.stringify(seedPasswordUrl.href)}).then(({ readSeedEnvironment }) => readSeedEnvironment({}))`,
+    ],
     {
       cwd: fileURLToPath(root),
-      env: seedEnvironment,
+      env: process.env,
       encoding: "utf8",
       timeout: 10_000,
     },
@@ -134,10 +130,15 @@ test("seed containment is atomic, database-clock-bound, and idempotent", async (
     readFile(seedUrl, "utf8"),
     readFile(seedPasswordUrl, "utf8"),
   ]);
-  assert.match(seed, /validateSeedPassword\(password\)/);
+  assert.match(seed, /readSeedEnvironment\(\)/);
   assert.ok(
-    seed.indexOf("validateSeedPassword(password)") <
-      seed.indexOf("hash(password, 12)"),
+    seed.indexOf("readSeedEnvironment()") < seed.indexOf("hash(password, 12)"),
+  );
+  assert.match(seedPassword, /validateSeedPassword\(password\)/);
+  assert.ok(
+    seedPassword.indexOf(
+      'requiredSeedValue(environment, "SEED_ADMIN_PASSWORD")',
+    ) < seedPassword.indexOf("validateSeedPassword(password)"),
   );
   assert.match(seedPassword, /\[\.\.\.password\]\.length/);
   assert.match(seedPassword, /Buffer\.byteLength\(password, "utf8"\)/);

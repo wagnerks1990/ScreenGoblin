@@ -8,21 +8,16 @@ import {
 } from "../src/authorization/compatibility.js";
 import {
   decideExistingBootstrapContainment,
-  validateSeedPassword,
+  readSeedEnvironment,
 } from "./seed-password.js";
 const prisma = new PrismaClient();
-const required = (name: string) => {
-  const value = process.env[name]?.trim();
-  if (!value || /^replace-with-/i.test(value))
-    throw new Error(`${name} is required and may not be a placeholder`);
-  return value;
-};
-const email = required("SEED_ADMIN_EMAIL").toLowerCase();
-const password = required("SEED_ADMIN_PASSWORD");
-const organizationName = required("SEED_ORGANIZATION_NAME");
-const organizationSlug = required("SEED_ORGANIZATION_SLUG");
-const administratorName = required("SEED_ADMIN_NAME");
-validateSeedPassword(password);
+const {
+  email,
+  password,
+  organizationName,
+  organizationSlug,
+  administratorName,
+} = readSeedEnvironment();
 const passwordHash = await hash(password, 12);
 const bootstrapAuditAction = "auth.bootstrap_password_containment_enabled";
 const bootstrapSeedLockIdentity = `ScreenGoblin bootstrap seed identity v1\n${email.length}:${email}`;
