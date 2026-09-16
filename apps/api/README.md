@@ -17,6 +17,13 @@ npm run dev -w @screengoblin/api
 
 The API listens on port `3000` by default. Generate independent JWT and pairing secrets, a random manifest-signing seed, and a unique seeded password before exposing the service. Production startup rejects documented placeholders, checked-in test secrets, and the all-zero signing seed used by automated tests. `/health/live` returns an empty `204` when the process is alive. The internal-only `/health/ready` returns an empty `204` only when PostgreSQL and the production Redis request-protection backend are reachable; failures return an empty `503` without identifying the failed dependency.
 
+`CORS_ORIGINS` is a bounded comma-separated list of exact origins. Production
+accepts canonical non-local HTTPS origins plus the exact native Player origins
+`https://localhost` and `capacitor://localhost`; wildcard, opaque `null`,
+credentialed, path-bearing, insecure network, and arbitrary custom-scheme
+entries stop startup. CORS limits browser reads and is not an authorization
+boundary.
+
 `PUBLIC_API_URL` is the external control-plane origin returned during device
 pairing. Production accepts only a credential-free HTTPS origin with no path,
 query, or fragment, and normalizes its host/default port before constructing

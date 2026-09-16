@@ -102,6 +102,13 @@ targeted automated and manual tests. Runner-local certificates and networking
 also do not evidence production DNS, TLS, firewall, WAF, rate-limit, or
 monitoring behavior.
 
+Production CORS configuration is parsed as a bounded exact-origin list before
+startup. Wildcard and opaque `null` origins, credentialed or path-bearing URLs,
+insecure network origins, local/private hosts, and arbitrary custom schemes are
+rejected. The packaged Player retains only the exact `https://localhost` and
+`capacitor://localhost` exceptions. This constrains browser response access; it
+does not replace bearer authentication, capability checks, or tenant scoping.
+
 User access tokens expire after one hour and carry a random per-login
 session identity whose SHA-256 hash is stored. Every authenticated user request
 checks that exact session's expiry and revocation together with live user,

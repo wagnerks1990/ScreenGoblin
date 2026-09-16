@@ -38,10 +38,9 @@ const app = await buildApp({
   mediaDeliverySecret: config.MEDIA_DELIVERY_SECRET,
   mediaObjectStore,
   deviceAuthMode: config.DEVICE_AUTH_MODE,
+  environment: config.NODE_ENV,
   emergencyPublishingEnabled: config.EMERGENCY_FEATURE_ENABLED,
-  corsOrigins: config.CORS_ORIGINS.split(",")
-    .map((x) => x.trim())
-    .filter(Boolean),
+  corsOrigins: config.corsOrigins,
   mediaAllowedOrigins: parseMediaAllowedOrigins(
     config.MEDIA_ALLOWED_ORIGINS,
     config.NODE_ENV,
