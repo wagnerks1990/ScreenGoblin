@@ -174,13 +174,18 @@ jobs:
           fi
           test -n "$analyzer"
           mkdir -p android-release-surface
-          "$analyzer" manifest print \
-            app/build/outputs/apk/release/app-release-unsigned.apk \
-            > android-release-surface/AndroidManifest.xml
           node ../../../deploy/scripts/validate-android-release-surface.mjs \
-            android-release-surface/AndroidManifest.xml \
+            "$analyzer" \
             app/build/outputs/apk/release/app-release-unsigned.apk \
+            android-release-surface/AndroidManifest.xml \
             android-release-surface/report.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && hashFiles('apps/player/android/android-release-surface/AndroidManifest.xml') != ''
+        with:
+          name: player-release-surface-diagnostic-${{ github.sha }}
+          path: apps/player/android/android-release-surface/AndroidManifest.xml
+          if-no-files-found: error
+          retention-days: 1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: player-debug-apk

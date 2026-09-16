@@ -226,14 +226,18 @@ ZAP, hashes unknown finding paths, and hard-limits scanner state to a 256 MiB
 tmpfs. This does not cover authenticated or capability-authorized behavior, production
 networking/TLS, runtime monitoring, or manual penetration testing.
 
-The Android CI gate extracts the manifest from the assembled release APK with
-SDK `apkanalyzer` and enforces an exact packaged-surface policy: package and SDK
-bounds, two permissions, two optional features, fail-closed application flags,
-one exported launcher activity, and one enabled non-exported boot receiver. It
-rejects package queries, instrumentation, libraries, aliases, services,
-providers, shared-user configuration, and network-security overrides, then
-records a schema-versioned JSON summary and packaged-manifest SHA-256. The
-summary also records the exact inspected APK's SHA-256. Treat this only as
+The Android CI validator invokes SDK `apkanalyzer` itself to extract the
+manifest from the assembled release APK and enforces an exact packaged-surface
+policy: package and SDK bounds; INTERNET, boot, and the package-scoped signature
+permission; two optional features; fail-closed application flags; one exported
+launcher; one enabled non-exported boot receiver; and one non-exported AndroidX
+Startup provider containing only ProcessLifecycle and EmojiCompat initializers.
+Source merge rules remove the ProfileInstaller initializer/receiver and DUMP
+permission. The gate rejects every other permission, initializer, or component
+surface and records a schema-versioned JSON summary with analyzer version plus
+the exact APK and packaged-manifest SHA-256 values. Successful unsigned evidence
+is retained for seven days; a validation failure may retain only the extracted
+manifest for one day under the diagnostic artifact name. Treat this only as
 static manifest evidence. Never describe it as APK signing or
 provenance, OWASP MASVS compliance, runtime analysis, or physical-device
 validation.

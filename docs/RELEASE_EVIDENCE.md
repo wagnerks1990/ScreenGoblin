@@ -125,27 +125,39 @@ and Android test-platform configurations.
 Lock updates must be explicit, reviewed together with verification-metadata
 changes, and exercised through the complete Android CI task graph.
 
-The Android job also uses SDK `apkanalyzer manifest print` on the assembled
-release APK and validates that packaged output against an exact release-surface
-policy. The package must be `com.screengoblin.player` with minimum SDK 23 and
-target SDK 35. Its only permissions are `INTERNET` and
-`RECEIVE_BOOT_COMPLETED`; leanback and touchscreen are its exact optional
-features. Backup and cleartext traffic are explicitly disabled, while
+The Android release-surface validator invokes SDK `apkanalyzer manifest print`
+itself on the assembled release APK and validates that packaged output against
+an exact policy. The package must be `com.screengoblin.player` with minimum SDK
+23 and target SDK 35. It uses `INTERNET`, `RECEIVE_BOOT_COMPLETED`, and the exact
+package-derived `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which the manifest
+also declares with signature protection. Leanback and touchscreen are the exact
+optional features. Backup and cleartext traffic are explicitly disabled, while
 debuggable, test-only, and legacy external storage are absent or false. Shared
 user IDs, package queries, instrumentation, uses-library declarations, network
-security overrides, activity aliases, services, and providers are forbidden.
+security overrides, activity aliases, and services are forbidden.
+
 The sole exported component is `MainActivity` with exactly the MAIN, LAUNCHER,
-and LEANBACK_LAUNCHER intent surface; the only other component is the enabled,
-non-exported `BootReceiver` restricted to `BOOT_COMPLETED`.
+and LEANBACK_LAUNCHER intent surface. The enabled `BootReceiver` is non-exported
+and restricted to `BOOT_COMPLETED`. The only provider is the non-exported
+`androidx.startup.InitializationProvider` under the package-derived authority;
+it contains exactly the ProcessLifecycle and EmojiCompat initializers. Source
+manifest merge rules remove the ProfileInstaller initializer and receiver plus
+its DUMP permission, and the final packaged policy rejects their return.
 
 The validator emits a schema-versioned JSON summary containing the package and
 SDK values, sorted permissions and features, exported and non-exported
 component lists, SHA-256 of the textual packaged manifest, and SHA-256 of the
-exact unsigned APK from which it was extracted.
+exact unsigned APK from which it was extracted. It also records the analyzer
+version returned by the same executable that performed extraction.
 CI retains that summary, the extracted manifest, and the unsigned release APK
 for seven days as `player-release-surface-<commit>`. The artifact is temporary
 engineering evidence and must not be distributed or represented as a signed
 release.
+
+If validation fails after manifest extraction, CI retains only that manifest
+for one day as `player-release-surface-diagnostic-<commit>`. This deliberately
+short-lived failure diagnostic is not a successful policy report and must not
+be treated as release evidence.
 
 This is static evidence about one assembled APK's declared manifest surface. It
 does not sign the APK, retain a production signing certificate, establish

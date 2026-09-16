@@ -13,7 +13,7 @@
 | API image digest                                            | TBD            |
 | Console image digest                                        | TBD            |
 | Player image/APK digest and signing certificate fingerprint | TBD            |
-| Packaged manifest report and APK/manifest hashes            | TBD            |
+| Packaged report, analyzer, and APK/manifest hashes          | TBD            |
 | SBOM/provenance/signature references                        | TBD            |
 | Database migration range and compatibility                  | TBD            |
 | Environment, tenant, sites, and device ring                 | TBD            |

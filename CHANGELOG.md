@@ -7,9 +7,13 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 - Validate the manifest packaged inside the assembled Android release APK
   against a fail-closed exact policy for package/SDK identity, permissions,
   optional features, application security flags, and exported/non-exported
-  components. Retain a schema-versioned summary recording the inspected APK and
-  packaged-manifest SHA-256 values. This static release-surface evidence does
-  not provide APK signing or provenance, OWASP MASVS compliance, runtime
+  components. Allow only the package-derived AndroidX signature permission and
+  non-exported Startup provider with lifecycle and emoji initializers; remove
+  the ProfileInstaller initializer/receiver and DUMP permission from the final
+  package. Retain a schema-versioned summary recording analyzer version plus the
+  inspected APK and packaged-manifest SHA-256 values, with a one-day
+  manifest-only diagnostic on failure. This static release-surface evidence
+  does not provide APK signing or provenance, OWASP MASVS compliance, runtime
   analysis, or physical-device validation; those release gates remain open.
 
 - Make Player heartbeat scheduling fleet-safe with an immediate first send for

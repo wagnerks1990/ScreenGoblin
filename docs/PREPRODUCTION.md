@@ -59,9 +59,13 @@ An unchecked item is a known gap, not an implicit approval.
       CI now inspects the manifest packaged inside the assembled Android release
       APK and rejects drift from the exact package, SDK, permission, optional
       feature, application-flag, launcher-activity, and boot-receiver policy. It
-      also rejects unexpected package visibility, instrumentation, libraries,
-      aliases, services, and providers. The JSON report records both APK and
-      packaged-manifest SHA-256 values, but remains static package-surface
+      permits only the package-scoped signature permission and non-exported
+      AndroidX Startup provider required by the packaged dependencies, with
+      exactly the lifecycle and emoji initializers; ProfileInstaller and DUMP
+      surfaces are removed. It rejects other package visibility,
+      instrumentation, libraries, aliases, services, providers, permissions,
+      and initializers. The JSON report records the analyzer version plus APK
+      and packaged-manifest SHA-256 values, but remains static package-surface
       evidence only; it is not an APK signature,
       provenance, an OWASP MASVS assessment, malware analysis, or
       physical-device evidence, so this gate remains unchecked.

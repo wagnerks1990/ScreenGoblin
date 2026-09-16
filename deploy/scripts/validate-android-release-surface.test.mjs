@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   createAndroidReleaseSurfaceReport,
+  extractAndroidReleaseManifest,
   validateAndroidReleaseManifest,
 } from "./validate-android-release-surface.mjs";
 
@@ -22,10 +25,14 @@ test("accepts the exact packaged Android release surface", () => {
     permissions: [
       "android.permission.INTERNET",
       "android.permission.RECEIVE_BOOT_COMPLETED",
+      "com.screengoblin.player.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
     ],
     features: ["android.hardware.touchscreen", "android.software.leanback"],
     exportedComponents: ["com.screengoblin.player.MainActivity"],
-    nonExportedComponents: ["com.screengoblin.player.BootReceiver"],
+    nonExportedComponents: [
+      "com.screengoblin.player.BootReceiver",
+      "androidx.startup.InitializationProvider",
+    ],
     manifestSha256: createHash("sha256").update(fixture).digest("hex"),
   });
 });
@@ -35,10 +42,39 @@ test("binds the policy report to the inspected APK bytes", () => {
   assert.deepEqual(createAndroidReleaseSurfaceReport(fixture, apkBytes), {
     ...validateAndroidReleaseManifest(fixture),
     apkSha256: createHash("sha256").update(apkBytes).digest("hex"),
+    analyzerVersion: "test",
   });
   assert.throws(() =>
     createAndroidReleaseSurfaceReport(fixture, Buffer.alloc(0)),
   );
+});
+
+test("extracts the exact manifest from the inspected APK", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "screengoblin-apkanalyzer-"));
+  const analyzer = join(directory, "apkanalyzer");
+  const apk = join(directory, "release.apk");
+  try {
+    await writeFile(
+      analyzer,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\\n' 'apkanalyzer fixture-1'
+elif [ "$1" = "manifest" ] && [ "$2" = "print" ] && [ "$3" = "${apk}" ]; then
+  cat '${fixtureUrl.pathname}'
+else
+  exit 64
+fi
+`,
+    );
+    await chmod(analyzer, 0o700);
+    await writeFile(apk, "fixture APK bytes");
+    assert.deepEqual(extractAndroidReleaseManifest(analyzer, apk), {
+      analyzerVersion: "apkanalyzer fixture-1",
+      xml: fixture,
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 const mutations = [
@@ -50,11 +86,18 @@ const mutations = [
   [
     "debuggable",
     (xml) =>
-      xml.replace('android:debuggable="false"', 'android:debuggable="true"'),
+      xml.replace(
+        'android:allowBackup="false"',
+        'android:allowBackup="false" android:debuggable="true"',
+      ),
   ],
   [
     "test-only",
-    (xml) => xml.replace('android:testOnly="false"', 'android:testOnly="true"'),
+    (xml) =>
+      xml.replace(
+        'android:allowBackup="false"',
+        'android:allowBackup="false" android:testOnly="true"',
+      ),
   ],
   [
     "cleartext",
@@ -70,6 +113,123 @@ const mutations = [
       xml.replace(
         '<uses-permission android:name="android.permission.INTERNET" />',
         '<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.CAMERA" />',
+      ),
+  ],
+  [
+    "permission max SDK",
+    (xml) =>
+      xml.replace(
+        '<uses-permission android:name="android.permission.INTERNET" />',
+        '<uses-permission android:name="android.permission.INTERNET" android:maxSdkVersion="34" />',
+      ),
+  ],
+  [
+    "uses-sdk max SDK",
+    (xml) =>
+      xml.replace(
+        'android:targetSdkVersion="35"',
+        'android:targetSdkVersion="35" android:maxSdkVersion="35"',
+      ),
+  ],
+  [
+    "disabled application",
+    (xml) =>
+      xml.replace(
+        'android:allowBackup="false"',
+        'android:allowBackup="false" android:enabled="false"',
+      ),
+  ],
+  [
+    "permission-guarded application",
+    (xml) =>
+      xml.replace(
+        'android:allowBackup="false"',
+        'android:allowBackup="false" android:permission="android.permission.INTERNET"',
+      ),
+  ],
+  [
+    "backup agent",
+    (xml) =>
+      xml.replace(
+        'android:allowBackup="false"',
+        'android:allowBackup="false" android:backupAgent="example.BackupAgent"',
+      ),
+  ],
+  [
+    "full backup content",
+    (xml) =>
+      xml.replace(
+        'android:allowBackup="false"',
+        'android:allowBackup="false" android:fullBackupContent="@xml/backup_rules"',
+      ),
+  ],
+  [
+    "data extraction rules",
+    (xml) =>
+      xml.replace(
+        'android:allowBackup="false"',
+        'android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules"',
+      ),
+  ],
+  [
+    "enabled launcher activity",
+    (xml) =>
+      xml.replace(
+        'android:name="com.screengoblin.player.MainActivity"',
+        'android:name="com.screengoblin.player.MainActivity" android:enabled="true"',
+      ),
+  ],
+  [
+    "permission-guarded launcher activity",
+    (xml) =>
+      xml.replace(
+        'android:name="com.screengoblin.player.MainActivity"',
+        'android:name="com.screengoblin.player.MainActivity" android:permission="android.permission.INTERNET"',
+      ),
+  ],
+  [
+    "separate launcher process",
+    (xml) =>
+      xml.replace(
+        'android:name="com.screengoblin.player.MainActivity"',
+        'android:name="com.screengoblin.player.MainActivity" android:process=":remote"',
+      ),
+  ],
+  [
+    "direct-boot-aware receiver",
+    (xml) =>
+      xml.replace(
+        'android:name="com.screengoblin.player.BootReceiver"',
+        'android:name="com.screengoblin.player.BootReceiver" android:directBootAware="true"',
+      ),
+  ],
+  [
+    "permission-guarded receiver",
+    (xml) =>
+      xml.replace(
+        'android:name="com.screengoblin.player.BootReceiver"',
+        'android:name="com.screengoblin.player.BootReceiver" android:permission="android.permission.INTERNET"',
+      ),
+  ],
+  [
+    "separate receiver process",
+    (xml) =>
+      xml.replace(
+        'android:name="com.screengoblin.player.BootReceiver"',
+        'android:name="com.screengoblin.player.BootReceiver" android:process=":receiver"',
+      ),
+  ],
+  [
+    "intent filter priority",
+    (xml) =>
+      xml.replace("<intent-filter>", '<intent-filter android:priority="1">'),
+  ],
+  [
+    "intent action attribute",
+    (xml) =>
+      xml.replace(
+        '<action android:name="android.intent.action.MAIN" />',
+        '<action android:name="android.intent.action.MAIN" android:priority="1" />',
       ),
   ],
   [
@@ -161,19 +321,16 @@ test("CI validates and retains the exact release APK evidence", async () => {
     ),
   ]);
   const build = workflow.indexOf("assembleDebug assembleRelease");
-  const extract = workflow.indexOf('"$analyzer" manifest print');
   const validate = workflow.indexOf(
     "node ../../../deploy/scripts/validate-android-release-surface.mjs",
   );
   const upload = workflow.indexOf(
     "name: player-release-surface-${{ github.sha }}",
   );
-  assert.ok(
-    build >= 0 && build < extract && extract < validate && validate < upload,
-  );
+  assert.ok(build >= 0 && build < validate && validate < upload);
   assert.match(
     workflow,
-    /validate-android-release-surface\.mjs \\\n+\s+android-release-surface\/AndroidManifest\.xml \\\n+\s+app\/build\/outputs\/apk\/release\/app-release-unsigned\.apk \\\n+\s+android-release-surface\/report\.json/,
+    /validate-android-release-surface\.mjs \\\n+\s+"\$analyzer" \\\n+\s+app\/build\/outputs\/apk\/release\/app-release-unsigned\.apk \\\n+\s+android-release-surface\/AndroidManifest\.xml \\\n+\s+android-release-surface\/report\.json/,
   );
   assert.match(
     workflow,
@@ -181,5 +338,25 @@ test("CI validates and retains the exact release APK evidence", async () => {
   );
   assert.match(workflow, /android-release-surface\/AndroidManifest\.xml/);
   assert.match(workflow, /android-release-surface\/report\.json/);
-  assert.doesNotMatch(sourceManifest, /FileProvider|file_paths|<provider\b/);
+  assert.match(
+    workflow,
+    /name: player-release-surface-diagnostic-\$\{\{ github\.sha \}\}[\s\S]*?retention-days: 1/,
+  );
+  assert.doesNotMatch(sourceManifest, /FileProvider|file_paths/);
+  assert.match(
+    sourceManifest,
+    /android:name="android\.permission\.DUMP" tools:node="remove"/,
+  );
+  assert.match(
+    sourceManifest,
+    /<meta-data\b[^>]*android:name="androidx\.profileinstaller\.ProfileInstallerInitializer"[^>]*tools:node="remove"[^>]*\/>/,
+  );
+  assert.match(
+    sourceManifest,
+    /<receiver\b[^>]*android:name="androidx\.profileinstaller\.ProfileInstallReceiver"[^>]*tools:node="remove"[^>]*\/>/,
+  );
+  assert.match(
+    sourceManifest,
+    /<provider\b[^>]*android:name="androidx\.startup\.InitializationProvider"[^>]*tools:node="merge"[^>]*>/,
+  );
 });
