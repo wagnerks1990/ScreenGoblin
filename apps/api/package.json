@@ -24,7 +24,8 @@
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
     "preprisma:seed": "npm run build:contracts",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "bootstrap:recover": "tsx prisma/recover-bootstrap-password.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

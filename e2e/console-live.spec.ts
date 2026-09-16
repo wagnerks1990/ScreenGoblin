@@ -16,10 +16,10 @@ const demoScheduleName = "School Day Baseline";
 
 function requiredOwnerCredentials() {
   const email = process.env.SEED_ADMIN_EMAIL?.trim();
-  const password = process.env.SEED_ADMIN_PASSWORD;
+  const password = process.env.E2E_OWNER_PASSWORD;
   if (!email || !password) {
     throw new Error(
-      "SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD are required for Console E2E tests",
+      "The Console E2E bootstrap setup did not provide owner credentials",
     );
   }
   return { email, password };

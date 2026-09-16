@@ -29,6 +29,8 @@ import { Emergency } from "./pages/Emergency";
 import { SettingsPage } from "./pages/Settings";
 import { Modal, Button, Field } from "./components";
 import { api } from "./api";
+import type { BootstrapPasswordAction } from "./api";
+import { BootstrapPasswordRotation } from "./BootstrapPasswordRotation";
 
 const nav = [
   ["/dashboard", "Overview", LayoutDashboard],
@@ -51,6 +53,8 @@ export function App() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutStatus, setLogoutStatus] = useState("");
+  const [bootstrapAction, setBootstrapAction] =
+    useState<BootstrapPasswordAction>();
   const location = useLocation();
   const canAdmin =
     (!liveSession && demoAllowed) ||
@@ -75,6 +79,11 @@ export function App() {
     setLoginError("");
     try {
       const session = await api.login(email, password);
+      if (session.nextAction === "CHANGE_BOOTSTRAP_PASSWORD") {
+        setBootstrapAction(session);
+        setLoginOpen(false);
+        return;
+      }
       setLiveSession(true);
       setDemoAllowed(true);
       setSessionUser(session.user);
@@ -101,6 +110,28 @@ export function App() {
       );
     setLoggingOut(false);
   };
+  if (bootstrapAction) {
+    return (
+      <BootstrapPasswordRotation
+        changeBefore={bootstrapAction.changeBefore}
+        onRotate={async (currentPassword, newPassword) => {
+          await api.changeBootstrapPassword(
+            bootstrapAction.accessToken,
+            currentPassword,
+            newPassword,
+          );
+          setBootstrapAction(undefined);
+          setLoginOpen(true);
+        }}
+        onAbandon={async () => {
+          const restrictedToken = bootstrapAction.accessToken;
+          setBootstrapAction(undefined);
+          setLoginOpen(true);
+          await api.abandonBootstrapPassword(restrictedToken);
+        }}
+      />
+    );
+  }
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">

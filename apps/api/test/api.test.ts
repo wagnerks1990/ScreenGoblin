@@ -483,6 +483,231 @@ describe("authentication and organization RBAC", () => {
     expect(r.json().accessToken).toBeTypeOf("string");
     expect(r.body).not.toContain("passwordHash");
   });
+  it("contains a live bootstrap credential in a database-purpose rotation session", async () => {
+    const changeBefore = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    store.users[0]!.bootstrapPasswordExpiresAt = changeBefore;
+    const staleFullSession = await app.inject({
+      url: "/api/v1/auth/me",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(staleFullSession.statusCode).toBe(401);
+    expect(staleFullSession.json().error.code).toBe("SESSION_REVOKED");
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: {
+        email: "admin@example.test",
+        password: "correct horse battery staple",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      nextAction: "CHANGE_BOOTSTRAP_PASSWORD",
+      changeBefore,
+    });
+    expect(Object.keys(response.json()).sort()).toEqual([
+      "accessToken",
+      "changeBefore",
+      "nextAction",
+    ]);
+    const accessToken = response.json().accessToken as string;
+    const decoded = app.jwt.decode(accessToken) as { sessionId: string };
+    const session = store.userSessions.find(
+      (candidate) => candidate.tokenHash === sha256(decoded.sessionId),
+    );
+    expect(session?.purpose).toBe("BOOTSTRAP_PASSWORD_ROTATION");
+    expect(Date.parse(session!.expiresAt)).toBeLessThanOrEqual(
+      Date.now() + 10 * 60 * 1000,
+    );
+    expect(session!.expiresAt <= changeBefore).toBe(true);
+
+    delete store.users[0]!.bootstrapPasswordExpiresAt;
+    const markerCleared = await app.inject({
+      url: "/api/v1/auth/me",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(markerCleared.statusCode).toBe(401);
+    expect(markerCleared.json().error.code).toBe("SESSION_REVOKED");
+    store.users[0]!.bootstrapPasswordExpiresAt = changeBefore;
+
+    const forgedPurposeToken = app.jwt.sign(
+      {
+        ...(app.jwt.decode(accessToken) as Record<string, unknown>),
+        purpose: "FULL",
+      } as never,
+      { expiresIn: "10m" },
+    );
+    const denied = await app.inject({
+      url: "/api/v1/auth/me",
+      headers: { authorization: `Bearer ${forgedPurposeToken}` },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.code).toBe("PASSWORD_ROTATION_REQUIRED");
+
+    const logout = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/logout",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(logout.statusCode).toBe(204);
+  });
+
+  it("rotates a bootstrap password atomically and requires a fresh full login", async () => {
+    const user = store.users[0]!;
+    user.bootstrapPasswordExpiresAt = new Date(
+      Date.now() + 30 * 60 * 1000,
+    ).toISOString();
+    const restrictedLogin = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: {
+        email: user.email,
+        password: "correct horse battery staple",
+      },
+    });
+    const accessToken = restrictedLogin.json().accessToken as string;
+    const weak = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/bootstrap-password",
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: {
+        currentPassword: "correct horse battery staple",
+        newPassword: "too short",
+      },
+    });
+    expect(weak.statusCode).toBe(400);
+    const oversized = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/bootstrap-password",
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: {
+        currentPassword: "correct horse battery staple",
+        newPassword: "é".repeat(37),
+      },
+    });
+    expect(oversized.statusCode).toBe(400);
+    const wrongCurrent = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/bootstrap-password",
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: {
+        currentPassword: "incorrect bootstrap password",
+        newPassword: "new secure password phrase",
+      },
+    });
+    expect(wrongCurrent.statusCode).toBe(401);
+    expect(wrongCurrent.json().error).toMatchObject({
+      code: "INVALID_CREDENTIALS",
+      message: "Email or password is incorrect",
+    });
+    expect(store.loginFailures.at(-1)).toMatchObject({
+      reason: "INVALID_CREDENTIALS",
+      accountKey: opaqueSecurityEventKey(
+        secret,
+        "login-failure-account",
+        user.email,
+      ),
+    });
+    expect(user.authenticationEpoch).toBe(0);
+
+    const rotated = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/bootstrap-password",
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: {
+        currentPassword: "correct horse battery staple",
+        newPassword: "new secure password phrase",
+      },
+    });
+    expect(rotated.statusCode).toBe(204);
+    expect(store.users[0]!.bootstrapPasswordExpiresAt).toBeUndefined();
+    expect(store.users[0]!.authenticationEpoch).toBe(1);
+    expect(
+      store.userSessions.every(
+        (candidate) => candidate.userId !== user.id || candidate.revokedAt,
+      ),
+    ).toBe(true);
+    expect(store.audits.at(-1)).toMatchObject({
+      organizationId: "org-a",
+      actorUserId: user.id,
+      actorType: "user",
+      action: "auth.bootstrap_password_rotated",
+      entityType: "user",
+      entityId: user.id,
+      metadata: {},
+    });
+    const stale = await app.inject({
+      url: "/api/v1/auth/me",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(stale.statusCode).toBe(401);
+    const fresh = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: user.email, password: "new secure password phrase" },
+    });
+    expect(fresh.statusCode).toBe(200);
+    expect(fresh.json().nextAction).toBeUndefined();
+    expect(store.userSessions.at(-1)?.purpose).toBe("FULL");
+  });
+
+  it("rejects a new password that is bcrypt-equivalent to the bootstrap credential", async () => {
+    const bcryptPrefix = "a".repeat(72);
+    const bootstrapPassword = `${bcryptPrefix}ignored-suffix`;
+    store.users[0]!.passwordHash = await hash(bootstrapPassword, 4);
+    store.users[0]!.bootstrapPasswordExpiresAt = new Date(
+      Date.now() + 30 * 60 * 1000,
+    ).toISOString();
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: store.users[0]!.email, password: bootstrapPassword },
+    });
+    expect(login.statusCode).toBe(200);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/bootstrap-password",
+      headers: { authorization: `Bearer ${login.json().accessToken}` },
+      payload: {
+        currentPassword: bootstrapPassword,
+        newPassword: bcryptPrefix,
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe(
+      "NEW_PASSWORD_REUSES_BOOTSTRAP_CREDENTIAL",
+    );
+    expect(store.users[0]!.bootstrapPasswordExpiresAt).toBeDefined();
+    expect(store.users[0]!.authenticationEpoch).toBe(0);
+  });
+
+  it("treats an expired bootstrap marker as an ordinary invalid login", async () => {
+    store.users[0]!.bootstrapPasswordExpiresAt = new Date(
+      Date.now() - 1_000,
+    ).toISOString();
+    const expired = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: {
+        email: "admin@example.test",
+        password: "correct horse battery staple",
+      },
+    });
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: {
+        email: "missing@example.test",
+        password: "correct horse battery staple",
+      },
+    });
+    expect(expired.statusCode).toBe(401);
+    expect(expired.json().error).toEqual(unknown.json().error);
+    expect(store.loginFailures.map(({ reason }) => reason)).toEqual([
+      "INVALID_CREDENTIALS",
+      "INVALID_CREDENTIALS",
+    ]);
+  });
   it("records indistinguishable known and unknown failures without raw identifiers", async () => {
     const attempt = (email: string) =>
       app.inject({

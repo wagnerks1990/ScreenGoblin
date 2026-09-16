@@ -236,6 +236,152 @@ describe("authenticated live data boundary", () => {
     expect(api.currentUser()?.email).toBe("operator@example.test");
   });
 
+  it("returns a restricted bootstrap action without persisting it as a live session", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            accessToken: "rotation-only-token",
+            nextAction: "CHANGE_BOOTSTRAP_PASSWORD",
+            changeBefore: "2030-01-01T00:15:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      api.login("owner@example.test", "bootstrap-password"),
+    ).resolves.toEqual({
+      accessToken: "rotation-only-token",
+      nextAction: "CHANGE_BOOTSTRAP_PASSWORD",
+      changeBefore: "2030-01-01T00:15:00.000Z",
+    });
+
+    expect(api.hasLiveSession()).toBe(false);
+    expect(api.currentUser()).toBeUndefined();
+    expect(window.sessionStorage.getItem("sg_access_token")).toBeNull();
+    expect(window.sessionStorage.getItem("sg_session_user")).toBeNull();
+  });
+
+  it.each([
+    [
+      "an invalid deadline",
+      {
+        accessToken: "rotation-only-token",
+        nextAction: "CHANGE_BOOTSTRAP_PASSWORD",
+        changeBefore: "not-a-date",
+        user: {
+          id: "owner",
+          name: "Owner",
+          email: "owner@example.test",
+          role: "OWNER",
+          organizationId: "org-a",
+        },
+      },
+    ],
+    [
+      "an unknown action",
+      {
+        accessToken: "live-token",
+        nextAction: "UNREVIEWED_ACTION",
+        user: {
+          id: "owner",
+          name: "Owner",
+          email: "owner@example.test",
+          role: "OWNER",
+          organizationId: "org-a",
+        },
+      },
+    ],
+  ])("rejects a login response containing %s", async (_label, payload) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      api.login("owner@example.test", "bootstrap-password"),
+    ).rejects.toThrow("invalid bootstrap password action");
+    expect(api.hasLiveSession()).toBe(false);
+    expect(api.currentUser()).toBeUndefined();
+  });
+
+  it("rejects a primitive login response without persisting credentials", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify("unexpected"), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      api.login("owner@example.test", "bootstrap-password"),
+    ).rejects.toThrow("invalid session principal");
+    expect(api.hasLiveSession()).toBe(false);
+    expect(api.currentUser()).toBeUndefined();
+  });
+
+  it("rotates with the restricted bearer without promoting it to a live session", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      api.changeBootstrapPassword(
+        "rotation-only-token",
+        "bootstrap-password",
+        "a-new-unique-password",
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/auth/bootstrap-password",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer rotation-only-token",
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          currentPassword: "bootstrap-password",
+          newPassword: "a-new-unique-password",
+        }),
+      }),
+    );
+    expect(api.hasLiveSession()).toBe(false);
+  });
+
+  it("best-effort revokes an abandoned restricted credential without retaining it", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      api.abandonBootstrapPassword("rotation-only-token"),
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/auth/logout",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer rotation-only-token",
+        }),
+      }),
+    );
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
   it("uses demonstration data only when no live session was requested", async () => {
     const result = await api.screens();
     expect(result.source).toBe("demo");

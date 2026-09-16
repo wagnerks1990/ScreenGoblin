@@ -35,6 +35,7 @@ consumed into an unusable Player configuration.
 All management endpoints use `Authorization: Bearer <JWT>` and are scoped to the token's organization.
 
 - `POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`
+- `POST /api/v1/auth/bootstrap-password` (one-time bootstrap rotation only)
 - `GET|POST|PATCH|DELETE /api/v1/screens`
 - `GET|POST|PATCH|DELETE /api/v1/locations`
 - `GET|DELETE /api/v1/media` (no registration or upload method exists)
@@ -177,8 +178,21 @@ downstream disconnect destroys the upstream object stream.
   reports when server revocation cannot be confirmed. Internal, system-audited
   store methods rotate password hashes, disable users, change roles, or remove
   memberships while advancing the applicable epoch and revoking affected
-  sessions in the same transaction. There are no public password, user-disable,
-  role, or membership mutation endpoints in this prototype.
+  sessions in the same transaction. The sole public password mutation is the
+  purpose-limited `POST /auth/bootstrap-password`: a seeded owner must replace
+  its temporary credential within 24 hours, and its bearer token is valid for at
+  most ten minutes and only for that rotation or logout. Full API authentication
+  is denied while the marker exists. The new password must differ, contain at
+  least 16 Unicode code points, and encode to no more than 72 UTF-8 bytes. The
+  atomic, one-time rotation clears the marker, advances the authentication
+  epoch, revokes all of that user's sessions and pending initial/replacement
+  enrollment authority across memberships, and writes one tenant audit event
+  per membership. The rotation token is consequently invalid after success;
+  the user must sign in again. There are no public general password,
+  user-disable, role, or membership mutation endpoints in this prototype. An
+  expired or lost bootstrap credential requires the acknowledged, offline
+  `npm run bootstrap:recover -w @screengoblin/api` procedure documented in the
+  operations runbook; it is not exposed over HTTP.
 - Immutable release and assignment creator IDs reference durable tenant-scoped
   membership-attribution tombstones rather than live memberships. This lets
   membership removal revoke access without discarding publication provenance.

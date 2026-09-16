@@ -14,8 +14,9 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 4. Deploy to a staging host and run smoke tests with an offline player.
 5. During the maintenance window, run `docker compose --env-file deploy/.env pull` for referenced images and `docker compose --env-file deploy/.env build --pull` for application images.
 6. Run `docker compose --env-file deploy/.env up -d` and inspect `docker compose --env-file deploy/.env ps`.
-7. On a new installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Confirm the owner can sign in, then remove all `SEED_*` values from the host environment.
-8. Verify readiness, login, precreated-screen enrollment with staged proof and
+7. For a fresh installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Verify the new owner has a future bootstrap marker bounded to 24 hours and `auth.bootstrap_password_containment_enabled` exists for its membership before allowing login. After the command succeeds, remove all `SEED_*` values from the host environment and deliver the temporary credential separately through an approved channel. Within 24 hours, sign in and complete the blocking password-change screen. Use a unique replacement of at least 16 Unicode code points and no more than 72 UTF-8 bytes. The change revokes the rotation token and every other session, so sign in again with the replacement.
+8. For the one-time legacy containment upgrade, do not create another owner. With writers stopped after the migration, run the same seed profile once only when the configured email identifies the existing seeded `OWNER` and `SEED_ADMIN_PASSWORD` is that owner's unchanged deployment seed credential. Require the `Contained existing bootstrap owner` result, a future marker bounded to 24 hours, and `auth.bootstrap_password_containment_enabled` in every membership organization before reopening access. If the command reports the owner unchanged, do not rerun it or alter seed inputs to force a match; determine whether the credential was already changed and use the reviewed recovery procedure only when recovery is actually required.
+9. Verify readiness, login, precreated-screen enrollment with staged proof and
    exact-fingerprint activation, proof-authorized heartbeat and manifest
    delivery, atomic enrollment/audit, Ed25519 manifest verification, media
    checksum, signed withdrawal, schedule-boundary blanking, last-known-good
@@ -48,6 +49,27 @@ new instance correctly rejects. This is fail-closed but can interrupt that login
 during a mixed-version rollout. Password rotation, user disablement, role change,
 and membership removal must go through the audited store boundary, which revokes
 affected sessions atomically; do not issue direct SQL updates for these fields.
+
+The bootstrap-password-containment migration requires coordinated downtime. It
+locks `User` and `UserSession`, classifies existing sessions as `FULL`, and adds
+database checks and a trigger that prevent full sessions while a bootstrap
+marker exists and bound rotation sessions to ten minutes and the credential
+deadline. Stop all API and seed writers, take and restore-test a backup, apply
+the migration, deploy the API and Console together, and run the seed profile
+once with the exact configured owner and existing seed credential. For a
+matching legacy seeded owner not previously contained, that seed transaction
+sets a database-time 24-hour deadline, advances the authentication epoch,
+revokes all sessions, and audits each membership without changing the password.
+The containment event is `auth.bootstrap_password_containment_enabled`.
+It refuses a mismatched account or privilege change, and later runs neither
+extend the deadline nor restore access. Do not run an old API after this cutover:
+it does not understand purpose-limited sessions or the required rotation
+response. Budget the table-lock and session-validation window on a restored,
+production-sized copy. Before reopening ordinary operator access, verify the
+initial containment marker and per-membership audit events, complete the
+password change, and verify the marker is cleared, the rotation audit exists in
+each membership organization, and the old password and every pre-change token
+fail.
 
 The schedule-publication idempotency migration is additive and creates an
 empty tenant-owned command ledger. It does not rewrite schedules or releases.
@@ -118,8 +140,10 @@ organization-wide; their presence does not make them effective. Apply the
 compatibility migration with writers stopped after a verified backup and
 staging restore. It deliberately aborts if any preexisting grant cannot be
 proved to be the exact deterministic system bundle; investigate and reconcile
-that data instead of bypassing the preflight. The bootstrap does not revoke
-sessions or increment authorization epochs. A later reviewed migration must add
+that data instead of bypassing the preflight. This compatibility-grant
+bootstrap does not revoke sessions or increment authorization epochs; it is not
+the deployment owner-password containment flow described above. A later
+reviewed migration must add
 runtime grant loading beyond the candidate-create canary, all affected
 read/mutation enforcement,
 grant-administration epoch invalidation, and explicit tenant promotion before
@@ -174,7 +198,58 @@ online. The guarded update is idempotent and does not churn already-healed
 screens' `updatedAt`. Verify offline counts after rollout; the backfill does not
 contact or erase an offline Player.
 
-Do not run the bootstrap profile as part of normal startup. It refuses to reset an existing owner password or grant owner to an existing unrelated user. Remove bootstrap credentials after the first successful login.
+Do not run the bootstrap profile as part of normal startup. It refuses to reset
+an existing owner password or grant owner to an existing unrelated user. A new
+seeded credential has a single database-time 24-hour replacement window. Login
+during that window creates only a purpose-limited, at-most-ten-minute rotation
+session; it grants no Console or management API access. After successful
+rotation, confirm `auth.bootstrap_password_rotated` exists in each organization
+where the user has a membership, confirm all prior sessions and pending
+initial/replacement enrollment grants are revoked, sign in again, and remove
+any remaining bootstrap credentials from the host environment.
+
+### Recover an expired or lost bootstrap owner password
+
+This is an offline, privileged operator action, not an HTTP or Console recovery
+flow. Use it only when the owner cannot complete the normal bootstrap rotation.
+Run it from a trusted maintenance environment with the intended production
+`DATABASE_URL`; keep the temporary password out of shell history, logs, tickets,
+and chat. Set these process-environment values through the deployment's approved
+secret-delivery mechanism:
+
+- `BOOTSTRAP_RECOVERY_ACKNOWLEDGEMENT` must equal exactly
+  `I_UNDERSTAND_THIS_RESETS_AN_OWNER_PASSWORD`.
+- `BOOTSTRAP_RECOVERY_EMAIL` is the target owner email; it is trimmed and
+  normalized to lowercase.
+- `BOOTSTRAP_RECOVERY_TEMPORARY_PASSWORD` is a new temporary value containing at
+  least 16 Unicode code points and no more than 72 UTF-8 bytes.
+
+Then run:
+
+```bash
+npm run bootstrap:recover -w @screengoblin/api
+```
+
+The command refuses a missing or incorrect acknowledgement; an absent,
+ambiguous, disabled, membershipless, or non-`OWNER` target; and an invalid
+temporary password. On success, one database transaction installs a cost-12
+bcrypt hash, sets a fresh 30-minute bootstrap deadline, advances the user's
+authentication epoch, revokes all active sessions and all pending initial or
+replacement enrollment authority issued by that user across memberships,
+cancels unbound attempts, and appends the system event
+`auth.bootstrap_password_recovery_issued` in every membership organization. Its
+output may identify the normalized email, membership count, and deadline, but
+never the password or hash.
+
+Deliver the temporary value to the intended owner through an approved separate
+channel. The owner must sign in and complete the normal one-time rotation before
+the printed 30-minute deadline; the resulting rotation revokes that restricted
+session and requires another sign-in. Verify the recovery and rotation audit
+events in every affected organization and verify pre-recovery tokens, pending
+grants, and both temporary credentials fail afterward. Clear the recovery
+environment values and retain only the approved operational evidence. Rerunning
+the deployment seed is not recovery and cannot extend a deadline or reset a
+credential.
 
 ## Observe
 

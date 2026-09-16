@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Prisma } from "@prisma/client";
+import { compare, hash } from "bcryptjs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mediaStorageKey } from "../src/media/delivery.js";
 import { PrismaStore } from "../src/store/prisma.js";
@@ -17,6 +18,10 @@ import {
   hasValidStoredReleaseDigest,
 } from "../src/releases/canonical.js";
 import { randomToken } from "../src/utils/crypto.js";
+import {
+  BOOTSTRAP_RECOVERY_ACKNOWLEDGEMENT,
+  recoverBootstrapPassword,
+} from "../src/recovery/bootstrap-password.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -275,6 +280,97 @@ const createMember = async (
     data: { organizationId, userId: user.id, role },
   });
   return user;
+};
+
+const createBootstrapRecoveryFixture = async (
+  label: string,
+  currentPassword = `${label}-current-owner-password`,
+  includeSecondMembership = false,
+) => {
+  const organization = await createOrganization(label);
+  const actor = await createMember(organization.id, "OWNER", label);
+  const currentPasswordHash = await hash(currentPassword, 4);
+  await prisma.user.update({
+    where: { id: actor.id },
+    data: { passwordHash: currentPasswordHash },
+  });
+  const membership = await prisma.membership.findUniqueOrThrow({
+    where: {
+      organizationId_userId: {
+        organizationId: organization.id,
+        userId: actor.id,
+      },
+    },
+  });
+  const organizations = [organization];
+  if (includeSecondMembership) {
+    const otherOrganization = await createOrganization(`${label}-other`);
+    await prisma.membership.create({
+      data: {
+        organizationId: otherOrganization.id,
+        userId: actor.id,
+        role: "VIEWER",
+      },
+    });
+    organizations.push(otherOrganization);
+  }
+  const sessions = await Promise.all(
+    organizations.map((candidate) =>
+      prisma.userSession.create({
+        data: {
+          organizationId: candidate.id,
+          userId: actor.id,
+          tokenHash: proofHash(),
+          authenticationEpoch: 0,
+          authorizationEpoch: 0,
+          expiresAt: new Date(Date.now() + 30 * 60_000),
+        },
+      }),
+    ),
+  );
+  const screen = await prisma.screen.create({
+    data: { organizationId: organization.id, name: `${label} screen` },
+  });
+  const grant = await prisma.pairingCode.create({
+    data: {
+      id: randomToken(),
+      organizationId: organization.id,
+      purpose: "NEW_SCREEN",
+      targetScreenId: screen.id,
+      targetScreenReferenceId: screen.id,
+      targetOrganizationId: organization.id,
+      expectedGeneration: 0,
+      authorizedByUserId: actor.id,
+      authorizedByMembershipId: membership.id,
+      authorizedByAuthenticationEpoch: 0,
+      authorizedByAuthorizationEpoch: 0,
+      requestReason: "Bootstrap recovery integration fixture",
+      codeHash: proofHash(),
+      status: "PENDING",
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+    },
+  });
+  const attempt = await prisma.pairingAttempt.create({
+    data: {
+      id: randomToken(),
+      organizationId: organization.id,
+      pairingCodeId: grant.id,
+      keyId: randomToken(),
+      publicKeySpki: Buffer.alloc(91, 7),
+      algorithm: "ES256",
+      securityLevel: "software",
+      challengeHashSha256: proofHash(),
+      transcriptDigestSha256: proofHash(),
+      expiresAt: new Date(Date.now() + 30_000),
+    },
+  });
+  return {
+    actor: { ...actor, passwordHash: currentPasswordHash },
+    organizations,
+    sessions,
+    grant,
+    attempt,
+  };
 };
 
 const publishApprovedSchedule = async (
@@ -4252,16 +4348,20 @@ describe("PrismaStore PostgreSQL integration", () => {
     ]);
     const actor = await createMember(organization.id, "OWNER", "sessions");
     const expiredHash = "c".repeat(64);
-    await prisma.userSession.create({
-      data: {
-        organizationId: organization.id,
-        userId: actor.id,
-        tokenHash: expiredHash,
-        authenticationEpoch: 0,
-        authorizationEpoch: 0,
-        expiresAt: new Date(Date.now() - 1_000),
-      },
-    });
+    await prisma.$executeRaw`
+      INSERT INTO "UserSession" (
+        "id", "organizationId", "userId", "tokenHash",
+        "authenticationEpoch", "authorizationEpoch", "purpose",
+        "expiresAt", "createdAt"
+      ) VALUES (
+        ${randomUUID()}, ${organization.id}, ${actor.id}, ${expiredHash},
+        0, 0, 'FULL', CURRENT_TIMESTAMP + INTERVAL '1 second', CURRENT_TIMESTAMP
+      )`;
+    // Let PostgreSQL's own clock move the constraint-valid fixture into the
+    // expired state before exercising bounded pruning. pg_sleep waits at least
+    // the requested duration, and the extra half-second avoids timer jitter.
+    await prisma.$queryRaw<Array<{ slept: number }>>`
+      SELECT 1::integer AS slept FROM pg_sleep(1.5)`;
     const createSession = (tokenHash: string) =>
       store.createUserSessionAndAudit(
         organization.id,
@@ -4289,6 +4389,19 @@ describe("PrismaStore PostgreSQL integration", () => {
     await expect(
       store.findActiveUserSession(actor.id, organization.id, firstHash),
     ).resolves.toMatchObject({ id: actor.id, role: "OWNER" });
+    await prisma.user.update({
+      where: { id: actor.id },
+      data: {
+        bootstrapPasswordExpiresAt: new Date(Date.now() + 30 * 60_000),
+      },
+    });
+    await expect(
+      store.findActiveUserSession(actor.id, organization.id, firstHash),
+    ).resolves.toBeNull();
+    await prisma.user.update({
+      where: { id: actor.id },
+      data: { bootstrapPasswordExpiresAt: null },
+    });
     await expect(
       store.findActiveUserSession(actor.id, otherOrganization.id, firstHash),
     ).resolves.toBeNull();
@@ -4320,6 +4433,449 @@ describe("PrismaStore PostgreSQL integration", () => {
         where: {
           organizationId: organization.id,
           action: "auth.logout",
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it("atomically consumes a bootstrap marker and its exact rotation session", async () => {
+    const [organization, otherOrganization] = await Promise.all([
+      createOrganization("bootstrap-rotation"),
+      createOrganization("bootstrap-rotation-other"),
+    ]);
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "bootstrap-rotation",
+    );
+    await prisma.membership.create({
+      data: {
+        organizationId: otherOrganization.id,
+        userId: actor.id,
+        role: "VIEWER",
+      },
+    });
+    const bootstrapPasswordExpiresAt = new Date(Date.now() + 30 * 60_000);
+    await prisma.user.update({
+      where: { id: actor.id },
+      data: { bootstrapPasswordExpiresAt },
+    });
+    const loginUser = await store.findUserByEmail(actor.email);
+    expect(loginUser?.bootstrapPasswordExpiresAt).toBe(
+      bootstrapPasswordExpiresAt.toISOString(),
+    );
+    await expect(
+      store.findSessionUser(actor.id, organization.id),
+    ).resolves.toMatchObject({
+      bootstrapPasswordExpiresAt: bootstrapPasswordExpiresAt.toISOString(),
+    });
+    const tokenHash = "e".repeat(64);
+    const issued = await store.createUserSessionAndAudit(
+      organization.id,
+      {
+        tokenHash,
+        expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+        expectedPasswordHash: actor.passwordHash,
+        expectedRole: "OWNER",
+        expectedAuthenticationEpoch: 0,
+        expectedAuthorizationEpoch: 0,
+        purpose: "BOOTSTRAP_PASSWORD_ROTATION",
+        expectedBootstrapPasswordExpiresAt:
+          bootstrapPasswordExpiresAt.toISOString(),
+      },
+      { actorUserId: actor.id, requestId: "bootstrap-login" },
+    );
+    expect(issued).toMatchObject({
+      created: true,
+      session: { purpose: "BOOTSTRAP_PASSWORD_ROTATION" },
+    });
+    await expect(
+      store.findActiveUserSession(actor.id, organization.id, tokenHash),
+    ).resolves.toMatchObject({
+      sessionPurpose: "BOOTSTRAP_PASSWORD_ROTATION",
+      bootstrapPasswordExpiresAt: bootstrapPasswordExpiresAt.toISOString(),
+    });
+    await prisma.user.update({
+      where: { id: actor.id },
+      data: { bootstrapPasswordExpiresAt: null },
+    });
+    await expect(
+      store.findActiveUserSession(actor.id, organization.id, tokenHash),
+    ).resolves.toBeNull();
+    await prisma.user.update({
+      where: { id: actor.id },
+      data: { bootstrapPasswordExpiresAt },
+    });
+
+    const rotated = await store.rotateBootstrapPasswordAndAudit(
+      actor.id,
+      organization.id,
+      {
+        tokenHash,
+        expectedPasswordHash: actor.passwordHash,
+        expectedBootstrapPasswordExpiresAt:
+          bootstrapPasswordExpiresAt.toISOString(),
+        expectedAuthenticationEpoch: 0,
+        expectedAuthorizationEpoch: 0,
+        passwordHash: approvedPasswordHash,
+      },
+      { actorUserId: actor.id, requestId: "bootstrap-rotate" },
+    );
+    expect(rotated).toEqual({
+      rotated: true,
+      affectedOrganizationIds: [organization.id, otherOrganization.id].sort(),
+    });
+    await expect(
+      store.findActiveUserSession(actor.id, organization.id, tokenHash),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: actor.id } }),
+    ).resolves.toMatchObject({
+      passwordHash: approvedPasswordHash,
+      bootstrapPasswordExpiresAt: null,
+      authenticationEpoch: 1,
+    });
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          actorUserId: actor.id,
+          action: "auth.bootstrap_password_rotated",
+        },
+      }),
+    ).toBe(2);
+    await expect(
+      store.rotateBootstrapPasswordAndAudit(
+        actor.id,
+        organization.id,
+        {
+          tokenHash,
+          expectedPasswordHash: actor.passwordHash,
+          expectedBootstrapPasswordExpiresAt:
+            bootstrapPasswordExpiresAt.toISOString(),
+          expectedAuthenticationEpoch: 0,
+          expectedAuthorizationEpoch: 0,
+          passwordHash: approvedPasswordHash,
+        },
+        { actorUserId: actor.id },
+      ),
+    ).resolves.toEqual({ rotated: false, reason: "FORBIDDEN" });
+  });
+
+  it("rolls back bootstrap rotation when its audit cannot commit", async () => {
+    const organization = await createOrganization("bootstrap-audit-rollback");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "bootstrap-audit-rollback",
+    );
+    const bootstrapPasswordExpiresAt = new Date(Date.now() + 30 * 60_000);
+    await prisma.user.update({
+      where: { id: actor.id },
+      data: { bootstrapPasswordExpiresAt },
+    });
+    const tokenHash = "7".repeat(64);
+    await expect(
+      store.createUserSessionAndAudit(
+        organization.id,
+        {
+          tokenHash,
+          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+          expectedPasswordHash: actor.passwordHash,
+          expectedRole: "OWNER",
+          expectedAuthenticationEpoch: 0,
+          expectedAuthorizationEpoch: 0,
+          purpose: "BOOTSTRAP_PASSWORD_ROTATION",
+          expectedBootstrapPasswordExpiresAt:
+            bootstrapPasswordExpiresAt.toISOString(),
+        },
+        { actorUserId: actor.id },
+      ),
+    ).resolves.toMatchObject({ created: true });
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_bootstrap_rotation_audit" CHECK ("action" <> \'auth.bootstrap_password_rotated\')',
+    );
+    try {
+      await expect(
+        store.rotateBootstrapPasswordAndAudit(
+          actor.id,
+          organization.id,
+          {
+            tokenHash,
+            expectedPasswordHash: actor.passwordHash,
+            expectedBootstrapPasswordExpiresAt:
+              bootstrapPasswordExpiresAt.toISOString(),
+            expectedAuthenticationEpoch: 0,
+            expectedAuthorizationEpoch: 0,
+            passwordHash: approvedPasswordHash,
+          },
+          { actorUserId: actor.id },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_bootstrap_rotation_audit"',
+      );
+    }
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: actor.id } }),
+    ).resolves.toMatchObject({
+      passwordHash: actor.passwordHash,
+      bootstrapPasswordExpiresAt,
+      authenticationEpoch: 0,
+    });
+    await expect(
+      store.findActiveUserSession(actor.id, organization.id, tokenHash),
+    ).resolves.toMatchObject({
+      sessionPurpose: "BOOTSTRAP_PASSWORD_ROTATION",
+    });
+  });
+
+  it("recovers an owner through one audited, authority-revoking transaction", async () => {
+    const fixture = await createBootstrapRecoveryFixture(
+      "bootstrap-recovery",
+      "bootstrap-recovery-current-password",
+      true,
+    );
+    const temporaryPassword = "bootstrap-recovery-temporary-password";
+    const [before] = await prisma.$queryRaw<Array<{ databaseNow: Date }>>`
+      SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+    if (!before) throw new Error("Database clock was unavailable");
+
+    const recovered = await recoverBootstrapPassword(prisma, {
+      acknowledgement: BOOTSTRAP_RECOVERY_ACKNOWLEDGEMENT,
+      email: fixture.actor.email.toUpperCase(),
+      temporaryPassword,
+    });
+    const [after] = await prisma.$queryRaw<Array<{ databaseNow: Date }>>`
+      SELECT CURRENT_TIMESTAMP AS "databaseNow"`;
+    if (!after) throw new Error("Database clock was unavailable");
+
+    expect(recovered).toMatchObject({
+      userId: fixture.actor.id,
+      normalizedEmail: fixture.actor.email,
+      affectedOrganizationCount: 2,
+    });
+    expect(recovered.changeBefore.getTime()).toBeGreaterThanOrEqual(
+      before.databaseNow.getTime() + 30 * 60_000,
+    );
+    expect(recovered.changeBefore.getTime()).toBeLessThanOrEqual(
+      after.databaseNow.getTime() + 30 * 60_000,
+    );
+    const recoveredActor = await prisma.user.findUniqueOrThrow({
+      where: { id: fixture.actor.id },
+    });
+    expect(recoveredActor).toMatchObject({
+      authenticationEpoch: 1,
+      bootstrapPasswordExpiresAt: recovered.changeBefore,
+    });
+    await expect(
+      compare(temporaryPassword, recoveredActor.passwordHash),
+    ).resolves.toBe(true);
+    await expect(
+      compare(
+        "bootstrap-recovery-current-password",
+        recoveredActor.passwordHash,
+      ),
+    ).resolves.toBe(false);
+    expect(
+      await prisma.userSession.count({
+        where: {
+          id: { in: fixture.sessions.map(({ id }) => id) },
+          revokedAt: { not: null },
+        },
+      }),
+    ).toBe(2);
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: fixture.grant.id } }),
+    ).resolves.toMatchObject({ status: "REVOKED" });
+    await expect(
+      prisma.pairingAttempt.findUniqueOrThrow({
+        where: { id: fixture.attempt.id },
+      }),
+    ).resolves.toMatchObject({ cancelledAt: expect.any(Date) });
+    const audits = await prisma.auditEvent.findMany({
+      where: {
+        entityId: fixture.actor.id,
+        action: "auth.bootstrap_password_recovery_issued",
+      },
+      orderBy: { organizationId: "asc" },
+    });
+    expect(audits).toHaveLength(2);
+    expect(audits.map(({ organizationId }) => organizationId)).toEqual(
+      fixture.organizations.map(({ id }) => id).sort(),
+    );
+    expect(audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actorUserId: null,
+          actorType: "system",
+          metadata: expect.objectContaining({
+            source: "offline-operator-recovery",
+            rotationWindowMinutes: 30,
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("rolls back every bootstrap recovery mutation when an audit cannot commit", async () => {
+    const fixture = await createBootstrapRecoveryFixture(
+      "bootstrap-recovery-rollback",
+    );
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_bootstrap_recovery_audit" CHECK ("action" <> \'auth.bootstrap_password_recovery_issued\')',
+    );
+    try {
+      await expect(
+        recoverBootstrapPassword(prisma, {
+          acknowledgement: BOOTSTRAP_RECOVERY_ACKNOWLEDGEMENT,
+          email: fixture.actor.email,
+          temporaryPassword: "bootstrap-recovery-rollback-temporary",
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_bootstrap_recovery_audit"',
+      );
+    }
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: fixture.actor.id } }),
+    ).resolves.toMatchObject({
+      passwordHash: fixture.actor.passwordHash,
+      authenticationEpoch: 0,
+      bootstrapPasswordExpiresAt: null,
+    });
+    await expect(
+      prisma.userSession.findUniqueOrThrow({
+        where: { id: fixture.sessions[0]!.id },
+      }),
+    ).resolves.toMatchObject({ revokedAt: null });
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: fixture.grant.id } }),
+    ).resolves.toMatchObject({ status: "PENDING" });
+    await expect(
+      prisma.pairingAttempt.findUniqueOrThrow({
+        where: { id: fixture.attempt.id },
+      }),
+    ).resolves.toMatchObject({ cancelledAt: null });
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          entityId: fixture.actor.id,
+          action: "auth.bootstrap_password_recovery_issued",
+        },
+      }),
+    ).toBe(0);
+  });
+
+  it("rejects a distinct temporary password with the same bcrypt input prefix", async () => {
+    const bcryptPrefix = "x".repeat(72);
+    const fixture = await createBootstrapRecoveryFixture(
+      "bootstrap-recovery-reuse",
+      `${bcryptPrefix}current-suffix`,
+    );
+
+    await expect(
+      recoverBootstrapPassword(prisma, {
+        acknowledgement: BOOTSTRAP_RECOVERY_ACKNOWLEDGEMENT,
+        email: fixture.actor.email,
+        temporaryPassword: bcryptPrefix,
+      }),
+    ).rejects.toThrow("must differ from the current password");
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: fixture.actor.id } }),
+    ).resolves.toMatchObject({
+      passwordHash: fixture.actor.passwordHash,
+      authenticationEpoch: 0,
+      bootstrapPasswordExpiresAt: null,
+    });
+    await expect(
+      prisma.userSession.findUniqueOrThrow({
+        where: { id: fixture.sessions[0]!.id },
+      }),
+    ).resolves.toMatchObject({ revokedAt: null });
+    await expect(
+      prisma.pairingCode.findUniqueOrThrow({ where: { id: fixture.grant.id } }),
+    ).resolves.toMatchObject({ status: "PENDING" });
+    expect(
+      await prisma.auditEvent.count({
+        where: { action: "auth.bootstrap_password_recovery_issued" },
+      }),
+    ).toBe(0);
+  });
+
+  it("allows exactly one concurrent bootstrap rotation", async () => {
+    const organization = await createOrganization("bootstrap-rotation-race");
+    const actor = await createMember(
+      organization.id,
+      "OWNER",
+      "bootstrap-rotation-race",
+    );
+    const bootstrapPasswordExpiresAt = new Date(Date.now() + 30 * 60_000);
+    await prisma.user.update({
+      where: { id: actor.id },
+      data: { bootstrapPasswordExpiresAt },
+    });
+    const issue = (tokenHash: string) =>
+      store.createUserSessionAndAudit(
+        organization.id,
+        {
+          tokenHash,
+          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+          expectedPasswordHash: actor.passwordHash,
+          expectedRole: "OWNER",
+          expectedAuthenticationEpoch: 0,
+          expectedAuthorizationEpoch: 0,
+          purpose: "BOOTSTRAP_PASSWORD_ROTATION",
+          expectedBootstrapPasswordExpiresAt:
+            bootstrapPasswordExpiresAt.toISOString(),
+        },
+        { actorUserId: actor.id },
+      );
+    const firstHash = "8".repeat(64);
+    const secondHash = "9".repeat(64);
+    await expect(
+      Promise.all([issue(firstHash), issue(secondHash)]),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ created: true }),
+        expect.objectContaining({ created: true }),
+      ]),
+    );
+    const rotate = (tokenHash: string) =>
+      store.rotateBootstrapPasswordAndAudit(
+        actor.id,
+        organization.id,
+        {
+          tokenHash,
+          expectedPasswordHash: actor.passwordHash,
+          expectedBootstrapPasswordExpiresAt:
+            bootstrapPasswordExpiresAt.toISOString(),
+          expectedAuthenticationEpoch: 0,
+          expectedAuthorizationEpoch: 0,
+          passwordHash: approvedPasswordHash,
+        },
+        { actorUserId: actor.id },
+      );
+    const results = await Promise.all([rotate(firstHash), rotate(secondHash)]);
+    expect(results.filter((result) => result.rotated)).toHaveLength(1);
+    expect(
+      results.filter(
+        (result) => !result.rotated && result.reason === "FORBIDDEN",
+      ),
+    ).toHaveLength(1);
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: actor.id } }),
+    ).resolves.toMatchObject({
+      passwordHash: approvedPasswordHash,
+      bootstrapPasswordExpiresAt: null,
+      authenticationEpoch: 1,
+    });
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          actorUserId: actor.id,
+          action: "auth.bootstrap_password_rotated",
         },
       }),
     ).toBe(1);
