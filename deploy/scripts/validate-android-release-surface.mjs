@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
 
@@ -15,6 +16,7 @@ const EXPECTED_FEATURES = [
   "android.hardware.touchscreen",
   "android.software.leanback",
 ];
+const MAX_SDK_PROPERTIES_BYTES = 16 * 1024;
 
 const decodeXml = (value) =>
   value.replaceAll(/&(?:amp|lt|gt|quot|apos);/g, (entity) => {
@@ -444,11 +446,36 @@ export function extractAndroidReleaseManifest(analyzerPath, apkPath) {
     throw new Error("APK analyzer path is required");
   if (typeof apkPath !== "string" || apkPath.length === 0)
     throw new Error("release APK path is required");
-  const analyzerVersion = runAnalyzer(analyzerPath, ["--version"]).trim();
+  const analyzerVersion = androidSdkCommandLineToolsVersion(analyzerPath);
   const xml = runAnalyzer(analyzerPath, ["manifest", "print", apkPath]);
-  if (!analyzerVersion || !xml.trim())
-    throw new Error("APK analyzer returned incomplete evidence");
+  if (!xml.trim()) throw new Error("APK analyzer returned incomplete evidence");
   return { analyzerVersion, xml };
+}
+
+export function androidSdkCommandLineToolsVersion(analyzerPath) {
+  try {
+    const packageRoot = dirname(dirname(realpathSync(analyzerPath)));
+    const propertiesPath = join(packageRoot, "source.properties");
+    const propertiesStat = statSync(propertiesPath);
+    if (
+      !propertiesStat.isFile() ||
+      propertiesStat.size <= 0 ||
+      propertiesStat.size > MAX_SDK_PROPERTIES_BYTES
+    )
+      throw new Error("invalid SDK metadata size");
+    const properties = readFileSync(propertiesPath, "utf8");
+    const revisionLines = properties
+      .split(/\r?\n/)
+      .filter((line) => /^\s*Pkg\.Revision\s*=/.test(line));
+    if (revisionLines.length !== 1) throw new Error("invalid SDK revision");
+    const revision = revisionLines[0].match(
+      /^\s*Pkg\.Revision\s*=\s*([0-9]{1,4}(?:\.[0-9]{1,4}){1,3})\s*$/,
+    )?.[1];
+    if (!revision) throw new Error("invalid SDK revision");
+    return `Android SDK Command-Line Tools ${revision}`;
+  } catch {
+    throw new Error("APK analyzer SDK metadata is unavailable or invalid");
+  }
 }
 
 function main() {

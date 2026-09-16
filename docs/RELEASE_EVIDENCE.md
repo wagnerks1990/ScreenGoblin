@@ -150,8 +150,10 @@ its DUMP permission, and the final packaged policy rejects their return.
 The validator emits a schema-versioned JSON summary containing the package and
 SDK values, sorted permissions and features, exported and non-exported
 component lists, SHA-256 of the textual packaged manifest, and SHA-256 of the
-exact unsigned APK from which it was extracted. It also records the analyzer
-version returned by the same executable that performed extraction.
+exact unsigned APK from which it was extracted. It also records the Android SDK
+Command-Line Tools revision from the bounded `Pkg.Revision` property beside the
+resolved analyzer executable; it does not depend on undocumented analyzer
+version output.
 CI retains that summary, the extracted manifest, and the unsigned release APK
 for seven days as `player-release-surface-<commit>`. The artifact is temporary
 engineering evidence and must not be distributed or represented as a signed

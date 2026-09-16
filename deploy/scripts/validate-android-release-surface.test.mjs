@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -51,15 +58,19 @@ test("binds the policy report to the inspected APK bytes", () => {
 
 test("extracts the exact manifest from the inspected APK", async () => {
   const directory = await mkdtemp(join(tmpdir(), "screengoblin-apkanalyzer-"));
-  const analyzer = join(directory, "apkanalyzer");
+  const commandLineTools = join(directory, "cmdline-tools", "fixture");
+  const analyzer = join(commandLineTools, "bin", "apkanalyzer");
   const apk = join(directory, "release.apk");
   try {
+    await mkdir(join(commandLineTools, "bin"), { recursive: true });
+    await writeFile(
+      join(commandLineTools, "source.properties"),
+      "Pkg.Revision=19.0\nPkg.Path=cmdline-tools;19.0\n",
+    );
     await writeFile(
       analyzer,
       `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf '%s\\n' 'apkanalyzer fixture-1'
-elif [ "$1" = "manifest" ] && [ "$2" = "print" ] && [ "$3" = "${apk}" ]; then
+if [ "$1" = "manifest" ] && [ "$2" = "print" ] && [ "$3" = "${apk}" ]; then
   cat '${fixtureUrl.pathname}'
 else
   exit 64
@@ -69,7 +80,7 @@ fi
     await chmod(analyzer, 0o700);
     await writeFile(apk, "fixture APK bytes");
     assert.deepEqual(extractAndroidReleaseManifest(analyzer, apk), {
-      analyzerVersion: "apkanalyzer fixture-1",
+      analyzerVersion: "Android SDK Command-Line Tools 19.0",
       xml: fixture,
     });
   } finally {
