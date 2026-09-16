@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
@@ -17,6 +26,13 @@ const EXPECTED_FEATURES = [
   "android.software.leanback",
 ];
 const MAX_SDK_PROPERTIES_BYTES = 16 * 1024;
+// apkanalyzer renders these manifest enum/flag values in their canonical
+// packaged numeric form rather than the symbolic values used by source XML.
+const PACKAGED_SIGNATURE_PROTECTION_LEVEL = "0x2"; // signature
+const PACKAGED_SINGLE_TASK_LAUNCH_MODE = "2"; // singleTask
+// locale, keyboard, keyboardHidden, navigation, orientation, screenLayout,
+// uiMode, screenSize, and smallestScreenSize.
+const PACKAGED_MAIN_ACTIVITY_CONFIG_CHANGES = "0xff4";
 
 const decodeXml = (value) =>
   value.replaceAll(/&(?:amp|lt|gt|quot|apos);/g, (entity) => {
@@ -133,8 +149,10 @@ const normalizeComponent = (name) => {
 };
 
 const exact = (expected) => (value) => value === expected;
+// apkanalyzer canonicalizes compiled resource IDs as @ref/0x followed by the
+// eight lowercase hexadecimal digits of the Android resource identifier.
 const resourceReference = (value) =>
-  typeof value === "string" && /^@[A-Za-z0-9_.:/-]+$/.test(value);
+  typeof value === "string" && /^@ref\/0x[0-9a-f]{8}$/.test(value);
 const absentOrFalse = (value) => value === undefined || value === "false";
 
 const requireAttributes = (node, required, optional = {}) => {
@@ -215,7 +233,7 @@ export function validateAndroidReleaseManifest(xml) {
     "android:name": exact(
       `${PACKAGE}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`,
     ),
-    "android:protectionLevel": exact("signature"),
+    "android:protectionLevel": exact(PACKAGED_SIGNATURE_PROTECTION_LEVEL),
   });
 
   const permissionNodes = manifest.children.filter((node) =>
@@ -303,14 +321,12 @@ export function validateAndroidReleaseManifest(xml) {
   if (activities.length !== 1) throw new Error("unexpected release activity");
   const activity = activities[0];
   requireAttributes(activity, {
-    "android:configChanges": exact(
-      "orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation",
-    ),
+    "android:configChanges": exact(PACKAGED_MAIN_ACTIVITY_CONFIG_CHANGES),
     "android:name": (value) =>
       normalizeComponent(value) === `${PACKAGE}.MainActivity`,
     "android:exported": exact("true"),
     "android:label": resourceReference,
-    "android:launchMode": exact("singleTask"),
+    "android:launchMode": exact(PACKAGED_SINGLE_TASK_LAUNCH_MODE),
     "android:theme": resourceReference,
   });
   requireOnlyChildren(activity, new Set(["intent-filter"]));
@@ -453,17 +469,47 @@ export function extractAndroidReleaseManifest(analyzerPath, apkPath) {
 }
 
 export function androidSdkCommandLineToolsVersion(analyzerPath) {
+  let propertiesDescriptor;
   try {
     const packageRoot = dirname(dirname(realpathSync(analyzerPath)));
     const propertiesPath = join(packageRoot, "source.properties");
-    const propertiesStat = statSync(propertiesPath);
+    const noFollow =
+      typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+    propertiesDescriptor = openSync(
+      propertiesPath,
+      constants.O_RDONLY | noFollow,
+    );
+    const propertiesStat = fstatSync(propertiesDescriptor, { bigint: true });
     if (
       !propertiesStat.isFile() ||
-      propertiesStat.size <= 0 ||
-      propertiesStat.size > MAX_SDK_PROPERTIES_BYTES
+      propertiesStat.size <= 0n ||
+      propertiesStat.size > BigInt(MAX_SDK_PROPERTIES_BYTES)
     )
       throw new Error("invalid SDK metadata size");
-    const properties = readFileSync(propertiesPath, "utf8");
+    const buffer = Buffer.alloc(MAX_SDK_PROPERTIES_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const count = readSync(
+        propertiesDescriptor,
+        buffer,
+        bytesRead,
+        buffer.length - bytesRead,
+        bytesRead,
+      );
+      if (count === 0) break;
+      bytesRead += count;
+    }
+    const finalStat = fstatSync(propertiesDescriptor, { bigint: true });
+    if (
+      BigInt(bytesRead) !== propertiesStat.size ||
+      finalStat.dev !== propertiesStat.dev ||
+      finalStat.ino !== propertiesStat.ino ||
+      finalStat.size !== propertiesStat.size ||
+      finalStat.mtimeNs !== propertiesStat.mtimeNs ||
+      finalStat.ctimeNs !== propertiesStat.ctimeNs
+    )
+      throw new Error("SDK metadata changed while being read");
+    const properties = buffer.subarray(0, bytesRead).toString("utf8");
     const revisionLines = properties
       .split(/\r?\n/)
       .filter((line) => /^\s*Pkg\.Revision\s*=/.test(line));
@@ -475,6 +521,8 @@ export function androidSdkCommandLineToolsVersion(analyzerPath) {
     return `Android SDK Command-Line Tools ${revision}`;
   } catch {
     throw new Error("APK analyzer SDK metadata is unavailable or invalid");
+  } finally {
+    if (propertiesDescriptor !== undefined) closeSync(propertiesDescriptor);
   }
 }
 

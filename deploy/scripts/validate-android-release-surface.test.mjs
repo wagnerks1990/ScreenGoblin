@@ -135,6 +135,14 @@ const mutations = [
       ),
   ],
   [
+    "nearby signature protection level",
+    (xml) =>
+      xml.replace(
+        'android:protectionLevel="0x2"',
+        'android:protectionLevel="0x3"',
+      ),
+  ],
+  [
     "uses-sdk max SDK",
     (xml) =>
       xml.replace(
@@ -188,6 +196,26 @@ const mutations = [
       xml.replace(
         'android:name="com.screengoblin.player.MainActivity"',
         'android:name="com.screengoblin.player.MainActivity" android:enabled="true"',
+      ),
+  ],
+  [
+    "nearby launcher config bitmask",
+    (xml) =>
+      xml.replace(
+        'android:configChanges="0xff4"',
+        'android:configChanges="0xff5"',
+      ),
+  ],
+  [
+    "nearby launcher mode",
+    (xml) => xml.replace('android:launchMode="2"', 'android:launchMode="3"'),
+  ],
+  [
+    "source-form resource reference",
+    (xml) =>
+      xml.replace(
+        'android:banner="@ref/0x7f070074"',
+        'android:banner="@drawable/tv_banner"',
       ),
   ],
   [

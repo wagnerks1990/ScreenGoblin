@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { constants } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,3 +64,29 @@ test("rejects missing, malformed, duplicate, and oversized SDK revisions", async
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  "does not follow a substituted SDK metadata symlink",
+  { skip: typeof constants.O_NOFOLLOW !== "number" },
+  async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "screengoblin-sdk-version-"),
+    );
+    try {
+      const { analyzer, packageRoot } = await createAnalyzer(
+        directory,
+        undefined,
+      );
+      const substituted = join(directory, "substituted.properties");
+      await writeFile(substituted, "Pkg.Revision=999.0\n");
+      await symlink(substituted, join(packageRoot, "source.properties"));
+
+      assert.throws(
+        () => androidSdkCommandLineToolsVersion(analyzer),
+        /APK analyzer SDK metadata is unavailable or invalid/,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
