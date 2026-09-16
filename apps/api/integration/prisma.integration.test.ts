@@ -4348,16 +4348,20 @@ describe("PrismaStore PostgreSQL integration", () => {
     ]);
     const actor = await createMember(organization.id, "OWNER", "sessions");
     const expiredHash = "c".repeat(64);
-    await prisma.userSession.create({
-      data: {
-        organizationId: organization.id,
-        userId: actor.id,
-        tokenHash: expiredHash,
-        authenticationEpoch: 0,
-        authorizationEpoch: 0,
-        expiresAt: new Date(Date.now() - 1_000),
-      },
-    });
+    await prisma.$executeRaw`
+      INSERT INTO "UserSession" (
+        "id", "organizationId", "userId", "tokenHash",
+        "authenticationEpoch", "authorizationEpoch", "purpose",
+        "expiresAt", "createdAt"
+      ) VALUES (
+        ${randomUUID()}, ${organization.id}, ${actor.id}, ${expiredHash},
+        0, 0, 'FULL', CURRENT_TIMESTAMP + INTERVAL '1 second', CURRENT_TIMESTAMP
+      )`;
+    // Let PostgreSQL's own clock move the constraint-valid fixture into the
+    // expired state before exercising bounded pruning. pg_sleep waits at least
+    // the requested duration, and the extra half-second avoids timer jitter.
+    await prisma.$queryRaw<Array<{ slept: number }>>`
+      SELECT 1::integer AS slept FROM pg_sleep(1.5)`;
     const createSession = (tokenHash: string) =>
       store.createUserSessionAndAudit(
         organization.id,
