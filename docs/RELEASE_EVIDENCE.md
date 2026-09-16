@@ -16,12 +16,15 @@ the retained SARIF but do not block this repository's gate and require explicit
 review or upstream remediation. Dependency review separately blocks newly
 introduced dependencies with known moderate-or-higher vulnerabilities.
 
-The Java gate contains one hash-bound false-positive acceptance for
-`java/improper-intent-verification` on `BootReceiver`. The receiver is explicitly
-non-exported and null-safely rejects every action except `BOOT_COMPLETED`, matching
-the query's recommendation. The exception activates only while both that source
-file and its manifest declaration retain their reviewed SHA-256 values; a change
-to either makes the alert blocking again. The full result remains in SARIF.
+The Java gate contains one source-hash-bound false-positive acceptance for
+`java/improper-intent-verification` on `BootReceiver`. The receiver checks the
+received action directly in `onReceive` with a constant-first exact allowlist
+before any side effect; null and every other action are rejected. A repository
+regression test locks that source ordering and singleton allowlist. The
+packaged-manifest gate separately requires the receiver to be non-exported and
+to declare only `BOOT_COMPLETED`. The exception activates only while the
+regression-tested receiver source retains its exact SHA-256 value; any runtime
+change makes the alert blocking again. The full result remains in SARIF.
 
 `.github/workflows/container-scan.yml` performs blocking repository vulnerability, secret, infrastructure/configuration misconfiguration, exact lockfile-license policy, and final-image vulnerability checks. The repository job uses the same checksum-verified Trivy binary for independent vulnerability, secret, configuration, and license-inventory passes. A repository-owned validator rejects unapproved or unidentified lockfile licenses and fails closed on broad, stale, malformed, or unused exceptions.
 

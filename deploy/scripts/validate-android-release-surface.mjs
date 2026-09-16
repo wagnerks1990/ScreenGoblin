@@ -54,11 +54,17 @@ function parseAttributes(source) {
 }
 
 function parseXml(xml) {
+  if (xml.includes("<!--") || xml.includes("-->"))
+    throw new Error("XML comments are forbidden");
   if (/<!DOCTYPE|<!ENTITY/i.test(xml))
     throw new Error("DTD and entity declarations are forbidden");
-  const cleaned = xml
-    .replaceAll(/<!--[^]*?-->/g, "")
-    .replace(/^\s*<\?xml[^?]*\?>/, "");
+  // Parse the analyzer output without deleting comments. Removing a comment
+  // can join two otherwise-invalid fragments into an allowlisted element or
+  // attribute name (for example, `allowBack<!-- -->up`). Comments are not
+  // needed in the packaged binary-manifest output, so the declaration check
+  // above rejects them fail closed.
+  const declaration = xml.match(/^\s*<\?xml[^?]*\?>/);
+  const cleaned = declaration ? xml.slice(declaration[0].length) : xml;
   const document = { name: "#document", attributes: new Map(), children: [] };
   const stack = [document];
   let cursor = 0;

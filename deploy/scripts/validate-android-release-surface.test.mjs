@@ -358,7 +358,11 @@ test("CI validates and retains the exact release APK evidence", async () => {
   assert.doesNotMatch(sourceManifest, /FileProvider|file_paths/);
   assert.match(
     sourceManifest,
-    /android:name="android\.permission\.DUMP" tools:node="remove"/,
+    /<uses-permission\b[^>]*android:name="android\.permission\.DUMP"[^>]*tools:ignore="ProtectedPermissions"[^>]*tools:node="remove"[^>]*\/>/,
+  );
+  assert.equal(
+    sourceManifest.match(/tools:ignore="ProtectedPermissions"/g)?.length,
+    1,
   );
   assert.match(
     sourceManifest,
@@ -375,6 +379,6 @@ test("CI validates and retains the exact release APK evidence", async () => {
   assert.equal(sourceManifest.match(/tools:ignore="MissingClass"/g)?.length, 3);
   assert.doesNotMatch(
     [workflow, appBuild, rootBuild, gradleProperties].join("\n"),
-    /MissingClass/,
+    /MissingClass|ProtectedPermissions/,
   );
 });

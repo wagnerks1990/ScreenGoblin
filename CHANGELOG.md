@@ -4,6 +4,11 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Make the Android boot receiver's runtime action authorization explicit and
+  regression-test its exact `BOOT_COMPLETED` allowlist. Narrow the documented
+  CodeQL false-positive acceptance to the reviewed receiver source so unrelated
+  safe manifest packaging changes do not disable the Java analysis gate.
+
 - Validate the manifest packaged inside the assembled Android release APK
   against a fail-closed exact policy for package/SDK identity, permissions,
   optional features, application security flags, and exported/non-exported
