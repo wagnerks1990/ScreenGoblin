@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -97,14 +98,20 @@ test("wrapper keeps the runtime password out of process arguments", () => {
   const fixture = mkdtempSync(join(tmpdir(), "screengoblin-db-role-"));
   try {
     const bin = join(fixture, "bin");
+    const temporaryDirectory = join(fixture, "tmp");
     mkdirSync(bin);
+    mkdirSync(temporaryDirectory);
     const fakePsql = join(bin, "psql");
     writeFileSync(
       fakePsql,
       `#!/bin/sh
 set -eu
 printf '%s\\n' "$@" >> "$ARGUMENT_CAPTURE"
-printf '%s\\n' "$PGDATABASE" >> "$DATABASE_CAPTURE"
+printf '%s\\n' "$PGSERVICE" >> "$SERVICE_NAME_CAPTURE"
+printf '%s\\n' "$PGSERVICEFILE" >> "$SERVICE_PATH_CAPTURE"
+cat "$PGSERVICEFILE" >> "$SERVICE_CONTENT_CAPTURE"
+[ "$(stat -c '%a' "$PGSERVICEFILE")" = 600 ]
+[ "\${PGDATABASE+x}" != x ]
 [ "$POSTGRES_RUNTIME_PASSWORD" = 'runtime secret with spaces' ]
 `,
     );
@@ -114,8 +121,11 @@ printf '%s\\n' "$PGDATABASE" >> "$DATABASE_CAPTURE"
       encoding: "utf8",
       env: {
         PATH: `${bin}:${process.env.PATH}`,
+        TMPDIR: temporaryDirectory,
         ARGUMENT_CAPTURE: join(fixture, "arguments"),
-        DATABASE_CAPTURE: join(fixture, "databases"),
+        SERVICE_NAME_CAPTURE: join(fixture, "service-names"),
+        SERVICE_PATH_CAPTURE: join(fixture, "service-paths"),
+        SERVICE_CONTENT_CAPTURE: join(fixture, "service-contents"),
         MIGRATION_DATABASE_URL:
           "postgresql://migration@example.test/screen?schema=public",
         DATABASE_URL: "postgresql://runtime@example.test/screen?schema=public",
@@ -134,9 +144,20 @@ printf '%s\\n' "$PGDATABASE" >> "$DATABASE_CAPTURE"
     assert.doesNotMatch(argumentsUsed, /runtime secret/);
     assert.doesNotMatch(argumentsUsed, /postgresql:\/\//);
     assert.equal(
-      readFileSync(join(fixture, "databases"), "utf8"),
-      "postgresql://migration@example.test/screen\npostgresql://runtime@example.test/screen\n",
+      readFileSync(join(fixture, "service-names"), "utf8"),
+      "migration\nruntime\n",
     );
+    assert.equal(
+      readFileSync(join(fixture, "service-contents"), "utf8"),
+      "[migration]\ndbname=postgresql://migration@example.test/screen\n[runtime]\ndbname=postgresql://runtime@example.test/screen\n".repeat(
+        2,
+      ),
+    );
+    const servicePaths = readFileSync(join(fixture, "service-paths"), "utf8")
+      .trim()
+      .split("\n");
+    assert.equal(new Set(servicePaths).size, 1);
+    assert.equal(existsSync(servicePaths[0]), false);
     assert.doesNotMatch(argumentsUsed, /runtime@example\.test/);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
