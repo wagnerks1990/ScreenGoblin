@@ -158,16 +158,42 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - run: npm ci
       - run: npm run android:sync -w @screengoblin/player
-      - name: Validate and build debug APK
+      - name: Validate and build Android APKs
         working-directory: apps/player/android
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon --dependency-verification=strict \
             lint test assembleDebug assembleRelease
+      - name: Validate packaged Android release surface
+        working-directory: apps/player/android
+        run: |
+          set -euo pipefail
+          analyzer="$(command -v apkanalyzer || true)"
+          if [ -z "$analyzer" ]; then
+            analyzer="$(find "$ANDROID_HOME/cmdline-tools" -type f -name apkanalyzer -print -quit)"
+          fi
+          test -n "$analyzer"
+          mkdir -p android-release-surface
+          "$analyzer" manifest print \
+            app/build/outputs/apk/release/app-release-unsigned.apk \
+            > android-release-surface/AndroidManifest.xml
+          node ../../../deploy/scripts/validate-android-release-surface.mjs \
+            android-release-surface/AndroidManifest.xml \
+            app/build/outputs/apk/release/app-release-unsigned.apk \
+            android-release-surface/report.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: player-debug-apk
           path: apps/player/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: player-release-surface-${{ github.sha }}
+          path: |
+            apps/player/android/app/build/outputs/apk/release/app-release-unsigned.apk
+            apps/player/android/android-release-surface/AndroidManifest.xml
+            apps/player/android/android-release-surface/report.json
           if-no-files-found: error
           retention-days: 7
 

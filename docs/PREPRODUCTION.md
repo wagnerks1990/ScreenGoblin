@@ -56,6 +56,15 @@ An unchecked item is a known gap, not an implicit approval.
       does not implement or complete the ingestion gate.
 - [ ] Secrets are in a managed secret store and rotation is rehearsed.
 - [ ] Images are digest-pinned; release artifacts have SBOMs and signatures.
+      CI now inspects the manifest packaged inside the assembled Android release
+      APK and rejects drift from the exact package, SDK, permission, optional
+      feature, application-flag, launcher-activity, and boot-receiver policy. It
+      also rejects unexpected package visibility, instrumentation, libraries,
+      aliases, services, and providers. The JSON report records both APK and
+      packaged-manifest SHA-256 values, but remains static package-surface
+      evidence only; it is not an APK signature,
+      provenance, an OWASP MASVS assessment, malware analysis, or
+      physical-device evidence, so this gate remains unchecked.
 - [ ] Dependency, CodeQL, container, DAST, and secret scans are clean or exceptions accepted.
       CI now blocks repository secrets, IaC/configuration misconfigurations, and
       unapproved lockfile licenses with narrow expiring exceptions and retained
@@ -98,5 +107,8 @@ An unchecked item is a known gap, not an implicit approval.
 - [ ] Terms, privacy notice, retention policy, license inventory, and support ownership are approved.
 - [ ] Protected branch requires review and passing CI/security checks.
 - [ ] Release version, immutable image digest, APK signature, and change log are recorded.
+      A packaged-manifest policy report may be attached as supporting static
+      evidence, but it does not replace the APK digest, production signing
+      certificate fingerprint, provenance, or controlled release record.
 - [ ] Emergency workflow has designated roles, two-person approval, and a tabletop exercise.
 - [ ] Product owner, security owner, and operations owner sign the go/no-go record.
