@@ -4,6 +4,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Fail production startup on wildcard, opaque, malformed, credentialed,
+  path-bearing, insecure network, local/private, or arbitrary custom-scheme
+  CORS origins. Canonical exact origins are bounded and deduplicated, while the
+  two native Player origins remain explicit exceptions; application startup
+  also rejects unsafe programmatic CORS options.
+
 - Keep the deployment environment template aligned with every required Compose
   input, including an independent private-media delivery secret, and make the
   Console release-evidence test portable across host time zones.

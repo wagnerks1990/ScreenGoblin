@@ -248,6 +248,72 @@ const publishApprovedSchedule = async (
 };
 
 describe("browser CORS policy", () => {
+  it("rejects unsafe programmatic origins before application startup", async () => {
+    await expect(
+      buildApp({
+        store: new MemoryStore(),
+        jwtSecret: secret,
+        manifestSigningPrivateKey: signingKey,
+        pairingCodePepper: secret,
+        deviceAuthMode: "development-bearer",
+        corsOrigins: ["*"],
+      }),
+    ).rejects.toThrow("entry 1");
+    await expect(
+      buildApp({
+        store: new MemoryStore(),
+        jwtSecret: secret,
+        manifestSigningPrivateKey: signingKey,
+        pairingCodePepper: secret,
+        deviceAuthMode: "development-bearer",
+        environment: "production",
+        corsOrigins: ["http://localhost:5173"],
+      }),
+    ).rejects.toThrow("entry 1");
+  });
+
+  it("allows only the exact native Player origins", async () => {
+    const nativeApp = await buildApp({
+      store: new MemoryStore(),
+      jwtSecret: secret,
+      manifestSigningPrivateKey: signingKey,
+      pairingCodePepper: secret,
+      deviceAuthMode: "development-bearer",
+      corsOrigins: ["https://localhost", "capacitor://localhost"],
+    });
+    try {
+      for (const origin of ["https://localhost", "capacitor://localhost"]) {
+        const allowed = await nativeApp.inject({
+          method: "OPTIONS",
+          url: "/health/live",
+          headers: {
+            origin,
+            "access-control-request-method": "GET",
+          },
+        });
+        expect(allowed.headers["access-control-allow-origin"]).toBe(origin);
+        expect(allowed.headers.vary).toContain("Origin");
+      }
+      for (const origin of [
+        "null",
+        "https://localhost:8443",
+        "capacitor://other-host",
+      ]) {
+        const denied = await nativeApp.inject({
+          method: "OPTIONS",
+          url: "/health/live",
+          headers: {
+            origin,
+            "access-control-request-method": "GET",
+          },
+        });
+        expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
+      }
+    } finally {
+      await nativeApp.close();
+    }
+  });
+
   it.each([
     {
       method: "DELETE",
@@ -302,6 +368,17 @@ describe("browser CORS policy", () => {
         },
       });
       expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
+
+      const opaque = await app.inject({
+        method: "OPTIONS",
+        url,
+        headers: {
+          origin: "null",
+          "access-control-request-method": method,
+          "access-control-request-headers": requestHeaders,
+        },
+      });
+      expect(opaque.headers["access-control-allow-origin"]).toBeUndefined();
     },
   );
 });

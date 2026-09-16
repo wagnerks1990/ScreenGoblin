@@ -34,6 +34,70 @@ const isUnsafeProductionSecret = (value: string) =>
 const isAllZeroSeed = (value: string) =>
   Buffer.from(value, "base64url").every((byte) => byte === 0);
 
+const MAX_CORS_ORIGINS = 32;
+const MAX_CORS_ORIGIN_LENGTH = 2_048;
+const CAPACITOR_ORIGIN = "capacitor://localhost";
+
+export function parseCorsOrigins(
+  raw: string,
+  environment: "development" | "test" | "production",
+): string[] {
+  const entries = raw.split(",").map((entry) => entry.trim());
+  if (entries.some((entry) => entry.length === 0))
+    throw new Error("must not contain an empty entry");
+  if (entries.length > MAX_CORS_ORIGINS)
+    throw new Error(`must contain at most ${MAX_CORS_ORIGINS} entries`);
+
+  const origins = entries.map((entry, index) => {
+    const label = `entry ${index + 1}`;
+    if (entry.length > MAX_CORS_ORIGIN_LENGTH)
+      throw new Error(`${label} is too long`);
+    if (entry === CAPACITOR_ORIGIN) return entry;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(entry);
+    } catch {
+      throw new Error(`${label} is not a valid origin`);
+    }
+    if (
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    )
+      throw new Error(
+        `${label} must be an origin without credentials, path, query, or fragment`,
+      );
+
+    const developmentLoopbackHttp =
+      environment !== "production" &&
+      parsed.protocol === "http:" &&
+      loopbackHostname(parsed.hostname);
+    if (parsed.protocol !== "https:" && !developmentLoopbackHttp)
+      throw new Error(
+        `${label} must use HTTPS (HTTP is limited to loopback development)`,
+      );
+
+    const nativeHttpsOrigin = parsed.origin === "https://localhost";
+    const ipHostname = parsed.hostname.replace(/^\[|\]$/g, "");
+    if (
+      parsed.protocol === "https:" &&
+      !nativeHttpsOrigin &&
+      (loopbackHostname(parsed.hostname) ||
+        obviouslyPrivateDnsName(parsed.hostname) ||
+        parsed.hostname.endsWith(".") ||
+        isIP(ipHostname) !== 0)
+    )
+      throw new Error(
+        `${label} must use a non-local DNS hostname or an exact native origin`,
+      );
+    return parsed.origin;
+  });
+  return [...new Set(origins)];
+}
+
 export function parsePublicApiUrl(
   raw: string,
   environment: "development" | "test" | "production",
@@ -152,6 +216,15 @@ const schema = z
   })
   .superRefine((value, context) => {
     try {
+      parseCorsOrigins(value.CORS_ORIGINS, value.NODE_ENV);
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        path: ["CORS_ORIGINS"],
+        message: error instanceof Error ? error.message : "is invalid",
+      });
+    }
+    try {
       parsePublicApiUrl(value.PUBLIC_API_URL, value.NODE_ENV);
     } catch (error) {
       context.addIssue({
@@ -238,11 +311,12 @@ const schema = z
         message: "must not use the all-zero test seed",
       });
   });
-export type Config = z.infer<typeof schema>;
+export type Config = z.infer<typeof schema> & { corsOrigins: string[] };
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
   const parsed = schema.parse(env);
   return {
     ...parsed,
+    corsOrigins: parseCorsOrigins(parsed.CORS_ORIGINS, parsed.NODE_ENV),
     PUBLIC_API_URL: parsePublicApiUrl(parsed.PUBLIC_API_URL, parsed.NODE_ENV),
   };
 };

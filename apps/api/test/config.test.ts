@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
-import { loadConfig, parseMediaAllowedOrigins } from "../src/config.js";
+import {
+  loadConfig,
+  parseCorsOrigins,
+  parseMediaAllowedOrigins,
+} from "../src/config.js";
 
 const base = {
   NODE_ENV: "production",
@@ -14,10 +18,86 @@ const base = {
   DEVICE_AUTH_MODE: "proof-v1",
   MANIFEST_SIGNING_PRIVATE_KEY: randomBytes(32).toString("base64url"),
   PUBLIC_API_URL: "https://signage.example.test",
+  CORS_ORIGINS: "https://console.example.test",
   MEDIA_ALLOWED_ORIGINS: "https://media.example.test",
 };
 
 describe("production configuration", () => {
+  it("normalizes and deduplicates exact CORS origins", () => {
+    expect(
+      loadConfig({
+        ...base,
+        CORS_ORIGINS:
+          "https://CONSOLE.EXAMPLE.TEST:443/, https://console.example.test, https://localhost, capacitor://localhost",
+      }).corsOrigins,
+    ).toEqual([
+      "https://console.example.test",
+      "https://localhost",
+      "capacitor://localhost",
+    ]);
+    expect(
+      parseCorsOrigins(
+        "http://localhost:5173,http://127.0.0.1:4173,http://[::1]:4173",
+        "development",
+      ),
+    ).toEqual([
+      "http://localhost:5173",
+      "http://127.0.0.1:4173",
+      "http://[::1]:4173",
+    ]);
+  });
+
+  it.each([
+    "",
+    "*",
+    "null",
+    "not-an-origin",
+    "https://user:password@console.example.test",
+    "https://console.example.test/path",
+    "https://console.example.test?tenant=school",
+    "https://console.example.test#fragment",
+    "http://console.example.test",
+    "https://127.0.0.1",
+    "https://[::1]",
+    "https://localhost:8443",
+    "https://localhost.",
+    "https://intranet",
+    "https://console.local",
+    "https://console.internal",
+    "https://console.lan",
+    "https://console.home.arpa",
+    "capacitor://localhost/",
+    "capacitor://localhost:443",
+    "capacitor://other-host",
+    "https://console.example.test,,https://player.example.test",
+    "https://console.example.test,*",
+  ])("rejects unsafe production CORS origin configuration %s", (origins) => {
+    expect(() => loadConfig({ ...base, CORS_ORIGINS: origins })).toThrow(
+      /CORS_ORIGINS/,
+    );
+  });
+
+  it.each([
+    ["not-an-origin-SENTINEL_INVALID", "SENTINEL_INVALID"],
+    [
+      "https://SENTINEL_USER:SENTINEL_PASSWORD@console.example.test",
+      "SENTINEL_PASSWORD",
+    ],
+    ["https://console.example.test?access=SENTINEL_QUERY", "SENTINEL_QUERY"],
+    ["https://SENTINEL_PRIVATE.internal", "SENTINEL_PRIVATE"],
+  ])("does not echo rejected CORS entry contents", (origins, sentinel) => {
+    let failure: unknown;
+    try {
+      loadConfig({ ...base, CORS_ORIGINS: origins });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(String(failure)).toContain("CORS_ORIGINS");
+    expect(String(failure)).toContain("entry 1");
+    expect(String(failure)).not.toContain(sentinel);
+  });
+
   it("requires HTTPS and independent secrets", () => {
     expect(() =>
       loadConfig({

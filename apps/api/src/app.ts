@@ -8,6 +8,7 @@ import type { Redis } from "ioredis";
 import { ZodError } from "zod";
 import type { DataStore } from "./domain/types.js";
 import { PrismaStore } from "./store/prisma.js";
+import { parseCorsOrigins } from "./config.js";
 import { authPlugin } from "./plugins/auth.js";
 import { ApiError } from "./utils/http.js";
 import { authRoutes } from "./routes/auth.js";
@@ -47,6 +48,7 @@ export interface BuildOptions {
   rateLimitBudget?: RateLimitBudget;
   requireRedis?: boolean;
   closeRedisOnClose?: boolean;
+  environment?: "development" | "test" | "production";
   onRoute?: (route: RouteOptions) => void;
 }
 
@@ -64,6 +66,11 @@ export async function buildApp(
 ): Promise<FastifyInstance> {
   if (options.requireRedis && !options.redis)
     throw new Error("Redis is required for production request protection");
+  const corsOrigins = parseCorsOrigins(
+    (options.corsOrigins ?? ["http://localhost:5173"]).join(","),
+    options.environment ??
+      (process.env.NODE_ENV === "production" ? "production" : "test"),
+  );
   const app = Fastify({
     logger: options.logger
       ? {
@@ -112,7 +119,7 @@ export async function buildApp(
   });
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
-    origin: options.corsOrigins ?? ["http://localhost:5173"],
+    origin: corsOrigins,
     methods: BROWSER_CORS_METHODS,
     credentials: true,
   });
