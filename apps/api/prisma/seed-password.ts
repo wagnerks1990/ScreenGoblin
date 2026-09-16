@@ -1,5 +1,4 @@
-const MINIMUM_SEED_PASSWORD_CHARACTERS = 16;
-const MAXIMUM_BCRYPT_PASSWORD_BYTES = 72;
+import { validateTemporaryPassword } from "../src/identity/temporary-password-policy.js";
 
 type SeedEnvironment = Record<string, string | undefined>;
 
@@ -11,10 +10,7 @@ const requiredSeedValue = (environment: SeedEnvironment, name: string) => {
 };
 
 export const validateSeedPassword = (password: string): void => {
-  if ([...password].length < MINIMUM_SEED_PASSWORD_CHARACTERS)
-    throw new Error("SEED_ADMIN_PASSWORD must contain at least 16 characters");
-  if (Buffer.byteLength(password, "utf8") > MAXIMUM_BCRYPT_PASSWORD_BYTES)
-    throw new Error("SEED_ADMIN_PASSWORD must contain at most 72 UTF-8 bytes");
+  validateTemporaryPassword(password, "SEED_ADMIN_PASSWORD");
 };
 
 export const readSeedEnvironment = (

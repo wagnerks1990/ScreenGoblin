@@ -20,6 +20,21 @@ rotation, user disablement, role change, and membership removal exist only as
 trusted internal, system-audited store operations in this prototype; there are
 no public identity-administration endpoints.
 
+New non-owner accounts are created only by the acknowledged offline
+`member:provision` operator command. It creates only new identities, accepts
+only `ADMIN`, `PUBLISHER`, or `VIEWER`, and refuses every non-exact existing
+normalized email. In one transaction it creates the user, one membership, that
+membership's exact
+compatibility grants, a fixed database-time 24-hour bootstrap marker, and the
+`identity.member_provisioned` and
+`auth.bootstrap_password_containment_enabled` audit events. One exact rerun may
+report `UNCHANGED` only while the original marker is unexpired and all
+normalized input, password, membership, grant, and audit state still matches;
+it performs no reset, extension, or other mutation. The temporary credential
+receives only the forced-rotation session described
+below. This command is not an API route and does not add remote identity
+administration.
+
 A seeded owner is the narrow exception to the ordinary session contract. Until
 its bootstrap password is changed, `POST /auth/login` returns a token with
 `nextAction: "CHANGE_BOOTSTRAP_PASSWORD"` and an RFC 3339 `changeBefore`

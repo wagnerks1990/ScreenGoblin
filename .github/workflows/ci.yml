@@ -124,6 +124,10 @@ jobs:
       SEED_ADMIN_NAME: E2E Owner
       SEED_ORGANIZATION_NAME: ScreenGoblin E2E
       SEED_ORGANIZATION_SLUG: screengoblin-e2e
+      E2E_PUBLISHER_EMAIL: publisher.e2e@example.test
+      E2E_PUBLISHER_TEMPORARY_PASSWORD: e2e-only-publisher-temporary-password
+      E2E_ADMIN_EMAIL: admin.e2e@example.test
+      E2E_ADMIN_TEMPORARY_PASSWORD: e2e-only-admin-temporary-password
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -137,6 +141,26 @@ jobs:
       - run: npm run prisma:generate -w @screengoblin/api
       - run: npm run prisma:migrate -w @screengoblin/api
       - run: npm run prisma:seed -w @screengoblin/api
+      - name: Provision isolated publisher evidence principal
+        run: npm run member:provision -w @screengoblin/api
+        env:
+          MEMBER_PROVISION_ACKNOWLEDGEMENT: CREATE_NEW_NON_OWNER_MEMBER_WITH_24_HOUR_ROTATION
+          MEMBER_PROVISION_ORGANIZATION_SLUG: screengoblin-e2e
+          MEMBER_PROVISION_EMAIL: ${{ env.E2E_PUBLISHER_EMAIL }}
+          MEMBER_PROVISION_NAME: E2E Publisher
+          MEMBER_PROVISION_ROLE: PUBLISHER
+          MEMBER_PROVISION_TEMPORARY_PASSWORD: ${{ env.E2E_PUBLISHER_TEMPORARY_PASSWORD }}
+          MEMBER_PROVISION_REASON: Exercise browser maker-checker release evidence
+      - name: Provision isolated administrator evidence principal
+        run: npm run member:provision -w @screengoblin/api
+        env:
+          MEMBER_PROVISION_ACKNOWLEDGEMENT: CREATE_NEW_NON_OWNER_MEMBER_WITH_24_HOUR_ROTATION
+          MEMBER_PROVISION_ORGANIZATION_SLUG: screengoblin-e2e
+          MEMBER_PROVISION_EMAIL: ${{ env.E2E_ADMIN_EMAIL }}
+          MEMBER_PROVISION_NAME: E2E Administrator
+          MEMBER_PROVISION_ROLE: ADMIN
+          MEMBER_PROVISION_TEMPORARY_PASSWORD: ${{ env.E2E_ADMIN_TEMPORARY_PASSWORD }}
+          MEMBER_PROVISION_REASON: Exercise browser maker-checker release evidence
       - run: npm run build -w @screengoblin/api
       - run: npm run build -w @screengoblin/console
       - run: npm run test:e2e:console

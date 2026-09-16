@@ -12,6 +12,10 @@ const migrationUrl = new URL(
 const schemaUrl = new URL("apps/api/prisma/schema.prisma", root);
 const seedUrl = new URL("apps/api/prisma/seed.ts", root);
 const seedPasswordUrl = new URL("apps/api/prisma/seed-password.ts", root);
+const temporaryPasswordPolicyUrl = new URL(
+  "apps/api/src/identity/temporary-password-policy.ts",
+  root,
+);
 const composeUrl = new URL("docker-compose.yml", root);
 const playwrightConfigUrl = new URL("playwright.config.ts", root);
 const playwrightSetupUrl = new URL("e2e/global-setup.ts", root);
@@ -126,9 +130,10 @@ test("runtime DAST inventory includes bootstrap password rotation", async () => 
 });
 
 test("seed containment is atomic, database-clock-bound, and idempotent", async () => {
-  const [seed, seedPassword] = await Promise.all([
+  const [seed, seedPassword, temporaryPasswordPolicy] = await Promise.all([
     readFile(seedUrl, "utf8"),
     readFile(seedPasswordUrl, "utf8"),
+    readFile(temporaryPasswordPolicyUrl, "utf8"),
   ]);
   assert.match(seed, /readSeedEnvironment\(\)/);
   assert.ok(
@@ -140,9 +145,13 @@ test("seed containment is atomic, database-clock-bound, and idempotent", async (
       'requiredSeedValue(environment, "SEED_ADMIN_PASSWORD")',
     ) < seedPassword.indexOf("validateSeedPassword(password)"),
   );
-  assert.match(seedPassword, /\[\.\.\.password\]\.length/);
-  assert.match(seedPassword, /Buffer\.byteLength\(password, "utf8"\)/);
-  assert.match(seedPassword, /MAXIMUM_BCRYPT_PASSWORD_BYTES = 72/);
+  assert.match(seedPassword, /validateTemporaryPassword/);
+  assert.match(temporaryPasswordPolicy, /\[\.\.\.password\]\.length/);
+  assert.match(
+    temporaryPasswordPolicy,
+    /Buffer\.byteLength\(password, "utf8"\)/,
+  );
+  assert.match(temporaryPasswordPolicy, /MAXIMUM_BCRYPT_PASSWORD_BYTES = 72/);
   assert.match(seed, /pg_advisory_xact_lock\(hashtextextended\(/);
   const lockIdentity = seed.match(
     /const bootstrapSeedLockIdentity =([\s\S]*?);/,

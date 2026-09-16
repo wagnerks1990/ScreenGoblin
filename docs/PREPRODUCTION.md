@@ -39,6 +39,14 @@ An unchecked item is a known gap, not an implicit approval.
       and pending issuer authority across memberships. This containment does
       not provide SSO, MFA, breached-password screening, secret-store delivery,
       or an approved human recovery process, so the gate remains unchecked.
+      An acknowledged offline, create-only command can provision `ADMIN`,
+      `PUBLISHER`, or `VIEWER` accounts with one exact compatibility-grant
+      bundle, tenant audit events, and a fixed 24-hour forced-rotation
+      credential; non-exact existing emails fail closed, an exact rerun is
+      verification-only, and `OWNER` is forbidden. This provides a bounded
+      pilot path, not SSO/MFA, remote lifecycle
+      administration, dual control, approved recipient verification, or human
+      access-review evidence, so the gate remains unchecked.
       PostgreSQL deployment identities are separated: the schema owner is
       reserved for migrations/privilege reconciliation, while the API, seed,
       and offline recovery use a non-owning runtime role denied schema/trigger
@@ -106,8 +114,13 @@ An unchecked item is a known gap, not an implicit approval.
 - [ ] The ordinary release-candidate workflow is operationally accepted and its
       Console UX, scoped grants, MFA/re-authentication, retention monitoring, and
       human evidence have been validated. The API now blocks direct publication
-      and enforces distinct author/approver identities, but that engineering
-      control alone does not complete this gate.
+      and enforces distinct author/approver identities. The repository browser
+      gate provisions and rotates separate `PUBLISHER` and `ADMIN` users, proves
+      the publisher cannot approve, and verifies create/submit, admin approval,
+      publisher publication, assignment, schedule, and audit attribution. That
+      engineering evidence does not replace operational acceptance, scoped
+      grants, MFA/re-authentication, retention monitoring, or human review, so
+      the gate remains unchecked.
 - [ ] Terms, privacy notice, retention policy, license inventory, and support ownership are approved.
 - [ ] Protected branch requires review and passing CI/security checks.
 - [ ] Release version, immutable image digest, APK signature, and change log are recorded.

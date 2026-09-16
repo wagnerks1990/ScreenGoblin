@@ -156,6 +156,22 @@ proof of recipient identity. This containment reduces exposure from a
 deployment-delivered secret; it is not MFA, SSO, password-strength screening, a
 secret manager, or an account-recovery approval policy.
 
+Non-owner member creation is likewise an offline operator trust boundary, not
+an HTTP route. It requires an exact acknowledgement, the non-owning runtime
+database identity, one existing organization, and a role of only
+`ADMIN`, `PUBLISHER`, or `VIEWER`; it cannot mint an `OWNER`. Creation of the
+user, membership, exact compatibility grants, fixed database-time 24-hour
+bootstrap marker, and two tenant audit events is atomic. Non-exact existing
+normalized emails fail closed. A verification-only exact rerun may report
+`UNCHANGED` while the original marker is still live, but cannot reset the
+password, extend the deadline, change a role, add another membership, or
+duplicate audit evidence. The temporary password is never printed and grants
+only the forced-rotation flow until changed. This reduces
+ad-hoc database manipulation and long-lived delivered credentials, but operator
+database access and credential delivery remain privileged risks; it is not
+MFA, SSO, dual control, recipient-identity proof, or a general user-lifecycle
+administration plane.
+
 The database and shared policy library contain an additive scoped-
 authorization foundation: tenant-constrained flat screen groups, exact grant
 scope shapes, a closed non-emergency grant vocabulary, role ceilings, and

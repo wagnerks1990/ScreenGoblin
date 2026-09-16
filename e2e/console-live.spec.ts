@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 
 const apiBaseUrl =
   process.env.E2E_API_BASE_URL ?? "http://127.0.0.1:3000/api/v1";
+const consoleBaseUrl =
+  process.env.E2E_CONSOLE_BASE_URL ?? "http://127.0.0.1:4173";
 const liveScreenName = "Chromium E2E Screen";
 const demoScreenNames = [
   "Main Lobby",
@@ -25,6 +28,17 @@ function requiredOwnerCredentials() {
   return { email, password };
 }
 
+function requiredEvidencePrincipal(prefix: "E2E_PUBLISHER" | "E2E_ADMIN") {
+  const email = process.env[`${prefix}_EMAIL`]?.trim();
+  const password = process.env[`${prefix}_PASSWORD`];
+  if (!email || !password) {
+    throw new Error(
+      `The Console E2E bootstrap setup did not provide ${prefix} credentials`,
+    );
+  }
+  return { email, password };
+}
+
 async function clearBrowserSession(page: Page) {
   await page.goto("/dashboard");
   await page.evaluate(() => window.sessionStorage.clear());
@@ -41,6 +55,30 @@ async function loginAsSeededOwner(page: Page) {
   await expect(
     page.getByRole("button", { name: "Disconnect live" }),
   ).toBeVisible();
+}
+
+async function loginAs(
+  page: Page,
+  principal: { email: string; password: string },
+) {
+  await page.goto("/dashboard");
+  await page.getByRole("button", { name: /connect live/i }).click();
+  await page.getByLabel("Email").fill(principal.email);
+  await page.getByLabel("Password").fill(principal.password);
+  await page.getByRole("button", { name: "Connect live" }).click();
+  await expect(
+    page.getByRole("button", { name: "Disconnect live" }),
+  ).toBeVisible();
+}
+
+async function sessionIdentity(page: Page) {
+  return page.evaluate(() => {
+    const token = window.sessionStorage.getItem("sg_access_token");
+    const rawUser = window.sessionStorage.getItem("sg_session_user");
+    if (!token || !rawUser) throw new Error("Live session was not persisted");
+    const user = JSON.parse(rawUser) as { id: string; role: string };
+    return { token, user };
+  });
 }
 
 async function ensureLiveScreen(page: Page) {
@@ -362,4 +400,282 @@ test("release review mirrors live immutable candidates without demo substitution
   await expect(page.getByText(demoScheduleName, { exact: true })).toHaveCount(
     0,
   );
+});
+
+test("distinct publisher and administrator principals complete an exact maker-checker release", async ({
+  browser,
+}) => {
+  const evidenceContextOptions = {
+    baseURL: consoleBaseUrl,
+    locale: "en-US",
+    timezoneId: "UTC",
+  } as const;
+  const publisherContext = await browser.newContext(evidenceContextOptions);
+  const administratorContext = await browser.newContext(evidenceContextOptions);
+  const publisherPage = await publisherContext.newPage();
+  const administratorPage = await administratorContext.newPage();
+  const evidenceSuffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const screenName = `Maker-checker screen ${evidenceSuffix}`;
+  const playlistName = `Maker-checker playlist ${evidenceSuffix}`;
+  const scheduleName = `Maker-checker release ${evidenceSuffix}`;
+
+  try {
+    await loginAs(publisherPage, requiredEvidencePrincipal("E2E_PUBLISHER"));
+    await loginAs(administratorPage, requiredEvidencePrincipal("E2E_ADMIN"));
+    const publisher = await sessionIdentity(publisherPage);
+    const administrator = await sessionIdentity(administratorPage);
+    expect(publisher.user.role).toBe("PUBLISHER");
+    expect(administrator.user.role).toBe("ADMIN");
+    expect(publisher.user.id).not.toBe(administrator.user.id);
+    expect(publisher.token).not.toBe(administrator.token);
+
+    const screenResponse = await administratorPage.request.post(
+      `${apiBaseUrl}/screens`,
+      {
+        headers: { Authorization: `Bearer ${administrator.token}` },
+        data: {
+          name: screenName,
+          location: "Isolated maker-checker browser evidence",
+          orientation: "landscape",
+          resolution: "1920x1080",
+          tags: ["e2e", "maker-checker"],
+        },
+      },
+    );
+    expect(screenResponse.status()).toBe(201);
+    const screen = (await screenResponse.json()) as { id: string };
+
+    const playlistResponse = await publisherPage.request.post(
+      `${apiBaseUrl}/playlists`,
+      {
+        headers: { Authorization: `Bearer ${publisher.token}` },
+        data: {
+          name: playlistName,
+          description: "Empty immutable playlist for maker-checker evidence",
+          items: [],
+        },
+      },
+    );
+    expect(playlistResponse.status()).toBe(201);
+    const playlist = (await playlistResponse.json()) as { id: string };
+
+    const startsAt = new Date(Date.now() + 60 * 60 * 1_000);
+    const expiresAt = new Date(Date.now() + 4 * 60 * 60 * 1_000);
+    await publisherPage.goto("/releases");
+    await publisherPage.getByRole("button", { name: "New candidate" }).click();
+    const createDialog = publisherPage.getByRole("dialog", {
+      name: "Create immutable candidate",
+    });
+    await createDialog.getByLabel("Playlist").selectOption(playlist.id);
+    await createDialog.getByLabel("Schedule name").fill(scheduleName);
+    await createDialog
+      .getByLabel("Starts (browser local time)")
+      .fill(startsAt.toISOString().slice(0, 16));
+    await createDialog
+      .getByLabel("Candidate expires (browser local time, within seven days)")
+      .fill(expiresAt.toISOString().slice(0, 16));
+    await createDialog.getByLabel("IANA time zone").fill("UTC");
+    await createDialog
+      .getByRole("checkbox", { name: new RegExp(screenName) })
+      .check();
+    await createDialog
+      .getByRole("button", { name: "Freeze candidate" })
+      .click();
+    await expect(
+      publisherPage.getByText(
+        "Draft candidate created. Review its frozen evidence before submission.",
+      ),
+    ).toBeVisible();
+    const publisherEvidence = publisherPage.getByRole("dialog", {
+      name: scheduleName,
+    });
+
+    const candidatesResponse = await publisherPage.request.get(
+      `${apiBaseUrl}/release-candidates`,
+      { headers: { Authorization: `Bearer ${publisher.token}` } },
+    );
+    expect(candidatesResponse).toBeOK();
+    const candidates = (await candidatesResponse.json()) as {
+      data: Array<{
+        id: string;
+        state: string;
+        digestSha256: string;
+        authorUserId: string;
+        schedule: { name: string };
+      }>;
+    };
+    const candidate = candidates.data.find(
+      (record) =>
+        record.authorUserId === publisher.user.id &&
+        record.schedule.name === scheduleName,
+    );
+    expect(candidate).toMatchObject({
+      state: "DRAFT",
+      authorUserId: publisher.user.id,
+    });
+    expect(candidate?.digestSha256).toMatch(/^[0-9a-f]{64}$/);
+
+    await publisherEvidence
+      .getByRole("button", { name: "Submit exact candidate" })
+      .click();
+    await expect(
+      publisherPage.getByText("Candidate submit completed."),
+    ).toBeVisible();
+    await expect(
+      publisherEvidence.getByText("IN_REVIEW", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      publisherEvidence.getByRole("button", {
+        name: "Approve exact candidate",
+      }),
+    ).toHaveCount(0);
+    await expect(
+      publisherEvidence.getByText(/No action is available to this principal/),
+    ).toBeVisible();
+
+    const selfApprovalResponse = await publisherPage.request.post(
+      `${apiBaseUrl}/release-candidates/${candidate!.id}/approve`,
+      {
+        headers: {
+          Authorization: `Bearer ${publisher.token}`,
+          "Idempotency-Key": randomUUID(),
+        },
+        data: { digestSha256: candidate!.digestSha256 },
+      },
+    );
+    expect(selfApprovalResponse.status()).toBe(403);
+
+    await administratorPage.goto("/releases");
+    await administratorPage
+      .getByRole("row", { name: new RegExp(candidate!.id) })
+      .getByRole("button", { name: "Review exact evidence" })
+      .click();
+    const administratorEvidence = administratorPage.getByRole("dialog", {
+      name: scheduleName,
+    });
+    await administratorEvidence
+      .getByRole("button", { name: "Approve exact candidate" })
+      .click();
+    await expect(
+      administratorPage.getByText("Candidate approve completed."),
+    ).toBeVisible();
+    await expect(
+      administratorEvidence.getByText("APPROVED", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      administratorEvidence.getByText(administrator.user.id, { exact: true }),
+    ).toBeVisible();
+
+    await publisherPage.goto("/releases");
+    await publisherPage
+      .getByRole("row", { name: new RegExp(candidate!.id) })
+      .getByRole("button", { name: "Review exact evidence" })
+      .click();
+    const finalPublisherEvidence = publisherPage.getByRole("dialog", {
+      name: scheduleName,
+    });
+    await finalPublisherEvidence
+      .getByRole("button", { name: "Publish exact candidate" })
+      .click();
+    await expect(
+      publisherPage.getByText("Candidate publish completed."),
+    ).toBeVisible();
+    await expect(
+      finalPublisherEvidence.getByText("PUBLISHED", { exact: true }),
+    ).toBeVisible();
+
+    const finalCandidateResponse = await publisherPage.request.get(
+      `${apiBaseUrl}/release-candidates/${candidate!.id}`,
+      { headers: { Authorization: `Bearer ${publisher.token}` } },
+    );
+    expect(finalCandidateResponse).toBeOK();
+    const finalCandidate = (await finalCandidateResponse.json()) as {
+      state: string;
+      authorUserId: string;
+      digestSha256: string;
+      releaseId: string;
+      scheduleId?: string;
+      assignmentId?: string;
+      screenIds: string[];
+      approval?: { approverUserId: string; candidateDigestSha256: string };
+    };
+    expect(finalCandidate).toMatchObject({
+      state: "PUBLISHED",
+      authorUserId: publisher.user.id,
+      digestSha256: candidate!.digestSha256,
+      screenIds: [screen.id],
+      approval: {
+        approverUserId: administrator.user.id,
+        candidateDigestSha256: candidate!.digestSha256,
+      },
+    });
+    expect(finalCandidate.scheduleId).toBeTruthy();
+    expect(finalCandidate.assignmentId).toBeTruthy();
+
+    const schedulesResponse = await publisherPage.request.get(
+      `${apiBaseUrl}/schedules`,
+      { headers: { Authorization: `Bearer ${publisher.token}` } },
+    );
+    expect(schedulesResponse).toBeOK();
+    const schedules = (await schedulesResponse.json()) as {
+      data: Array<{
+        id: string;
+        assignmentId?: string;
+        releaseId?: string;
+        playlistId: string;
+        screenIds: string[];
+      }>;
+    };
+    expect(
+      schedules.data.find(
+        (schedule) => schedule.id === finalCandidate.scheduleId,
+      ),
+    ).toMatchObject({
+      assignmentId: finalCandidate.assignmentId,
+      releaseId: finalCandidate.releaseId,
+      playlistId: playlist.id,
+      screenIds: [screen.id],
+    });
+
+    const auditsResponse = await administratorPage.request.get(
+      `${apiBaseUrl}/audit-events?limit=200`,
+      { headers: { Authorization: `Bearer ${administrator.token}` } },
+    );
+    expect(auditsResponse).toBeOK();
+    const audits = (await auditsResponse.json()) as {
+      data: Array<{
+        actorUserId?: string;
+        action: string;
+        entityId?: string;
+      }>;
+    };
+    const candidateAudits = audits.data.filter(
+      (event) => event.entityId === candidate!.id,
+    );
+    for (const action of [
+      "release.candidate.created",
+      "release.candidate.submitted",
+      "release.candidate.published",
+    ]) {
+      expect(candidateAudits).toContainEqual(
+        expect.objectContaining({ action, actorUserId: publisher.user.id }),
+      );
+    }
+    expect(candidateAudits).toContainEqual(
+      expect.objectContaining({
+        action: "release.candidate.approved",
+        actorUserId: administrator.user.id,
+      }),
+    );
+    expect(audits.data).toContainEqual(
+      expect.objectContaining({
+        action: "release.published",
+        actorUserId: publisher.user.id,
+        entityId: finalCandidate.releaseId,
+      }),
+    );
+  } finally {
+    await publisherContext.close();
+    await administratorContext.close();
+  }
 });
