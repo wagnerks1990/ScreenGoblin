@@ -363,6 +363,34 @@ describe("device revocation", () => {
     expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
   });
 
+  it("retries failed revoked-media cleanup after reload before pairing", async () => {
+    mocks.getCredentials
+      .mockResolvedValueOnce(credentials)
+      .mockResolvedValue(undefined);
+    mocks.getActiveManifest
+      .mockResolvedValueOnce({ formatVersion: 1 })
+      .mockResolvedValue(undefined);
+    mocks.removeAll
+      .mockRejectedValueOnce(new Error("native cache unavailable"))
+      .mockResolvedValueOnce(undefined);
+    mocks.heartbeat.mockRejectedValue(
+      new PlayerApiFailure("revoked", "http", false, 401),
+    );
+
+    const firstBoot = render(<App />);
+    expect(
+      await screen.findByText(
+        "Revoked device data could not be securely cleared",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Pair this screen")).not.toBeInTheDocument();
+    firstBoot.unmount();
+
+    render(<App />);
+    expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
+    expect(mocks.removeAll).toHaveBeenCalledTimes(2);
+  });
+
   it("purges stale content staged after concurrent heartbeat revocation", async () => {
     let finishStaging!: (value: PlayerManifest) => void;
     mocks.stageAndActivate.mockReturnValue(

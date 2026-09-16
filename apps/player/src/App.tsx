@@ -105,6 +105,12 @@ export default function App() {
             return;
           }
           setPendingPairing(resumable);
+          // A prior revocation may have removed credentials before native or
+          // browser media cleanup failed. Credential absence is therefore a
+          // durable cleanup marker: never expose pairing until a clean boot
+          // proves no orphaned playback bytes remain.
+          if (!savedCredentials && !savedActive && !savedPrevious)
+            await assetRepository.removeAll();
           const validCredentials =
             savedCredentials &&
             savedCredentials.manifestVerificationKey &&
