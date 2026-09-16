@@ -102,19 +102,27 @@ const waitForOwnerContinuityWaiters = async (minimum: number) => {
     `Timed out waiting for ${minimum} owner-continuity transaction(s)`,
   );
 };
-const waitForBlockedStatement = async (queryFragment: string) => {
+const waitForBlockedStatement = async (
+  queryFragment: string,
+  alreadyObservedProcessIds: ReadonlySet<number>,
+) => {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const [activity] = await prisma.$queryRaw<Array<{ count: number }>>`
-      SELECT COUNT(*)::integer AS "count"
+    const activity = await prisma.$queryRaw<Array<{ pid: number }>>`
+      SELECT pid
       FROM pg_stat_activity
       WHERE datname = current_database()
         AND pid <> pg_backend_pid()
         AND wait_event_type = 'Lock'
         AND query LIKE ${`%${queryFragment}%`}`;
-    if ((activity?.count ?? 0) >= 1) return;
+    const newlyBlocked = activity.find(
+      ({ pid }) => !alreadyObservedProcessIds.has(pid),
+    );
+    if (newlyBlocked) return newlyBlocked.pid;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`Timed out waiting for blocked query: ${queryFragment}`);
+  throw new Error(
+    `Timed out waiting for a new blocked query: ${queryFragment}`,
+  );
 };
 const queueMembershipRowOperations = async (
   organizationId: string,
@@ -149,6 +157,7 @@ const queueMembershipRowOperations = async (
       | { succeeded: false; error: unknown }
     >
   > = [];
+  const blockedProcessIds = new Set<number>();
   let barrierError: unknown;
   try {
     await acquired.promise;
@@ -165,7 +174,9 @@ const queueMembershipRowOperations = async (
         },
       );
       operationSettled.push(pending);
-      await waitForBlockedStatement(operation.waitFor);
+      blockedProcessIds.add(
+        await waitForBlockedStatement(operation.waitFor, blockedProcessIds),
+      );
       if (settled)
         throw new Error("Membership operation completed before lock release");
     }
@@ -6053,7 +6064,11 @@ describe("PrismaStore PostgreSQL integration", () => {
         run: publish,
       };
       const removalOperation = {
-        waitFor: 'FROM "Membership" membership',
+        // This projection is unique to the removal lock. The publication lock
+        // also selects from Membership, so that broader fragment could mistake
+        // the already-blocked publication backend for the removal backend and
+        // release the test's holder before removal had joined the lock queue.
+        waitFor: 'CURRENT_TIMESTAMP AS "databaseNow"',
         run: remove,
       };
       const results = await queueMembershipRowOperations(
