@@ -430,6 +430,7 @@ describe("device revocation", () => {
     render(<App />);
 
     expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledOnce());
     const playbackError = mocks.playbackProps?.onPlaybackError as
       (() => Promise<void>) | undefined;
     expect(playbackError).toBeTypeOf("function");

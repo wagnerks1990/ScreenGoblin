@@ -16,12 +16,15 @@ the retained SARIF but do not block this repository's gate and require explicit
 review or upstream remediation. Dependency review separately blocks newly
 introduced dependencies with known moderate-or-higher vulnerabilities.
 
-The Java gate contains one hash-bound false-positive acceptance for
-`java/improper-intent-verification` on `BootReceiver`. The receiver is explicitly
-non-exported and null-safely rejects every action except `BOOT_COMPLETED`, matching
-the query's recommendation. The exception activates only while both that source
-file and its manifest declaration retain their reviewed SHA-256 values; a change
-to either makes the alert blocking again. The full result remains in SARIF.
+The Java gate contains one source-hash-bound false-positive acceptance for
+`java/improper-intent-verification` on `BootReceiver`. The receiver checks the
+received action directly in `onReceive` with a constant-first exact allowlist
+before any side effect; null and every other action are rejected. A repository
+regression test locks that source ordering and singleton allowlist. The
+packaged-manifest gate separately requires the receiver to be non-exported and
+to declare only `BOOT_COMPLETED`. The exception activates only while the
+regression-tested receiver source retains its exact SHA-256 value; any runtime
+change makes the alert blocking again. The full result remains in SARIF.
 
 `.github/workflows/container-scan.yml` performs blocking repository vulnerability, secret, infrastructure/configuration misconfiguration, exact lockfile-license policy, and final-image vulnerability checks. The repository job uses the same checksum-verified Trivy binary for independent vulnerability, secret, configuration, and license-inventory passes. A repository-owned validator rejects unapproved or unidentified lockfile licenses and fails closed on broad, stale, malformed, or unused exceptions.
 
@@ -124,6 +127,48 @@ jose4j 0.9.6, and JDOM 2.0.6.1 across root, regenerated-project buildscript,
 and Android test-platform configurations.
 Lock updates must be explicit, reviewed together with verification-metadata
 changes, and exercised through the complete Android CI task graph.
+
+The Android release-surface validator invokes SDK `apkanalyzer manifest print`
+itself on the assembled release APK and validates that packaged output against
+an exact policy. The package must be `com.screengoblin.player` with minimum SDK
+23 and target SDK 35. It uses `INTERNET`, `RECEIVE_BOOT_COMPLETED`, and the exact
+package-derived `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which the manifest
+also declares with signature protection. Leanback and touchscreen are the exact
+optional features. Backup and cleartext traffic are explicitly disabled, while
+debuggable, test-only, and legacy external storage are absent or false. Shared
+user IDs, package queries, instrumentation, uses-library declarations, network
+security overrides, activity aliases, and services are forbidden.
+
+The sole exported component is `MainActivity` with exactly the MAIN, LAUNCHER,
+and LEANBACK_LAUNCHER intent surface. The enabled `BootReceiver` is non-exported
+and restricted to `BOOT_COMPLETED`. The only provider is the non-exported
+`androidx.startup.InitializationProvider` under the package-derived authority;
+it contains exactly the ProcessLifecycle and EmojiCompat initializers. Source
+manifest merge rules remove the ProfileInstaller initializer and receiver plus
+its DUMP permission, and the final packaged policy rejects their return.
+
+The validator emits a schema-versioned JSON summary containing the package and
+SDK values, sorted permissions and features, exported and non-exported
+component lists, SHA-256 of the textual packaged manifest, and SHA-256 of the
+exact unsigned APK from which it was extracted. It also records the Android SDK
+Command-Line Tools revision from the bounded `Pkg.Revision` property beside the
+resolved analyzer executable; it does not depend on undocumented analyzer
+version output.
+CI retains that summary, the extracted manifest, and the unsigned release APK
+for seven days as `player-release-surface-<commit>`. The artifact is temporary
+engineering evidence and must not be distributed or represented as a signed
+release.
+
+If validation fails after manifest extraction, CI retains only that manifest
+for one day as `player-release-surface-diagnostic-<commit>`. This deliberately
+short-lived failure diagnostic is not a successful policy report and must not
+be treated as release evidence.
+
+This is static evidence about one assembled APK's declared manifest surface. It
+does not sign the APK, retain a production signing certificate, establish
+artifact provenance or reproducibility, scan runtime behavior, constitute an
+OWASP MASVS assessment, or replace installation and behavior tests on
+representative managed hardware.
 
 Docker build stages, Compose services, CI services, and recovery fixtures retain readable tags but resolve only through
 checked-in multi-platform SHA-256 digests. Builds do not perform floating OS

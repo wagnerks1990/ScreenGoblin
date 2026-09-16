@@ -9,9 +9,7 @@ if (( ${#sarif_files[@]} == 0 )); then
 fi
 
 approved_boot_receiver=false
-if echo "82bae2a6c5eb8a1544955bde0ee6df85766d4e2d2491726f6b4ffcb2fd754d3a  apps/player/android/app/src/main/java/com/screengoblin/player/BootReceiver.java" \
-    | sha256sum --check --status \
-  && echo "81cdaccae61838db742fd21fee0353e8ba0d91dc49b6aede44b6dff6e8614801  apps/player/android/app/src/main/AndroidManifest.xml" \
+if echo "d33cbb3d416588a4beae94b6e78063bc656aa36718a97f42982feb2c6fe95655  apps/player/android/app/src/main/java/com/screengoblin/player/BootReceiver.java" \
     | sha256sum --check --status; then
   approved_boot_receiver=true
 fi

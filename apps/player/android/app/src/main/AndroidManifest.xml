@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:allowBackup="false"
@@ -36,21 +37,40 @@
             </intent-filter>
         </receiver>
 
+        <!-- ProfileInstaller is an optional performance aid. Keep the shared
+             App Startup provider for lifecycle/emoji initialization, but do
+             not package its benchmark receiver or automatic initializer.
+             These runtime-only class names exist solely for manifest merge
+             control, so keep MissingClass ignores local to these exact nodes. -->
         <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
             android:exported="false"
-            android:grantUriPermissions="true">
+            tools:ignore="MissingClass"
+            tools:node="merge">
             <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths"></meta-data>
+                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+                tools:ignore="MissingClass"
+                tools:node="remove" />
         </provider>
+
+        <receiver
+            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            tools:ignore="MissingClass"
+            tools:node="remove" />
+
     </application>
 
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- DUMP is named only so the manifest merger removes the dependency
+         declaration; keep the protected-permission lint ignore on this marker. -->
+    <uses-permission
+        android:name="android.permission.DUMP"
+        tools:ignore="ProtectedPermissions"
+        tools:node="remove" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 </manifest>

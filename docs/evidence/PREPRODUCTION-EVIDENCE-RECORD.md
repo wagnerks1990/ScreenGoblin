@@ -13,6 +13,7 @@
 | API image digest                                            | TBD            |
 | Console image digest                                        | TBD            |
 | Player image/APK digest and signing certificate fingerprint | TBD            |
+| Packaged report, analyzer, and APK/manifest hashes          | TBD            |
 | SBOM/provenance/signature references                        | TBD            |
 | Database migration range and compatibility                  | TBD            |
 | Environment, tenant, sites, and device ring                 | TBD            |
@@ -28,6 +29,7 @@ Record immutable URLs/artifact IDs, timestamps, tool versions, scope, result, re
 | Source quality    | Clean checkout install, format, lint, typecheck, unit/integration/build and coverage report                                    | **NOT RECORDED**                |
 | Tenant/security   | PostgreSQL-backed positive/negative isolation tests, scoped authorization, transactional audit, session/device revocation      | **NO-GO**                       |
 | Supply chain      | Dependency/secret/CodeQL/DAST/container scans, SBOM, digest pinning, signed provenance/artifacts                               | **NO-GO**                       |
+| Android package   | Packaged release-manifest policy report, APK digest/signature/provenance, runtime analysis, and representative-device tests    | **NO-GO; STATIC EVIDENCE ONLY** |
 | Media safety      | Authenticated upload, limits/type sniffing, scanning/transcoding, private immutable delivery, SSRF controls                    | **NO-GO**                       |
 | Publishing        | Immutable revision/candidate/approval/release/assignment, idempotency, conflict/accessibility policy tests                     | **NO-GO**                       |
 | Player identity   | Non-exportable key attestation/classification, server challenge proof, replay tests, rotation/revoke/reset evidence            | **NO-GO**                       |

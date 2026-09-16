@@ -4,6 +4,23 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Make the Android boot receiver's runtime action authorization explicit and
+  regression-test its exact `BOOT_COMPLETED` allowlist. Narrow the documented
+  CodeQL false-positive acceptance to the reviewed receiver source so unrelated
+  safe manifest packaging changes do not disable the Java analysis gate.
+
+- Validate the manifest packaged inside the assembled Android release APK
+  against a fail-closed exact policy for package/SDK identity, permissions,
+  optional features, application security flags, and exported/non-exported
+  components. Allow only the package-derived AndroidX signature permission and
+  non-exported Startup provider with lifecycle and emoji initializers; remove
+  the ProfileInstaller initializer/receiver and DUMP permission from the final
+  package. Retain a schema-versioned summary recording analyzer version plus the
+  inspected APK and packaged-manifest SHA-256 values, with a one-day
+  manifest-only diagnostic on failure. This static release-surface evidence
+  does not provide APK signing or provenance, OWASP MASVS compliance, runtime
+  analysis, or physical-device validation; those release gates remain open.
+
 - Make Player heartbeat scheduling fleet-safe with an immediate first send for
   a newly activated credential, phase-spread process restarts, one recursive
   single-flight timeout, strict 5-second-to-one-day server

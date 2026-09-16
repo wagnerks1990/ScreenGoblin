@@ -11,8 +11,14 @@ public final class BootReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (intent == null || intent.getAction() == null ||
-            !intent.getAction().equals(Intent.ACTION_BOOT_COMPLETED)) return;
+        if (intent == null) return;
+
+        // An explicit intent can bypass the manifest filter, so make the
+        // received action an explicit runtime authorization boundary before
+        // performing any side effect. Keep the constant-first comparison
+        // directly in onReceive so null actions fail closed and static analysis
+        // can follow the received Intent to the verification.
+        if (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
 
         Intent player = new Intent(context, MainActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
