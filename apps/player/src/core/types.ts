@@ -110,6 +110,12 @@ export interface Heartbeat {
   state: "playing" | "pairing" | "offline" | "fallback" | "error";
 }
 
+export interface HeartbeatResponse {
+  accepted: true;
+  serverTime: string;
+  nextHeartbeatSeconds: number;
+}
+
 export interface PlayerStore {
   getCredentials(): Promise<Credentials | undefined>;
   putCredentials(value: Credentials): Promise<void>;

@@ -1,6 +1,7 @@
 import type {
   Credentials,
   Heartbeat,
+  HeartbeatResponse,
   PendingProofPairing,
   PlayerManifest,
   SignedPlayerManifest,
@@ -400,8 +401,10 @@ function validatePendingProofPairing(
 
 const parseRetryAfter = (value: string | null, now = Date.now()) => {
   if (!value) return undefined;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  if (/^\d+$/.test(value)) {
+    const milliseconds = Number(value) * 1_000;
+    return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
+  }
   const date = Date.parse(value);
   return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
 };
@@ -1036,10 +1039,10 @@ export class PlayerApi {
     return createSignedPlayerManifest(unsigned, signatureAlgorithm, signature);
   }
 
-  heartbeat(
+  async heartbeat(
     value: Heartbeat,
     options: PlayerRequestOptions = {},
-  ): Promise<void> {
+  ): Promise<HeartbeatResponse> {
     const wireValue = {
       installationId: value.installationId,
       playerVersion: value.playerVersion,
@@ -1056,7 +1059,7 @@ export class PlayerApi {
     };
     // Heartbeat POSTs are bounded but not replayed without an idempotency contract.
     const body = canonicalJson(wireValue);
-    return this.protectedRequest(
+    const response = await this.protectedRequest<unknown>(
       "heartbeat",
       "/heartbeat",
       body,
@@ -1065,6 +1068,34 @@ export class PlayerApi {
       },
       options,
     );
+    const serverTime = (response as Record<string, unknown> | null)?.serverTime;
+    const parsedServerTime =
+      typeof serverTime === "string" ? Date.parse(serverTime) : Number.NaN;
+    if (
+      typeof response !== "object" ||
+      response === null ||
+      (response as Record<string, unknown>).accepted !== true ||
+      typeof serverTime !== "string" ||
+      !Number.isFinite(parsedServerTime) ||
+      new Date(parsedServerTime).toISOString() !== serverTime ||
+      !Number.isSafeInteger(
+        (response as Record<string, unknown>).nextHeartbeatSeconds,
+      ) ||
+      ((response as Record<string, unknown>).nextHeartbeatSeconds as number) <
+        5 ||
+      ((response as Record<string, unknown>).nextHeartbeatSeconds as number) >
+        86_400 ||
+      Object.keys(response).some(
+        (key) =>
+          !["accepted", "serverTime", "nextHeartbeatSeconds"].includes(key),
+      )
+    )
+      throw new PlayerApiFailure(
+        "Player API returned an invalid heartbeat response",
+        "protocol",
+        false,
+      );
+    return response as HeartbeatResponse;
   }
 }
 

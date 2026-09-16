@@ -120,9 +120,13 @@ describe("PlayerApi wire contract", () => {
   });
 
   it("sends the strict heartbeat payload without local-only state", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(new Response(null, { status: 204 }));
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        accepted: true,
+        serverTime: "2026-09-11T00:00:01.000Z",
+        nextHeartbeatSeconds: 60,
+      }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     await new PlayerApi(apiBaseUrl, credentials).heartbeat({
@@ -137,6 +141,76 @@ describe("PlayerApi wire contract", () => {
 
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(request.body))).not.toHaveProperty("state");
+  });
+
+  it.each([
+    { accepted: true, serverTime: "invalid", nextHeartbeatSeconds: 60 },
+    {
+      accepted: true,
+      serverTime: "2026-09-11T00:00:01.000Z",
+      nextHeartbeatSeconds: 4,
+    },
+    {
+      accepted: true,
+      serverTime: "2026-09-11T00:00:01.000Z",
+      nextHeartbeatSeconds: 86_401,
+    },
+    {
+      accepted: true,
+      serverTime: "2026-09-11T00:00:01.000Z",
+      nextHeartbeatSeconds: 60.5,
+    },
+    {
+      accepted: true,
+      serverTime: "2026-09-11T00:00:01.000Z",
+      nextHeartbeatSeconds: 60,
+      commands: [],
+    },
+  ])("rejects an invalid heartbeat response %#", async (payload) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(payload)));
+
+    await expect(
+      new PlayerApi(apiBaseUrl, credentials).heartbeat({
+        installationId: "installation-123",
+        playerVersion: "0.1.0",
+        uptimeSeconds: 60,
+        freeStorageBytes: 1024,
+        networkType: "ethernet",
+        occurredAt: "2026-09-11T00:00:00.000Z",
+        state: "playing",
+      }),
+    ).rejects.toMatchObject({ kind: "protocol", retryable: false });
+  });
+
+  it("propagates an HTTP-date Retry-After without a one-day cap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-09-16T00:00:00.000Z");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 503,
+          headers: { "Retry-After": "Fri, 18 Sep 2026 00:00:00 GMT" },
+        }),
+      ),
+    );
+
+    await expect(
+      new PlayerApi(apiBaseUrl, credentials).heartbeat({
+        installationId: "installation-123",
+        playerVersion: "0.1.0",
+        uptimeSeconds: 60,
+        freeStorageBytes: 1024,
+        networkType: "ethernet",
+        occurredAt: "2026-09-11T00:00:00.000Z",
+        state: "playing",
+      }),
+    ).rejects.toMatchObject({
+      kind: "http",
+      retryable: true,
+      status: 503,
+      retryAfterMs: 172_800_000,
+    });
   });
 
   it("aborts a hung pairing request at its deadline without replaying the POST", async () => {

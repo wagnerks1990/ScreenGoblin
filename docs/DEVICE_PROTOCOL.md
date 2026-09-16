@@ -102,11 +102,45 @@ Validly shaped requests for unknown or revoked credentials receive a dummy
 challenge response to reduce identifier enumeration; that challenge can never
 authorize an operation. Every manifest retry obtains a new challenge and
 signature. Heartbeats are not replayed automatically because a proof and body
-are one-use.
+are one-use. Every heartbeat attempt, including a retry, samples fresh telemetry,
+serializes a fresh canonical body, and obtains a fresh challenge and signature.
 
 ## Heartbeat
 
-The normal heartbeat contains installation ID, player and OS versions, uptime, free storage, network type, active manifest version, and current asset ID. Player uptime is derived from a monotonic elapsed-time clock rather than wall-clock time, so NTP or manual clock rollback cannot produce negative telemetry. On Android, free storage comes from the native cache's safe `availableBytes` value after filesystem reserve and in-flight reservations, rather than the WebView quota estimate. The server returns the next interval. Command delivery and jittered scheduling are required before fleet rollout but are not enabled in this prototype.
+The normal heartbeat contains installation ID, player and OS versions, uptime,
+free storage, network type, active manifest version, and current asset ID.
+Player uptime is derived from a monotonic elapsed-time clock rather than
+wall-clock time, so NTP or manual clock rollback cannot produce negative
+telemetry. On Android, free storage comes from the native cache's safe
+`availableBytes` value after filesystem reserve and in-flight reservations,
+rather than the WebView quota estimate.
+
+A newly activated credential sends its first online heartbeat immediately;
+ordinary process startup phase-spreads the first attempt uniformly across the
+saved cadence. The Player thereafter owns one recursive timeout and at most one
+in-flight request. The server response is
+accepted only when it contains exactly `accepted: true`, a canonical ISO server
+time, and an integer `nextHeartbeatSeconds` from `5` through `86400`. The next
+normal attempt applies bounded cadence jitter of up to plus or minus 10%, capped
+at one day. A malformed response is a non-retryable protocol failure: it does
+not replace the current cadence.
+
+The scheduler pauses future work while offline or hidden. Reconnect, visible,
+and `pageshow` notifications coalesce into one catch-up attempt distributed
+uniformly over the current interval and never postpone an earlier healthy send;
+notifications received during an in-flight request still create only one
+pending catch-up. Retryable failures use bounded exponential backoff with
+jitter. A valid `Retry-After` is an uncapped floor, survives lifecycle/network
+wakeups, and uses safe timer chunks when necessary. Non-retryable failures resume the jittered current cadence. Each
+attempt uses current state, telemetry, canonical body bytes, challenge, and
+signature rather than replaying an earlier heartbeat. Representative Android
+hardware suspend/resume and network-transition evidence remains a
+pre-production fleet gate.
+
+The current asset ID is reported only when it was observed under the same
+manifest version carried by the heartbeat. On a 401, playback blanks at once,
+but pairing remains unavailable until credentials and cached media have been
+securely cleared.
 
 The UI derives online/warning/offline state from server receipt time, never from a device-supplied clock alone.
 

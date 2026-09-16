@@ -134,7 +134,11 @@ beforeEach(() => {
   mocks.stageAndActivate.mockReset().mockResolvedValue(manifest);
   mocks.cancelPendingStages.mockReset();
   mocks.manifest.mockReset().mockResolvedValue(manifest);
-  mocks.heartbeat.mockReset().mockResolvedValue(undefined);
+  mocks.heartbeat.mockReset().mockResolvedValue({
+    accepted: true,
+    serverTime: "2026-09-12T00:00:00.000Z",
+    nextHeartbeatSeconds: 60,
+  });
   mocks.freeStorageBytes.mockReset().mockResolvedValue(1_000_000);
   mocks.hasNativeDeviceIdentity.mockReset().mockReturnValue(false);
   mocks.finalizeDeviceIdentityRotation.mockReset().mockResolvedValue(undefined);
@@ -144,11 +148,135 @@ beforeEach(() => {
     configurable: true,
     value: true,
   });
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    value: false,
+  });
+  vi.spyOn(Math, "random").mockReturnValue(0);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  vi.restoreAllMocks();
+  cleanup();
+});
 
 describe("device revocation", () => {
+  it("keeps one scheduler across manifest changes and wakes with fresh telemetry", async () => {
+    const refreshed = { ...manifest, version: "release-2" };
+    mocks.stageAndActivate.mockResolvedValue(refreshed);
+
+    render(<App />);
+
+    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mocks.playbackProps?.manifest).toMatchObject({
+        version: "release-2",
+      }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.heartbeat).toHaveBeenCalledTimes(1);
+
+    const onPlaying = mocks.playbackProps?.onPlaying as
+      ((id: string) => void) | undefined;
+    onPlaying?.("asset-2");
+    act(() => window.dispatchEvent(new Event("pageshow")));
+
+    await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledTimes(2));
+    expect(mocks.heartbeat.mock.calls[1]?.[0]).toMatchObject({
+      manifestVersion: "release-2",
+      nowPlayingAssetId: "asset-2",
+      state: "playing",
+    });
+  });
+
+  it("coalesces lifecycle wakeups and aborts heartbeat work on cleanup", async () => {
+    let finish!: () => void;
+    mocks.heartbeat.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({
+              accepted: true,
+              serverTime: "2026-09-12T00:00:00.000Z",
+              nextHeartbeatSeconds: 60,
+            });
+        }),
+    );
+
+    const rendered = render(<App />);
+    await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledOnce());
+    act(() => {
+      window.dispatchEvent(new Event("pageshow"));
+      window.dispatchEvent(new Event("pageshow"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(mocks.heartbeat).toHaveBeenCalledOnce();
+
+    await act(async () => finish());
+    await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledTimes(2));
+    const signal = mocks.heartbeat.mock.calls[1]?.[1]?.signal as
+      AbortSignal | undefined;
+    expect(signal?.aborted).toBe(false);
+    rendered.unmount();
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("suppresses heartbeat work while hidden and wakes when visible", async () => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    await act(async () => Promise.resolve());
+    expect(mocks.freeStorageBytes).not.toHaveBeenCalled();
+    expect(mocks.heartbeat).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: false,
+    });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledOnce());
+  });
+
+  it("never reports an asset from the prior manifest version", async () => {
+    let finishSync!: (value: PlayerManifest) => void;
+    mocks.stageAndActivate.mockReturnValue(
+      new Promise((resolve) => {
+        finishSync = resolve;
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledOnce());
+    const onPlaying = mocks.playbackProps?.onPlaying as
+      ((id: string) => void) | undefined;
+    onPlaying?.("asset-from-release-1");
+
+    await act(async () => finishSync({ ...manifest, version: "release-2" }));
+    await waitFor(() =>
+      expect(mocks.playbackProps?.manifest).toMatchObject({
+        version: "release-2",
+      }),
+    );
+    act(() => window.dispatchEvent(new Event("pageshow")));
+    await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledTimes(2));
+    expect(mocks.heartbeat.mock.calls[1]?.[0]).toMatchObject({
+      manifestVersion: "release-2",
+    });
+    expect(mocks.heartbeat.mock.calls[1]?.[0]).not.toHaveProperty(
+      "nowPlayingAssetId",
+    );
+  });
+
   it("does not send fabricated telemetry when storage stats fail", async () => {
     mocks.freeStorageBytes.mockRejectedValue(
       new Error("invalid native storage stats"),
@@ -159,6 +287,23 @@ describe("device revocation", () => {
     expect(await screen.findByText("Playing content")).toBeInTheDocument();
     await waitFor(() => expect(mocks.freeStorageBytes).toHaveBeenCalled());
     expect(mocks.heartbeat).not.toHaveBeenCalled();
+  });
+
+  it("carries cancellation through telemetry work that finishes after cleanup", async () => {
+    let finishStorage!: (bytes: number) => void;
+    mocks.freeStorageBytes.mockReturnValue(
+      new Promise((resolve) => {
+        finishStorage = resolve;
+      }),
+    );
+
+    const rendered = render(<App />);
+    await waitFor(() => expect(mocks.freeStorageBytes).toHaveBeenCalledOnce());
+    rendered.unmount();
+    await act(async () => finishStorage(1_000_000));
+
+    expect(mocks.heartbeat).toHaveBeenCalledOnce();
+    expect(mocks.heartbeat.mock.calls[0]?.[1]?.signal.aborted).toBe(true);
   });
 
   it("deprovisions instead of recovering cached content after a manifest 401", async () => {
@@ -195,6 +340,55 @@ describe("device revocation", () => {
     expect(mocks.removeAll).toHaveBeenCalledTimes(1);
     expect(mocks.cancelPendingStages).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Playing content")).not.toBeInTheDocument();
+  });
+
+  it("does not expose pairing until revoked data is securely cleared", async () => {
+    let finishClear!: () => void;
+    mocks.clear.mockReturnValue(
+      new Promise((resolve) => {
+        finishClear = () => resolve(undefined);
+      }),
+    );
+    mocks.heartbeat.mockRejectedValue(
+      new PlayerApiFailure("revoked", "http", false, 401),
+    );
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Clearing revoked device data…"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Pair this screen")).not.toBeInTheDocument();
+    await act(async () => finishClear());
+    expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
+  });
+
+  it("retries failed revoked-media cleanup after reload before pairing", async () => {
+    mocks.getCredentials
+      .mockResolvedValueOnce(credentials)
+      .mockResolvedValue(undefined);
+    mocks.getActiveManifest
+      .mockResolvedValueOnce({ formatVersion: 1 })
+      .mockResolvedValue(undefined);
+    mocks.removeAll
+      .mockRejectedValueOnce(new Error("native cache unavailable"))
+      .mockResolvedValueOnce(undefined);
+    mocks.heartbeat.mockRejectedValue(
+      new PlayerApiFailure("revoked", "http", false, 401),
+    );
+
+    const firstBoot = render(<App />);
+    expect(
+      await screen.findByText(
+        "Revoked device data could not be securely cleared",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Pair this screen")).not.toBeInTheDocument();
+    firstBoot.unmount();
+
+    render(<App />);
+    expect(await screen.findByText("Pair this screen")).toBeInTheDocument();
+    expect(mocks.removeAll).toHaveBeenCalledTimes(2);
   });
 
   it("purges stale content staged after concurrent heartbeat revocation", async () => {

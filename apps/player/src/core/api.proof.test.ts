@@ -51,6 +51,7 @@ const challengeIds: Record<string, string> = {
   "manifest-1": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
   "manifest-2": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
   heartbeat: "DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0",
+  "heartbeat-2": "Dw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8",
   "bad-key": "Dg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4",
 };
 const challengeValues: Record<string, string> = {
@@ -58,6 +59,7 @@ const challengeValues: Record<string, string> = {
   "manifest-1": "AgICAgICAgICAgICAgICAg",
   "manifest-2": "AwMDAwMDAwMDAwMDAwMDAw",
   heartbeat: "BAQEBAQEBAQEBAQEBAQEBA",
+  "heartbeat-2": "BgYGBgYGBgYGBgYGBgYGBg",
   "bad-key": "BQUFBQUFBQUFBQUFBQUFBQ",
 };
 const challenge = (suffix: string) => ({
@@ -704,6 +706,66 @@ describe("PlayerApi proof-v1", () => {
       operation: "heartbeat",
       bodySha256: await sha256Hex(utf8(sentBody)),
     });
+  });
+
+  it("uses a fresh proof and body for each heartbeat attempt", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(challenge("heartbeat")))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(Response.json(challenge("heartbeat-2")))
+      .mockResolvedValueOnce(
+        Response.json({
+          accepted: true,
+          serverTime: "2026-09-16T00:00:05.000Z",
+          nextHeartbeatSeconds: 60,
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new PlayerApi(proofCredentials.apiBaseUrl, proofCredentials);
+    const heartbeat = (attempt: number) =>
+      api.heartbeat({
+        installationId: proofCredentials.installationId,
+        playerVersion: "0.1.0",
+        uptimeSeconds: attempt,
+        freeStorageBytes: 1024,
+        networkType: "ethernet",
+        occurredAt: `2026-09-16T00:00:0${attempt}.000Z`,
+        state: "playing",
+      });
+
+    await expect(heartbeat(1)).rejects.toMatchObject({ status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(heartbeat(2)).resolves.toMatchObject({
+      accepted: true,
+      nextHeartbeatSeconds: 60,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(native.signDeviceChallenge).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      `${proofCredentials.apiBaseUrl}/challenges`,
+      `${proofCredentials.apiBaseUrl}/heartbeat`,
+      `${proofCredentials.apiBaseUrl}/challenges`,
+      `${proofCredentials.apiBaseUrl}/heartbeat`,
+    ]);
+    const firstBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit).body),
+    );
+    const secondBody = JSON.parse(
+      String((fetchMock.mock.calls[3]?.[1] as RequestInit).body),
+    );
+    expect(firstBody.uptimeSeconds).toBe(1);
+    expect(secondBody.uptimeSeconds).toBe(2);
+    expect(
+      new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get(
+        "X-Device-Challenge-Id",
+      ),
+    ).toBe(challengeIds.heartbeat);
+    expect(
+      new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get(
+        "X-Device-Challenge-Id",
+      ),
+    ).toBe(challengeIds["heartbeat-2"]);
   });
 
   it("fails closed before the protected request when the signing key changes", async () => {
