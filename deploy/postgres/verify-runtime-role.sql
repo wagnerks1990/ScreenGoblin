@@ -25,6 +25,7 @@ SELECT
     JOIN pg_catalog.pg_roles member_role ON member_role.oid = membership.member
     WHERE member_role.rolname = :'runtime_role'
   )
+  AND NOT has_database_privilege(current_user, current_database(), 'CREATE')
   AND NOT has_database_privilege(current_user, current_database(), 'TEMPORARY')
   AND has_schema_privilege(current_user, 'public', 'USAGE')
   AND NOT has_schema_privilege(current_user, 'public', 'CREATE')

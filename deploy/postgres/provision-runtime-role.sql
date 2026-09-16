@@ -93,9 +93,10 @@ SELECT NOT EXISTS (
   \quit 65
 \endif
 
--- PUBLIC otherwise gives every login temporary-table creation and, on some
--- PostgreSQL versions/configurations, public-schema creation or function use.
-SELECT format('REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC', current_database())
+-- PUBLIC otherwise gives every login temporary-table creation and can retain
+-- operator-added database CREATE, which would let the runtime role create a
+-- schema despite its direct grants being reconciled below.
+SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM PUBLIC', current_database())
 \gexec
 SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM %I', current_database(), :'runtime_role')
 \gexec

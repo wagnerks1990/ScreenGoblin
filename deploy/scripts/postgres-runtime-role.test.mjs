@@ -36,7 +36,7 @@ test("runtime role provisioning is identifier-safe and least privilege", () => {
   assert.match(sql, /NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS/);
   assert.match(sql, /REVOKE %I FROM %I/);
   assert.match(sql, /runtime_owns_nothing/);
-  assert.match(sql, /REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC/);
+  assert.match(sql, /REVOKE ALL PRIVILEGES ON DATABASE %I FROM PUBLIC/);
   assert.match(sql, /GRANT CONNECT ON DATABASE %I TO %I/);
   assert.match(sql, /REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC/);
   assert.match(sql, /GRANT USAGE ON SCHEMA public TO %I/);
@@ -212,6 +212,10 @@ test("wrapper rejects ambiguous or unsupported Prisma URL queries", () => {
 });
 
 test("CI supplies every runtime-role provisioning identity", () => {
+  assert.match(
+    ciWorkflow,
+    /GRANT CREATE ON DATABASE screengoblin_test TO PUBLIC[\s\S]*?- name: Provision least-privilege PostgreSQL runtime role/,
+  );
   const provisioningStep = ciWorkflow.match(
     /- name: Provision least-privilege PostgreSQL runtime role[\s\S]*?run: deploy\/postgres\/provision-runtime-role\.sh/,
   );
@@ -234,6 +238,10 @@ test("deployment URL verifies runtime identity and denied capabilities", () => {
   assert.match(verificationSql, /NOT role_state\.rolinherit/);
   assert.match(verificationSql, /NOT role_state\.rolsuper/);
   assert.match(verificationSql, /pg_catalog\.pg_auth_members/);
+  assert.match(
+    verificationSql,
+    /NOT has_database_privilege\(current_user, current_database\(\), 'CREATE'\)/,
+  );
   assert.match(
     verificationSql,
     /NOT has_database_privilege\(current_user, current_database\(\), 'TEMPORARY'\)/,

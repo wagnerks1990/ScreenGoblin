@@ -49,6 +49,13 @@ jobs:
         run: npm run test:repository
       - run: npm run prisma:generate -w @screengoblin/api
       - run: npm run prisma:migrate -w @screengoblin/api
+      - name: Seed database privilege contamination regression fixture
+        env:
+          PGPASSWORD: test-only-password
+        run: >-
+          psql --host=127.0.0.1 --port=5432 --username=screengoblin
+          --dbname=screengoblin_test --set=ON_ERROR_STOP=1
+          --command='GRANT CREATE ON DATABASE screengoblin_test TO PUBLIC'
       - name: Provision least-privilege PostgreSQL runtime role
         env:
           MIGRATION_DATABASE_URL: postgresql://screengoblin:test-only-password@127.0.0.1:5432/screengoblin_test?schema=public
