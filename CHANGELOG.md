@@ -4,6 +4,15 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Separate the protected PostgreSQL migration/schema owner from the non-owning
+  API runtime identity. Reconcile runtime role attributes and exact object/default
+  privileges after migrations; run the API, bootstrap seed, and offline recovery
+  without schema-owner authority. Checksum-bound `--no-owner --no-acl` restores
+  now reapply that reconciliation and validate allowed application reads/writes
+  plus denied migration-ledger, truncation, and DDL access before succeeding.
+  Migration, PostgreSQL-superuser, managed-service administrator, secret-custody,
+  and real-environment recovery risks remain explicit pre-production gates.
+
 - Contain deployment-seeded owner passwords with a database-time 24-hour
   first-use deadline and purpose-limited rotation sessions that cannot access
   operational APIs. The blocking Console flow requires a different password of

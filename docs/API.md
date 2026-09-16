@@ -62,8 +62,10 @@ has no cursor or historical-export contract and cannot reconstruct an
 arbitrarily long history. Local rows are shape- and size-bounded. Ordinary
 updates and direct row deletion are rejected by PostgreSQL, with narrow
 exceptions for deleting a referenced user or organization. The table owner can
-disable these controls or truncate the table, so this is not a tamper-evidence,
-WORM, retention, or legal-hold boundary.
+disable these controls or truncate the table. The deployed API instead uses a
+separate non-owning runtime role denied those operations, but the migration
+owner and PostgreSQL/platform administrators retain them. This is therefore not
+a tamper-evidence, WORM, retention, or legal-hold boundary.
 
 ## Authorization rules
 

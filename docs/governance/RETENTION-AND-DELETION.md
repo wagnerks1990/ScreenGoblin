@@ -6,9 +6,11 @@
 
 Local audit field bounds and ordinary row-mutation triggers do not change this
 status. Organization deletion still cascades its audit rows, user deletion
-still removes actor attribution, the table-owning database login can bypass the
-trigger, and no expiration job, legal-hold check, tenant tombstone, deletion
-ledger, complete export, or independently retained copy exists.
+still removes actor attribution, and the separately held migration-owner or
+PostgreSQL/platform administrator credentials can bypass the trigger even
+though the non-owning API runtime role cannot. No expiration job, legal-hold
+check, tenant tombstone, deletion ledger, complete export, or independently
+retained copy exists.
 Release/assignment creator IDs separately retain guarded tenant-scoped
 membership attribution after user or membership deletion; this is integrity
 support, not approval of a retention period or deletion workflow.
