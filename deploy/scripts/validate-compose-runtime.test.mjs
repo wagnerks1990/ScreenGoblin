@@ -41,6 +41,49 @@ test("documents every environment value required by Compose", () => {
   );
 });
 
+test("keeps migration authority out of the long-running API", () => {
+  const service = (name, nextName) => {
+    const end = nextName ? `(?=\\n  ${nextName}:)` : "$";
+    const match = composeSource.match(
+      new RegExp(`^  ${name}:[\\s\\S]*?${end}`, "m"),
+    );
+    assert.ok(match, `missing ${name} service`);
+    return match[0];
+  };
+
+  const migrate = service("api-migrate", "api-db-privileges");
+  const privileges = service("api-db-privileges", "api-seed");
+  const seed = service("api-seed", "api-recover");
+  const recovery = service("api-recover", "api");
+  const api = service("api", "console");
+
+  assert.match(migrate, /DATABASE_URL: \$\{MIGRATION_DATABASE_URL:\?/);
+  assert.match(
+    privileges,
+    /MIGRATION_DATABASE_URL: \$\{MIGRATION_DATABASE_URL:\?/,
+  );
+  assert.match(seed, /DATABASE_URL: \$\{DATABASE_URL:\?/);
+  assert.doesNotMatch(seed, /MIGRATION_DATABASE_URL/);
+  assert.match(recovery, /DATABASE_URL: \$\{DATABASE_URL:\?/);
+  assert.doesNotMatch(recovery, /MIGRATION_DATABASE_URL/);
+  assert.match(api, /DATABASE_URL: \$\{DATABASE_URL:\?/);
+  assert.doesNotMatch(api, /MIGRATION_DATABASE_URL|POSTGRES_(?:USER|PASSWORD)/);
+  assert.match(privileges, /POSTGRES_RUNTIME_USER/);
+  assert.match(privileges, /POSTGRES_RUNTIME_PASSWORD/);
+  assert.match(privileges, /DATABASE_URL: \$\{DATABASE_URL:\?/);
+  assert.match(privileges, /user: "70:70"/);
+  assert.match(privileges, /read_only: true/);
+  assert.match(privileges, /no-new-privileges:true/);
+  assert.match(privileges, /cap_drop: \[ALL\]/);
+  assert.match(privileges, /\/tmp:size=16m,mode=0700,uid=70,gid=70/);
+  assert.match(seed, /api-db-privileges:[\s\S]*service_completed_successfully/);
+  assert.match(
+    recovery,
+    /api-db-privileges:[\s\S]*service_completed_successfully/,
+  );
+  assert.match(api, /api-db-privileges:[\s\S]*service_completed_successfully/);
+});
+
 const dockerFixture = `#!/usr/bin/env bash
 set -eu
 printf '%s\\n' "$*" >> "$FAKE_COMMAND_LOG"
@@ -362,7 +405,28 @@ test("runs bounded production-mode probes and always removes volumes", () => {
     assert.doesNotMatch(scriptSource, /repeat\('[abc]', 64\)/);
     const commands = readFileSync(f.commandLog, "utf8");
     assert.match(commands, /up --detach --wait --wait-timeout 180/);
+    assert.match(
+      commands,
+      /run --rm --no-deps --entrypoint \/bin\/sh api-db-privileges/,
+    );
+    assert.match(scriptSource, /migration-history-read/);
+    assert.match(scriptSource, /temporary-table-create/);
+    assert.match(scriptSource, /migrator-set-role/);
+    assert.match(scriptSource, /trigger-disable/);
+    assert.match(scriptSource, /audit-truncate/);
+    assert.match(scriptSource, /audit-update/);
+    assert.match(scriptSource, /audit-delete/);
+    assert.match(scriptSource, /schema-create/);
+    assert.match(scriptSource, /function-replacement/);
+    assert.match(scriptSource, /organization-delete/);
+    assert.match(scriptSource, /user-delete/);
     assert.match(commands, /--profile bootstrap run --rm api-seed/);
+    assert.match(commands, /--profile recovery run --rm api-recover/);
+    assert.ok(
+      scriptSource.indexOf('bootstrap_logout_status="$(') <
+        scriptSource.indexOf("--profile recovery run --rm api-recover"),
+      "offline recovery must be exercised only after bootstrap rotation and logout",
+    );
     assert.ok(
       commands.indexOf("--profile bootstrap run --rm api-seed") <
         commands.indexOf("exec -T api node --input-type=module"),

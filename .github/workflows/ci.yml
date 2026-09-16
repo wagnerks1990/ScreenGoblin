@@ -49,6 +49,21 @@ jobs:
         run: npm run test:repository
       - run: npm run prisma:generate -w @screengoblin/api
       - run: npm run prisma:migrate -w @screengoblin/api
+      - name: Provision least-privilege PostgreSQL runtime role
+        env:
+          MIGRATION_DATABASE_URL: postgresql://screengoblin:test-only-password@127.0.0.1:5432/screengoblin_test?schema=public
+          DATABASE_URL: postgresql://screengoblin_runtime:ci-only-runtime-password@127.0.0.1:5432/screengoblin_test?schema=public
+          POSTGRES_USER: screengoblin
+          POSTGRES_RUNTIME_USER: screengoblin_runtime
+          POSTGRES_RUNTIME_PASSWORD: ci-only-runtime-password
+        run: deploy/postgres/provision-runtime-role.sh
+      - name: Test PrismaStore with least-privilege PostgreSQL runtime role
+        env:
+          DATABASE_URL: postgresql://screengoblin_runtime:ci-only-runtime-password@127.0.0.1:5432/screengoblin_test?schema=public
+          OWNER_DATABASE_URL: postgresql://screengoblin:test-only-password@127.0.0.1:5432/screengoblin_test?schema=public
+          MIGRATION_DATABASE_USER: screengoblin
+          POSTGRES_RUNTIME_USER: screengoblin_runtime
+        run: npm run test:integration:runtime-role -w @screengoblin/api
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck

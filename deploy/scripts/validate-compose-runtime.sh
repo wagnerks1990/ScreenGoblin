@@ -65,7 +65,10 @@ export ACME_EMAIL="ops@smoke.example.test"
 export POSTGRES_DB="screengoblin"
 export POSTGRES_USER="screengoblin"
 export POSTGRES_PASSWORD="$(random_hex 32)"
-export DATABASE_URL="postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@postgres:5432/$POSTGRES_DB?schema=public"
+export POSTGRES_RUNTIME_USER="screengoblin_runtime"
+export POSTGRES_RUNTIME_PASSWORD="$(random_hex 32)"
+export MIGRATION_DATABASE_URL="postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@postgres:5432/$POSTGRES_DB?schema=public"
+export DATABASE_URL="postgresql://$POSTGRES_RUNTIME_USER:$POSTGRES_RUNTIME_PASSWORD@postgres:5432/$POSTGRES_DB?schema=public"
 export JWT_SECRET="$(random_hex 48)"
 export PAIRING_CODE_PEPPER="$(random_hex 48)"
 export MEDIA_DELIVERY_SECRET="$(random_hex 48)"
@@ -81,6 +84,8 @@ export SEED_ADMIN_EMAIL="admin@smoke.example.test"
 export SEED_ADMIN_PASSWORD="$(random_hex 32)"
 bootstrap_replacement_password="$(random_hex 32)"
 readonly bootstrap_replacement_password
+bootstrap_recovery_password="$(random_hex 32)"
+readonly bootstrap_recovery_password
 export SEED_ADMIN_NAME="Compose Smoke Administrator"
 export SEED_ORGANIZATION_NAME="Compose Smoke"
 export SEED_ORGANIZATION_SLUG="compose-smoke"
@@ -99,6 +104,9 @@ ACME_EMAIL=$ACME_EMAIL
 POSTGRES_DB=$POSTGRES_DB
 POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+POSTGRES_RUNTIME_USER=$POSTGRES_RUNTIME_USER
+POSTGRES_RUNTIME_PASSWORD=$POSTGRES_RUNTIME_PASSWORD
+MIGRATION_DATABASE_URL=$MIGRATION_DATABASE_URL
 DATABASE_URL=$DATABASE_URL
 JWT_SECRET=$JWT_SECRET
 PAIRING_CODE_PEPPER=$PAIRING_CODE_PEPPER
@@ -116,6 +124,9 @@ SEED_ADMIN_PASSWORD=$SEED_ADMIN_PASSWORD
 SEED_ADMIN_NAME=$SEED_ADMIN_NAME
 SEED_ORGANIZATION_NAME=$SEED_ORGANIZATION_NAME
 SEED_ORGANIZATION_SLUG=$SEED_ORGANIZATION_SLUG
+BOOTSTRAP_RECOVERY_ACKNOWLEDGEMENT=I_UNDERSTAND_THIS_RESETS_AN_OWNER_PASSWORD
+BOOTSTRAP_RECOVERY_EMAIL=$SEED_ADMIN_EMAIL
+BOOTSTRAP_RECOVERY_TEMPORARY_PASSWORD=$bootstrap_recovery_password
 LOG_LEVEL=$LOG_LEVEL
 EMERGENCY_FEATURE_ENABLED=$EMERGENCY_FEATURE_ENABLED
 EOF
@@ -154,6 +165,8 @@ readonly -a compose
 
 secret_values=(
   "$POSTGRES_PASSWORD"
+  "$POSTGRES_RUNTIME_PASSWORD"
+  "$MIGRATION_DATABASE_URL"
   "$DATABASE_URL"
   "$JWT_SECRET"
   "$PAIRING_CODE_PEPPER"
@@ -163,6 +176,7 @@ secret_values=(
   "$S3_SECRET_ACCESS_KEY"
   "$SEED_ADMIN_PASSWORD"
   "$bootstrap_replacement_password"
+  "$bootstrap_recovery_password"
 )
 readonly -a secret_values
 
@@ -471,6 +485,64 @@ run_unauthenticated_dast() {
 "${compose[@]}" config --quiet
 attempted_start=true
 "${compose[@]}" up --detach --wait --wait-timeout "$WAIT_TIMEOUT_SECONDS"
+
+# Reuse the one-shot privilege container so the runtime password remains an
+# environment value rather than appearing in psql or host process arguments.
+# Each destructive probe is wrapped in a transaction even though its statement
+# must be rejected; an accidentally permitted statement therefore rolls back.
+"${compose[@]}" run --rm --no-deps --entrypoint /bin/sh api-db-privileges -ceu '
+  export PGPASSWORD="$POSTGRES_RUNTIME_PASSWORD"
+  psql_runtime() {
+    psql --host=postgres --username="$POSTGRES_RUNTIME_USER" \
+      --dbname="$POSTGRES_DB" --no-psqlrc --no-password \
+      --set=ON_ERROR_STOP=1 "$@"
+  }
+  assert_denied() {
+    label=$1
+    statement=$2
+    if psql_runtime --command "$statement" >/dev/null 2>&1; then
+      printf "Runtime database role unexpectedly passed %s.\n" "$label" >&2
+      exit 1
+    fi
+  }
+
+  psql_runtime --tuples-only --command \
+    "SELECT 1, count(*) >= 0 FROM public.\"Organization\";" >/dev/null
+  role_is_restricted="$(psql_runtime --tuples-only --no-align --command \
+    "SELECT NOT rolsuper AND NOT rolinherit AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = current_user;")"
+  [ "$role_is_restricted" = t ] || {
+    echo "Runtime database role retained an unsafe role attribute." >&2
+    exit 1
+  }
+  has_no_memberships="$(psql_runtime --tuples-only --no-align --command \
+    "SELECT count(*) = 0 FROM pg_catalog.pg_auth_members WHERE member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user);")"
+  [ "$has_no_memberships" = t ] || {
+    echo "Runtime database role retained a role membership." >&2
+    exit 1
+  }
+  assert_denied migration-history-read \
+    "SELECT 1 FROM public.\"_prisma_migrations\" LIMIT 1;"
+  assert_denied temporary-table-create \
+    "BEGIN; CREATE TEMPORARY TABLE runtime_privilege_probe(id integer); ROLLBACK;"
+  assert_denied migrator-set-role \
+    "SET ROLE screengoblin;"
+  assert_denied trigger-disable \
+    "BEGIN; ALTER TABLE public.\"Organization\" DISABLE TRIGGER USER; ROLLBACK;"
+  assert_denied audit-truncate \
+    "BEGIN; TRUNCATE TABLE public.\"AuditEvent\"; ROLLBACK;"
+  assert_denied audit-update \
+    "BEGIN; UPDATE public.\"AuditEvent\" SET id = id WHERE false; ROLLBACK;"
+  assert_denied audit-delete \
+    "BEGIN; DELETE FROM public.\"AuditEvent\" WHERE false; ROLLBACK;"
+  assert_denied schema-create \
+    "BEGIN; CREATE SCHEMA runtime_privilege_probe; ROLLBACK;"
+  assert_denied function-replacement \
+    "BEGIN; CREATE OR REPLACE FUNCTION public.audit_event_metadata_shape_valid(jsonb, integer) RETURNS boolean LANGUAGE sql IMMUTABLE AS \$probe\$ SELECT true \$probe\$; ROLLBACK;"
+  assert_denied organization-delete \
+    "BEGIN; DELETE FROM public.\"Organization\" WHERE false; ROLLBACK;"
+  assert_denied user-delete \
+    "BEGIN; DELETE FROM public.\"User\" WHERE false; ROLLBACK;"
+'
 "${compose[@]}" --profile bootstrap run --rm api-seed
 
 for service_port in \
@@ -580,6 +652,11 @@ bootstrap_logout_status="$($CURL_BIN --silent --show-error --insecure \
   echo "Rotated owner logout returned HTTP $bootstrap_logout_status" >&2
   exit 1
 }
+
+# Recovery is deliberately an offline Compose profile but uses the same
+# least-privilege DATABASE_URL as the API. Its success proves the runtime role
+# retains the audited DML needed for the recovery transaction after rotation.
+"${compose[@]}" --profile recovery run --rm api-recover
 
 readonly media_body="ScreenGoblin private media runtime smoke"
 readonly media_org_id="compose-media-org"
@@ -1037,6 +1114,7 @@ cat >"$EVIDENCE_DIR/result.txt" <<EOF
 Compose production-mode startup and health: passed
 Caddy API, readiness isolation, Console, Player, headers, and legacy media denial: passed
 Proof-v1 unbound enrollment denial and targeted issuer/idempotency binding: passed
+Bootstrap rotation and runtime-role offline recovery: passed
 Private MinIO denial and valid/withdrawn/tampered/expired API capability delivery: passed
 Published-port and internal-backend-network assertions: passed
 Unauthenticated public-surface method, CORS, error-reflection, and pinned ZAP checks: $dast_result

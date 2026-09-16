@@ -54,6 +54,16 @@ docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed
 docker compose --env-file deploy/.env ps
 ```
 
+Use different long random credentials for `MIGRATION_DATABASE_URL` and
+`DATABASE_URL`. The migration identity owns the Prisma schema and is used only
+by the one-shot migration and privilege-reconciliation jobs. The long-running
+API, bootstrap seed, and offline bootstrap recovery use the non-owning runtime
+identity. After every migration—and after restoring a dump—the reconciliation
+step must complete before those runtime jobs start; it removes schema-changing,
+trigger-changing, truncation, migration-ledger, and other owner-only authority.
+The migration credential remains privileged and must not be supplied to an API
+container or ordinary operator task.
+
 Run the bootstrap profile only for the first organization owner. It refuses
 placeholder/short credentials and never resets an existing password. The seeded
 credential must be replaced within 24 hours of the database-recorded bootstrap

@@ -39,6 +39,14 @@ An unchecked item is a known gap, not an implicit approval.
       and pending issuer authority across memberships. This containment does
       not provide SSO, MFA, breached-password screening, secret-store delivery,
       or an approved human recovery process, so the gate remains unchecked.
+      PostgreSQL deployment identities are separated: the schema owner is
+      reserved for migrations/privilege reconciliation, while the API, seed,
+      and offline recovery use a non-owning runtime role denied schema/trigger
+      changes, truncation, migration-ledger access, protected-history rewrites,
+      and root identity deletion. The runtime role still has broad cross-tenant
+      CRUD on most application tables and there is no RLS. Managed-database
+      equivalence, production secret custody/rotation, and administrator access
+      review are also not evidenced, so this gate remains unchecked.
 - [ ] Pairing is single-use, short-lived, rate-limited, transcript/key-bound, proof-verified, and audited on representative managed Android hardware.
 - [ ] Device revocation, targeted re-enrollment, credential/key rotation, offline recovery, and verified local media/state erasure pass operational and physical-device tests.
 - [ ] Android hardware/application attestation policy is implemented, or its absence has a named risk owner, compensating controls, and an approved review date.
@@ -71,6 +79,10 @@ An unchecked item is a known gap, not an implicit approval.
 - [ ] Dashboards and actionable alerts cover API, database, storage, and player fleet.
 - [ ] Encrypted off-host backups meet documented RPO/RTO.
 - [ ] A full restore has succeeded in an isolated environment.
+      The restore helper verifies checksums, uses `--no-owner --no-acl`, reapplies
+      runtime privileges, and blocks success unless runtime read/write access
+      and owner-only denials validate. This repository behavior is not evidence
+      of an approved full-environment restore with matching object storage.
 - [ ] Schema migrations are forward-compatible and rollback is rehearsed.
 - [ ] Runbooks, escalation contacts, maintenance windows, and status communication are approved.
 - [ ] DNS, TLS, firewall, time synchronization, and capacity/load tests pass.

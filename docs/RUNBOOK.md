@@ -8,12 +8,18 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 
 ## Deploy
 
-1. Review the release notes, database migrations, and rollback compatibility. Confirm production has `DEVICE_AUTH_MODE=proof-v1`; the API must refuse `development-bearer` in production.
+1. Review the release notes, database migrations, and rollback compatibility.
+   Confirm production has distinct random PostgreSQL credentials:
+   `MIGRATION_DATABASE_URL` uses the protected schema owner only for migrations
+   and privilege reconciliation, while `DATABASE_URL` uses the non-owning
+   runtime role for the API, seed, and offline recovery. There is no fallback
+   between them. Confirm `DEVICE_AUTH_MODE=proof-v1`; the API must refuse
+   `development-bearer` in production.
 2. Back up PostgreSQL and object storage; record the backup IDs.
 3. Build immutable images from the reviewed commit and run CI/security gates.
 4. Deploy to a staging host and run smoke tests with an offline player.
 5. During the maintenance window, run `docker compose --env-file deploy/.env pull` for referenced images and `docker compose --env-file deploy/.env build --pull` for application images.
-6. Run `docker compose --env-file deploy/.env up -d` and inspect `docker compose --env-file deploy/.env ps`.
+6. Run `docker compose --env-file deploy/.env up -d` and inspect `docker compose --env-file deploy/.env ps`. The one-shot `api-migrate` job must finish before `api-db-privileges`; privilege reconciliation must then finish before the API, seed, or recovery job starts. Treat either one-shot failure as a stop condition. Never work around it by giving `MIGRATION_DATABASE_URL` to the API.
 7. For a fresh installation only, run `docker compose --env-file deploy/.env --profile bootstrap run --rm api-seed`. Verify the new owner has a future bootstrap marker bounded to 24 hours and `auth.bootstrap_password_containment_enabled` exists for its membership before allowing login. After the command succeeds, remove all `SEED_*` values from the host environment and deliver the temporary credential separately through an approved channel. Within 24 hours, sign in and complete the blocking password-change screen. Use a unique replacement of at least 16 Unicode code points and no more than 72 UTF-8 bytes. The change revokes the rotation token and every other session, so sign in again with the replacement.
 8. For the one-time legacy containment upgrade, do not create another owner. With writers stopped after the migration, run the same seed profile once only when the configured email identifies the existing seeded `OWNER` and `SEED_ADMIN_PASSWORD` is that owner's unchanged deployment seed credential. Require the `Contained existing bootstrap owner` result, a future marker bounded to 24 hours, and `auth.bootstrap_password_containment_enabled` in every membership organization before reopening access. If the command reports the owner unchanged, do not rerun it or alter seed inputs to force a match; determine whether the credential was already changed and use the reviewed recovery procedure only when recovery is actually required.
 9. Verify readiness, login, precreated-screen enrollment with staged proof and
@@ -280,9 +286,11 @@ organization exists. The exceptions are deliberate: deleting a `User` sets
 `actorUserId` to null, and deleting an `Organization` cascades all of that
 tenant's local events. Do not perform organization deletion when records may be
 subject to a hold; ScreenGoblin has no implemented hold check, tenant tombstone,
-or deletion ledger. The current API database login owns the table and can
-disable the trigger or use `TRUNCATE`, so the trigger is not a control against
-database credential compromise or privileged administration. `/health/ready`
+or deletion ledger. The API runtime login does not own the table and is denied
+direct audit update/delete, trigger changes, and `TRUNCATE`. The separate
+migration owner and PostgreSQL/platform administrators can still bypass these
+controls, so the trigger is not a control against migration-credential
+compromise or privileged administration. `/health/ready`
 checks database reachability, not audit completeness, export delivery, or
 retention health; no such pipeline exists yet.
 
@@ -323,7 +331,24 @@ SCREENGOBLIN_ENV_FILE=deploy/.env \
 deploy/scripts/postgres-restore.sh /path/to/screengoblin-TIMESTAMP.dump
 ```
 
-The restore requires the adjacent checksum and refuses to replace any existing database by default. Restoring into a protected database requires the explicit `ALLOW_DANGEROUS_RESTORE=I_UNDERSTAND_THIS_CAN_DESTROY_DATA` acknowledgement; replacing an existing database separately requires `ALLOW_EXISTING_RESTORE_DATABASE=I_UNDERSTAND_THIS_OVERWRITES_A_DATABASE`. Take a fresh backup, stop writers, and obtain the operational approval required by local policy before either override. Do not use an override for routine validation.
+The restore requires the adjacent checksum and refuses to replace any existing
+database by default. Because the dump deliberately uses `--no-owner --no-acl`,
+the script reruns the same runtime-role privilege reconciliation against the
+restored target. It then connects as the runtime role and requires application
+table read and no-op write access while proving that migration-ledger reads,
+`TRUNCATE`, and schema creation are denied. A reconciliation or probe failure
+removes the incomplete validation database and fails the restore. This validates
+the database privilege boundary, not API correctness or matching object data.
+
+Restoring into a protected database requires the explicit
+`ALLOW_DANGEROUS_RESTORE=I_UNDERSTAND_THIS_CAN_DESTROY_DATA` acknowledgement;
+replacing an existing database separately requires
+`ALLOW_EXISTING_RESTORE_DATABASE=I_UNDERSTAND_THIS_OVERWRITES_A_DATABASE`. Take
+a fresh backup, stop writers, and obtain the operational approval required by
+local policy before either override. Do not use an override for routine
+validation. A protected/active target also requires a controlled credential and
+connection cutover after restore; do not point `DATABASE_URL` at it before the
+reconciliation and probes succeed.
 
 Object storage needs a matching versioned backup and integrity inventory; the PostgreSQL scripts do not back up MinIO. Test restoration into an isolated environment at least quarterly and verify a sample manifest can be reconstructed with its media. `.github/workflows/recovery-drill.yml` applies the real Prisma migration chain, restores a representative tenant/content/schedule/immutable-release/audit graph, validates its constraints and references, matches restored database media metadata to a restored MinIO object's exact size and SHA-256, and exercises retained-image rollback. It runs monthly, when recovery implementation changes, and when Prisma migrations change. It pulls exact fixture tags once, records their resolved repository digests, and uses those immutable digests with `--pull never` during the drill.
 
@@ -361,6 +386,14 @@ Runtime fixture resolution is test evidence, not production provenance.
 Passing CI does not prove off-host encrypted transfer, retention, production
 volume or load, consistent live write quiescence, regional recovery, credential
 availability, operator readiness, or restoration into production infrastructure.
+
+On a managed PostgreSQL service, the provider may reserve superuser or role/
+default-privilege operations used by the bundled reconciliation. Do not skip a
+failed statement. Implement an equivalent provider-reviewed owner/runtime split,
+PUBLIC/default-privilege revocation, and object-level deny policy, then repeat
+the runtime allow/deny probes. Provider administrators, the migration owner,
+backup readers, and snapshot/storage operators remain privileged trust
+boundaries even when the runtime role is correctly constrained.
 
 ## Roll back
 

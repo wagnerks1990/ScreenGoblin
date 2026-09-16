@@ -15,6 +15,13 @@ npm run prisma:seed -w @screengoblin/api
 npm run dev -w @screengoblin/api
 ```
 
+Production uses two PostgreSQL identities. `MIGRATION_DATABASE_URL` identifies
+the protected schema owner for Prisma migrations and the required post-migration
+privilege reconciliation only. `DATABASE_URL` identifies a separate non-owning
+runtime role used by the API, bootstrap seed, and offline bootstrap recovery.
+Never fall back from the runtime URL to the migration URL. Local development may
+use one developer identity, but that is not a deployment security model.
+
 The API listens on port `3000` by default. Generate independent JWT and pairing secrets, a random manifest-signing seed, and a unique seeded password before exposing the service. Production startup rejects documented placeholders, checked-in test secrets, and the all-zero signing seed used by automated tests. `/health/live` returns an empty `204` when the process is alive. The internal-only `/health/ready` returns an empty `204` only when PostgreSQL and the production Redis request-protection backend are reachable; failures return an empty `503` without identifying the failed dependency.
 
 `CORS_ORIGINS` is a bounded comma-separated list of exact origins. Production
@@ -143,12 +150,16 @@ downstream disconnect destroys the upstream object stream.
   that PostgreSQL text/jsonb cannot represent.
   PostgreSQL rejects ordinary row updates and direct deletes while the tenant
   exists; deleting a user may null its audit attribution, and deleting an
-  organization cascades its local audit rows. The API and migration currently
-  use the table-owning database login, which can alter/disable the trigger or
-  truncate the table. These controls protect against accidental application
-  mutation; they do not provide tamper evidence, WORM/off-host retention, a
-  complete export, or legal holds. `GET /audit-events` returns at most 200 latest
-  rows in deterministic `(createdAt, id)` order and is not an audit export.
+  organization cascades its local audit rows. The API runtime identity does not
+  own the table and is denied trigger changes, `TRUNCATE`, and direct audit
+  update/delete. The separate migration owner and PostgreSQL/platform
+  administrators remain able to bypass these local controls. A compromised
+  runtime credential can still change most domain rows across tenants and append
+  fabricated audit rows because database row-level security is not implemented;
+  this separation does not make local audit trustworthy. These controls do not
+  provide tamper evidence, WORM/off-host retention, a complete export, or legal
+  holds. `GET /audit-events` returns at most 200 latest rows in deterministic
+  `(createdAt, id)` order and is not an audit export.
 - Proof-v1 supports manual, targeted, zero-overlap re-enrollment of an
   existing screen. The request immediately revokes the old identity; fresh-key
   proof stages a candidate; and a later current OWNER/ADMIN exact-fingerprint
