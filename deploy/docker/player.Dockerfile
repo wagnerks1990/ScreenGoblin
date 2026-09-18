@@ -10,7 +10,7 @@ COPY packages/contracts ./packages/contracts
 COPY apps/player ./apps/player
 RUN npm run build -w @screengoblin/contracts && npm run build -w @screengoblin/player
 
-FROM nginxinc/nginx-unprivileged:1.30.4-alpine3.24@sha256:442753882674b49ae2c1de83ed67896131c0777f56df5005e356e62bc3f7e7ce
+FROM nginxinc/nginx-unprivileged:1.31.5-alpine3.24@sha256:19c132c9ab02d3b783f478743dafc7a7f42e27aa7d2bdcbec1bb1128ca8f2a07
 COPY deploy/nginx/spa.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/player/dist /usr/share/nginx/html
 USER nginx
