@@ -38,15 +38,15 @@
     "@screengoblin/contracts": "*",
     "bcryptjs": "^3.0.2",
     "dotenv": "^17.2.2",
-    "fastify": "^5.5.0",
+    "fastify": "^5.12.4",
     "fastify-plugin": "^6.0.0",
     "ioredis": "^5.11.1",
-    "zod": "^4.1.5"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.18.1",
-    "@vitest/coverage-v8": "^5.0.0",
+    "@vitest/coverage-v8": "^5.0.1",
     "eslint": "^10.10.0",
     "prisma": "6.12.0",
     "tsx": "^4.20.5",
