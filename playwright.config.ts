@@ -1,4 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
+import { assertE2eEnvironment } from "./e2e/setup-safety.mjs";
+
+// Validate before Playwright can start servers or execute mutating fixtures.
+assertE2eEnvironment(process.env);
 
 export default defineConfig({
   testDir: "./e2e",
@@ -22,13 +26,13 @@ export default defineConfig({
     {
       command: "npm run start -w @screengoblin/api",
       url: "http://127.0.0.1:3000/health/live",
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 30_000,
     },
     {
       command: "npm run preview -w @screengoblin/console",
       url: "http://127.0.0.1:4173",
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 30_000,
     },
   ],

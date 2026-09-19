@@ -1,8 +1,85 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
 import type { FullConfig } from "@playwright/test";
+import {
+  assertE2eEnvironment,
+  waitForFreshLoginBudgetWindow,
+} from "./setup-safety.mjs";
 
 const apiBaseUrl =
   process.env.E2E_API_BASE_URL ?? "http://127.0.0.1:3000/api/v1";
+
+type E2ePrismaClient = {
+  organization: {
+    findUnique(input: {
+      where: { slug: string };
+      select: { id: true };
+    }): Promise<{ id: string } | null>;
+  };
+  mediaAsset: {
+    create(input: {
+      data: {
+        id: string;
+        organizationId: string;
+        name: string;
+        kind: "IMAGE";
+        mimeType: "image/png";
+        url: string;
+        storageKey: string;
+        checksumSha256: string;
+        sizeBytes: bigint;
+      };
+    }): Promise<unknown>;
+  };
+  $disconnect(): Promise<void>;
+};
+
+async function provisionE2eMediaAsset(
+  organizationSlug: string,
+  allowedOrigin: string,
+) {
+  // The entrypoint validates every target before loading or constructing Prisma.
+  const apiRequire = createRequire(resolve("apps/api/package.json"));
+  const { PrismaClient } = apiRequire("@prisma/client") as {
+    PrismaClient: new () => E2ePrismaClient;
+  };
+  const prisma = new PrismaClient();
+  try {
+    const organization = await prisma.organization.findUnique({
+      where: { slug: organizationSlug },
+      select: { id: true },
+    });
+    if (!organization)
+      throw new Error("The isolated browser organization was not seeded");
+    const id = randomUUID();
+    const checksumSha256 = createHash("sha256")
+      .update(`screengoblin-maker-checker-e2e\0${id}`)
+      .digest("hex");
+    await prisma.mediaAsset.create({
+      data: {
+        id,
+        organizationId: organization.id,
+        name: `Maker-checker fixture ${id}`,
+        kind: "IMAGE",
+        mimeType: "image/png",
+        url: `${allowedOrigin}/e2e/maker-checker-${id}.png`,
+        storageKey: `organizations/${organization.id}/assets/${id}/${checksumSha256}`,
+        checksumSha256,
+        sizeBytes: 68n,
+      },
+    });
+    process.env.E2E_MAKER_CHECKER_ASSET_ID = id;
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+type BootstrapPrincipal = {
+  email: string;
+  temporaryPassword: string;
+  replacementPasswordEnvironmentVariable: string;
+};
 
 function requiredOwnerCredentials() {
   const email = process.env.SEED_ADMIN_EMAIL?.trim();
@@ -15,6 +92,23 @@ function requiredOwnerCredentials() {
   return { email, password };
 }
 
+function requiredProvisionedPrincipal(
+  prefix: "E2E_PUBLISHER" | "E2E_ADMIN",
+): BootstrapPrincipal {
+  const email = process.env[`${prefix}_EMAIL`]?.trim();
+  const temporaryPassword = process.env[`${prefix}_TEMPORARY_PASSWORD`];
+  if (!email || !temporaryPassword) {
+    throw new Error(
+      `${prefix}_EMAIL and ${prefix}_TEMPORARY_PASSWORD are required for Console E2E tests`,
+    );
+  }
+  return {
+    email,
+    temporaryPassword,
+    replacementPasswordEnvironmentVariable: `${prefix}_PASSWORD`,
+  };
+}
+
 async function jsonResponse(
   response: Response,
 ): Promise<Record<string, unknown>> {
@@ -25,8 +119,104 @@ async function jsonResponse(
   return payload as Record<string, unknown>;
 }
 
+async function rotateBootstrapPrincipal(principal: BootstrapPrincipal) {
+  const replacementPassword = createHmac("sha256", principal.temporaryPassword)
+    .update(`screengoblin-console-e2e\0${principal.email}\0${apiBaseUrl}`)
+    .digest("base64url");
+  const loginResponse = await fetch(`${apiBaseUrl}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: principal.email,
+      password: principal.temporaryPassword,
+    }),
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!loginResponse.ok && loginResponse.status !== 401) {
+    throw new Error(`Bootstrap login failed with HTTP ${loginResponse.status}`);
+  }
+  if (loginResponse.ok) {
+    const bootstrap = await jsonResponse(loginResponse);
+    if (
+      bootstrap.nextAction !== "CHANGE_BOOTSTRAP_PASSWORD" ||
+      typeof bootstrap.accessToken !== "string" ||
+      bootstrap.accessToken.length === 0
+    ) {
+      throw new Error(
+        "Provisioned principal did not require password rotation",
+      );
+    }
+    const rotationResponse = await fetch(
+      `${apiBaseUrl}/auth/bootstrap-password`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${bootstrap.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          currentPassword: principal.temporaryPassword,
+          newPassword: replacementPassword,
+        }),
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (rotationResponse.status !== 204) {
+      throw new Error(
+        `Bootstrap password rotation failed with HTTP ${rotationResponse.status}`,
+      );
+    }
+  }
+
+  const verificationResponse = await fetch(`${apiBaseUrl}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: principal.email,
+      password: replacementPassword,
+    }),
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!verificationResponse.ok) {
+    throw new Error(
+      `Rotated login failed with HTTP ${verificationResponse.status}`,
+    );
+  }
+  const session = await jsonResponse(verificationResponse);
+  if (
+    typeof session.accessToken !== "string" ||
+    session.accessToken.length === 0 ||
+    session.nextAction !== undefined ||
+    !session.user ||
+    typeof session.user !== "object" ||
+    Array.isArray(session.user)
+  ) {
+    throw new Error("Rotated login did not return a full session");
+  }
+  process.env[principal.replacementPasswordEnvironmentVariable] =
+    replacementPassword;
+  const logoutResponse = await fetch(`${apiBaseUrl}/auth/logout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${session.accessToken}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (logoutResponse.status !== 204) {
+    throw new Error(
+      `Rotated session cleanup failed with HTTP ${logoutResponse.status}`,
+    );
+  }
+}
+
 export default async function globalSetup(_config: FullConfig) {
+  const { mediaOrigin, organizationSlug } = assertE2eEnvironment(process.env);
   const owner = requiredOwnerCredentials();
+  const publisher = requiredProvisionedPrincipal("E2E_PUBLISHER");
+  const administrator = requiredProvisionedPrincipal("E2E_ADMIN");
+  await provisionE2eMediaAsset(organizationSlug, mediaOrigin);
   const replacementPassword = createHmac("sha256", owner.password)
     .update(`screengoblin-console-e2e\0${owner.email}\0${apiBaseUrl}`)
     .digest("base64url");
@@ -34,8 +224,10 @@ export default async function globalSetup(_config: FullConfig) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(owner),
+    redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
+  const firstLoginCompletedAt = performance.now();
   if (!loginResponse.ok && loginResponse.status !== 401) {
     throw new Error(
       `Bootstrap owner login failed with HTTP ${loginResponse.status}`,
@@ -65,6 +257,7 @@ export default async function globalSetup(_config: FullConfig) {
           currentPassword: owner.password,
           newPassword: replacementPassword,
         }),
+        redirect: "error",
         signal: AbortSignal.timeout(10_000),
       },
     );
@@ -82,6 +275,7 @@ export default async function globalSetup(_config: FullConfig) {
       email: owner.email,
       password: replacementPassword,
     }),
+    redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
   if (!verificationResponse.ok) {
@@ -106,6 +300,7 @@ export default async function globalSetup(_config: FullConfig) {
   const logoutResponse = await fetch(`${apiBaseUrl}/auth/logout`, {
     method: "POST",
     headers: { Authorization: `Bearer ${session.accessToken}` },
+    redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
   if (logoutResponse.status !== 204) {
@@ -113,4 +308,8 @@ export default async function globalSetup(_config: FullConfig) {
       `Rotated owner session cleanup failed with HTTP ${logoutResponse.status}`,
     );
   }
+
+  await rotateBootstrapPrincipal(publisher);
+  await rotateBootstrapPrincipal(administrator);
+  await waitForFreshLoginBudgetWindow(firstLoginCompletedAt);
 }

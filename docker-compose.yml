@@ -150,6 +150,36 @@ services:
         condition: service_completed_successfully
     networks: [backend]
 
+  api-provision-member:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+      target: build
+    restart: "no"
+    profiles: [identity-admin]
+    command: ["npm", "run", "member:provision", "-w", "@screengoblin/api"]
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=0700,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    environment:
+      HOME: /tmp
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      MEMBER_PROVISION_ACKNOWLEDGEMENT: ${MEMBER_PROVISION_ACKNOWLEDGEMENT:-}
+      MEMBER_PROVISION_ORGANIZATION_SLUG: ${MEMBER_PROVISION_ORGANIZATION_SLUG:-}
+      MEMBER_PROVISION_EMAIL: ${MEMBER_PROVISION_EMAIL:-}
+      MEMBER_PROVISION_NAME: ${MEMBER_PROVISION_NAME:-}
+      MEMBER_PROVISION_ROLE: ${MEMBER_PROVISION_ROLE:-}
+      MEMBER_PROVISION_TEMPORARY_PASSWORD: ${MEMBER_PROVISION_TEMPORARY_PASSWORD:-}
+      MEMBER_PROVISION_REASON: ${MEMBER_PROVISION_REASON:-}
+    depends_on:
+      api-db-privileges:
+        condition: service_completed_successfully
+    networks: [backend]
+
   api:
     build:
       context: .

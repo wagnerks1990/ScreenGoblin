@@ -12,8 +12,9 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
    Confirm production has distinct random PostgreSQL credentials:
    `MIGRATION_DATABASE_URL` uses the protected schema owner only for migrations
    and privilege reconciliation, while `DATABASE_URL` uses the non-owning
-   runtime role for the API, seed, and offline recovery. There is no fallback
-   between them. Confirm `DEVICE_AUTH_MODE=proof-v1`; the API must refuse
+   runtime role for the API, seed, offline member provisioning, and offline
+   recovery. There is no fallback between them. Confirm
+   `DEVICE_AUTH_MODE=proof-v1`; the API must refuse
    `development-bearer` in production.
 2. Back up PostgreSQL and object storage; record the backup IDs.
 3. Build immutable images from the reviewed commit and run CI/security gates.
@@ -213,6 +214,56 @@ rotation, confirm `auth.bootstrap_password_rotated` exists in each organization
 where the user has a membership, confirm all prior sessions and pending
 initial/replacement enrollment grants are revoked, sign in again, and remove
 any remaining bootstrap credentials from the host environment.
+
+### Provision a non-owner member offline
+
+ScreenGoblin has no HTTP or Console identity-administration route. Provision a
+member only from a trusted maintenance environment, using the non-owning
+runtime `DATABASE_URL` and an approved secret-delivery mechanism. Set all seven
+values below only for the command process; never place the temporary password
+in shell history, logs, tickets, or chat:
+
+- `MEMBER_PROVISION_ACKNOWLEDGEMENT` must equal exactly
+  `CREATE_NEW_NON_OWNER_MEMBER_WITH_24_HOUR_ROTATION`.
+- `MEMBER_PROVISION_ORGANIZATION_SLUG` identifies one existing organization.
+- `MEMBER_PROVISION_EMAIL` is trimmed and normalized to lowercase.
+- `MEMBER_PROVISION_NAME` is the member's display name.
+- `MEMBER_PROVISION_ROLE` must be exactly `ADMIN`, `PUBLISHER`, or `VIEWER`.
+  This command cannot create an `OWNER`.
+- `MEMBER_PROVISION_TEMPORARY_PASSWORD` is a unique temporary value containing
+  at least 16 Unicode code points and no more than 72 UTF-8 bytes.
+- `MEMBER_PROVISION_REASON` is the approved operational reason retained in the
+  audit record.
+
+The organization slug, name, and reason are trimmed; name and slug are bounded
+to 1–100 characters, email to 320, and reason to 1–500. Then run:
+
+```bash
+docker compose --env-file deploy/.env --profile identity-admin run --rm api-provision-member
+```
+
+The one-shot service is read-only, drops all Linux capabilities, has no host
+port or volume, and receives `DATABASE_URL`, never `MIGRATION_DATABASE_URL`.
+The command creates only new identities: a non-exact existing normalized email,
+missing organization, invalid role/input, or database conflict fails closed.
+One narrow exact rerun may report `UNCHANGED` only while the
+original marker remains unexpired and the supplied password, normalized input,
+single membership, grants, and audit evidence all exactly match. It does not
+reset the password, extend the fixed database-time 24-hour deadline, alter the
+role, add a second membership, or duplicate success audit events. Initial
+success creates one user and membership, the exact compatibility grants for
+that membership, and the `identity.member_provisioned` plus
+`auth.bootstrap_password_containment_enabled` audit events in one transaction.
+Output may identify the normalized email, organization, role, status, and
+change deadline, but never the password or hash.
+
+Deliver the temporary credential separately to the intended person. Before the
+fixed deadline, they must sign in, complete the same forced bootstrap-password
+rotation as the seeded owner, discard the restricted rotation session, and
+sign in again. Verify both audit events, the requested role, compatibility
+grants, and successful rotation; then clear every `MEMBER_PROVISION_*` value.
+Do not rely on this verification-only exact rerun as a recovery mechanism or
+rerun with altered inputs to work around a refusal.
 
 ### Recover an expired or lost bootstrap owner password
 

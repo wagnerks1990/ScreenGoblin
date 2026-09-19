@@ -4,6 +4,16 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Add an acknowledged offline, create-only member-provisioning command for
+  `ADMIN`, `PUBLISHER`, and `VIEWER` accounts. It atomically creates one user and
+  membership, the exact compatibility grants, tenant audit evidence, and a
+  fixed 24-hour forced-rotation credential while refusing non-exact existing
+  emails and `OWNER`; an exact rerun can only verify an unchanged live result.
+  A hardened one-shot Compose profile exposes no port and uses only the
+  non-owning runtime database identity. This does not add an HTTP identity
+  route, SSO/MFA, dual control, or a complete user-lifecycle administration
+  plane.
+
 - Make the Android boot receiver's runtime action authorization explicit and
   regression-test its exact `BOOT_COMPLETED` allowlist. Narrow the documented
   CodeQL false-positive acceptance to the reviewed receiver source so unrelated

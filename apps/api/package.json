@@ -27,7 +27,8 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "preprisma:seed": "npm run build:contracts",
     "prisma:seed": "tsx prisma/seed.ts",
-    "bootstrap:recover": "tsx prisma/recover-bootstrap-password.ts"
+    "bootstrap:recover": "tsx prisma/recover-bootstrap-password.ts",
+    "member:provision": "tsx prisma/provision-member.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

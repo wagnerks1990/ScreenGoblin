@@ -7,6 +7,7 @@
 - [Device protocol](DEVICE_PROTOCOL.md)
 - [Threat model](THREAT_MODEL.md)
 - [Operations runbook](RUNBOOK.md)
+- [Isolated browser test runbook](../e2e/README.md)
 - [Release and recovery evidence](RELEASE_EVIDENCE.md)
 - [Incident response plan](operations/INCIDENT-RESPONSE.md)
 - [SLO and alerting proposal](operations/SLO-AND-ALERTING.md)
