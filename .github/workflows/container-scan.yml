@@ -51,6 +51,7 @@ jobs:
             --license-evidence-output static-security-evidence/dependency-licenses.json
       - name: Block unresolved high and critical repository vulnerabilities
         run: |
+          set +e
           "$RUNNER_TEMP/trivy" fs \
             --scanners vuln \
             --format sarif \
@@ -59,6 +60,17 @@ jobs:
             --ignore-unfixed \
             --exit-code 1 \
             .
+          scan_status=$?
+          set -e
+          if (( scan_status != 0 )); then
+            # Emit only public advisory identifiers, never SARIF messages,
+            # source snippets, paths, URLs, or secret-scanner results.
+            jq --compact-output \
+              '[.runs[]?.results[]?.ruleId | select(type == "string") | select(test("^(CVE-[0-9]{4}-[0-9]{4,8}|GHSA-[a-z0-9]{4}(-[a-z0-9]{4}){2})$"))] | unique' \
+              static-security-evidence/vulnerabilities.sarif 2>/dev/null || \
+              printf '%s\n' 'Vulnerability identifiers unavailable; scan remains failed.'
+            exit "$scan_status"
+          fi
       - name: Block repository secrets
         run: |
           "$RUNNER_TEMP/trivy" fs \

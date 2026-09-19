@@ -11,6 +11,24 @@ Trivy is installed from the existing versioned release asset only after its
 repository-reviewed SHA-256 digest is verified. The workflow does not install a
 second scanner or use a floating action reference.
 
+## Vulnerability failure diagnostics
+
+The existing repository vulnerability step also blocks fixable HIGH/CRITICAL
+findings. A failed scan now prints only sorted, deduplicated CVE/GHSA identifiers
+from its SARIF output. It does not print report messages, source snippets,
+locations, URLs, package provenance, or secret-scanner results. Missing or
+malformed reports produce a generic diagnostic; the original nonzero scanner
+status is preserved in every case. This does not add an exception or change
+scanner coverage, severity, or exit policy.
+
+Raw repository reports and artifacts remain success-only. An empty identifier
+list after failure is not a passing scan. Inspect the scanner's operational
+messages and resolve the underlying failure before accepting the gate. Run
+`node --test deploy/scripts/vulnerability-diagnostics.test.mjs` with Node 22,
+Bash, and jq to exercise the exact workflow block against isolated fake-scanner
+success, finding, missing-report, and malformed-report cases. These regression
+tests are not a vulnerability scan of the repository.
+
 ## Exceptions
 
 `static-scan-exceptions.json` is the only source for secret or

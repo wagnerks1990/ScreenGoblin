@@ -196,10 +196,17 @@ test("guards configuration and refuses existing servers", async () => {
 });
 
 test("CI validates browser targets before migrating or seeding", async () => {
-  const workflow = await readFile(new URL(".github/workflows/ci.yml", root), "utf8");
-  const browserJob = workflow.split("  browser-e2e:\n")[1].split("\n  android:")[0];
+  const workflow = await readFile(
+    new URL(".github/workflows/ci.yml", root),
+    "utf8",
+  );
+  const browserJob = workflow
+    .split("  browser-e2e:\n")[1]
+    .split("\n  android:")[0];
   assert.match(browserJob, /SCREEN_GOBLIN_ALLOW_E2E_MUTATIONS: "true"/);
-  const preflight = browserJob.indexOf("Validate isolated browser fixture targets");
+  const preflight = browserJob.indexOf(
+    "Validate isolated browser fixture targets",
+  );
   assert.ok(preflight >= 0);
   for (const command of ["prisma:migrate", "prisma:seed", "member:provision"]) {
     assert.ok(preflight < browserJob.indexOf(command));
