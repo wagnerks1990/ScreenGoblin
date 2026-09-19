@@ -20,6 +20,21 @@ ScreenGoblin is an Android-first digital-signage platform with three product sur
 5. Update the API/device contracts, runbook, threat model, changelog, and AI context when behavior or architecture changes.
 6. Do not disable or weaken a failing test or security check to obtain a green build.
 
+## Mutating browser-test boundary
+
+The Playwright suite creates fixture data and rotates temporary credentials.
+Require the exact isolated `screengoblin_e2e` database on a loopback host,
+`NODE_ENV=test`, and `SCREEN_GOBLIN_ALLOW_E2E_MUTATIONS=true` before Prisma,
+server startup, migration/seed steps, or authenticated fixture requests. Never
+reuse an existing API/Console server or enable authentication redirects. Keep
+the setup guard in both Playwright configuration and global setup; the CI
+preflight must precede migrations. See [the browser test runbook](e2e/README.md).
+
+Preserve the one-minute login limiter. Its fixture cooldown starts after the
+first login response and uses a monotonic clock with a safety floor; do not
+move it back before the request or replace it with a wall-clock deadline.
+Unit tests with mocked Prisma/fetch are not real database or browser evidence.
+
 ## Brand and UX
 
 `packages/brand/src/tokens.json` is the code-facing design source of truth. Keep the interface professional and dark-first, use non-color status cues, meet WCAG-oriented contrast, and reserve mascot art for onboarding, empty, marketing, and selected success states. Operational errors, offline behavior, player failures, and security copy must remain precise.

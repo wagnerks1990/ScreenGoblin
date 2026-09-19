@@ -105,6 +105,7 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       NODE_ENV: test
+      SCREEN_GOBLIN_ALLOW_E2E_MUTATIONS: "true"
       HOST: 127.0.0.1
       PORT: 3000
       DATABASE_URL: postgresql://screengoblin:e2e-test-only-password@127.0.0.1:5432/screengoblin_e2e?schema=public
@@ -138,6 +139,11 @@ jobs:
       - run: npm ci
       - name: Install pinned Chromium browser revision
         run: npx playwright install --with-deps chromium
+      - name: Validate isolated browser fixture targets
+        run: >-
+          node --input-type=module -e
+          'import { assertE2eEnvironment } from "./e2e/setup-safety.mjs";
+          assertE2eEnvironment(process.env)'
       - run: npm run prisma:generate -w @screengoblin/api
       - run: npm run prisma:migrate -w @screengoblin/api
       - run: npm run prisma:seed -w @screengoblin/api
