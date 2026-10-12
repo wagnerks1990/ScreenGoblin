@@ -105,7 +105,6 @@ Published follow-up `192a5f3c2d8485f32bbba30c237c130ad516786c` matches local com
 
 The uploaded unsigned APK and manifest report are CI artifact-policy evidence, not production signing or physical-device validation. An attempted download of the release ZIP into this executor failed; no independent local APK extraction is claimed. Local logs/SBOMs were sealed with SHA-256 in the separate evidence directory. Disposable test containers were removed; the original checkout and cloud services remain intact. Keep PR #128 draft until container fixes and complete smoke/DAST/recovery/image evidence are available.
 
-
 ## Follow-up: Alpine runtime remediation
 
 Both nginx runtime stages now install exact `libexpat=2.8.5-r0`,
