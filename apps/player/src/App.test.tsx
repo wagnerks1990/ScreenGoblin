@@ -167,7 +167,10 @@ describe("device revocation", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    // Manifest refresh can replace the queried node before an awaited query resumes.
+    await waitFor(() =>
+      expect(screen.getByText("Playing content")).toBeInTheDocument(),
+    );
     await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(mocks.playbackProps?.manifest).toMatchObject({
