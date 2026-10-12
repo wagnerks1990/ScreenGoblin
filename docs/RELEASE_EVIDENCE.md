@@ -261,3 +261,11 @@ unless a trusted external system attests the resulting archive digest.
 ## Promotion requirements
 
 Before a production promotion exists, define and test registry immutability, signing identity and custody, provenance verification, release approvals, rollback retention, vulnerability exception ownership and expiry, APK signing, and deployment verification. Record the exact source commit, image digests, migration compatibility, approvers, recovery evidence, and pilot-device results in the release record.
+
+### Failed image qualification
+
+The image evidence builder records each image security gate outcome and collects
+SARIF and CycloneDX SBOMs for API, Console, and Player before enforcing the
+combined vulnerability result. A failed gate still exits nonzero after sealing
+the evidence checksums; retained evidence does not qualify a release. Build or
+report-generation failures stop immediately and may leave incomplete evidence.

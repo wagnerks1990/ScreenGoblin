@@ -42,6 +42,8 @@ declare -A dockerfiles=(
   [player-web]="deploy/docker/player.Dockerfile"
 )
 
+scan_failures=0
+
 for component in api console player-web; do
   image="screengoblin/${component}:evidence-${RELEASE_ID:0:12}"
   sha256sum "${dockerfiles[$component]}" > "$OUTPUT_DIR/images/${component}.dockerfile.sha256"
@@ -54,8 +56,15 @@ for component in api console player-web; do
 
   "$TRIVY_BIN" image --quiet --ignore-unfixed --severity HIGH,CRITICAL \
     --format sarif --output "$OUTPUT_DIR/sarif/${component}.sarif" "$image"
-  "$TRIVY_BIN" image --quiet --ignore-unfixed --severity HIGH,CRITICAL \
-    --exit-code 1 "$image"
+  # A finding must block qualification without hiding evidence for later images.
+  if "$TRIVY_BIN" image --quiet --ignore-unfixed --severity HIGH,CRITICAL \
+    --exit-code 1 "$image"; then
+    printf 'passed\n' > "$OUTPUT_DIR/images/${component}.security-gate.txt"
+  else
+    scan_status=$?
+    printf 'failed (exit %s)\n' "$scan_status" > "$OUTPUT_DIR/images/${component}.security-gate.txt"
+    scan_failures=$((scan_failures + 1))
+  fi
   "$TRIVY_BIN" image --quiet --format cyclonedx \
     --output "$OUTPUT_DIR/sbom/${component}.cdx.json" "$image"
 
@@ -83,5 +92,10 @@ EOF
     | xargs -0 sha256sum > SHA256SUMS
   sha256sum --check --strict SHA256SUMS
 )
+
+if (( scan_failures > 0 )); then
+  echo "Security qualification failed for $scan_failures image(s); evidence retained in $OUTPUT_DIR" >&2
+  exit 1
+fi
 
 echo "Evidence written to $OUTPUT_DIR"
