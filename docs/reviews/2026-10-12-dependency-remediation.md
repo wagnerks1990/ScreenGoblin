@@ -104,3 +104,23 @@ Published follow-up `192a5f3c2d8485f32bbba30c237c130ad516786c` matches local com
 - [Recovery run 308](https://github.com/wagnerks1990/ScreenGoblin/actions/runs/38320293102): failed before recovery on the pinned Quay MinIO authorization error.
 
 The uploaded unsigned APK and manifest report are CI artifact-policy evidence, not production signing or physical-device validation. An attempted download of the release ZIP into this executor failed; no independent local APK extraction is claimed. Local logs/SBOMs were sealed with SHA-256 in the separate evidence directory. Disposable test containers were removed; the original checkout and cloud services remain intact. Keep PR #128 draft until container fixes and complete smoke/DAST/recovery/image evidence are available.
+
+
+## Follow-up: Alpine runtime remediation
+
+Both nginx runtime stages now install exact `libexpat=2.8.5-r0`,
+`pcre2=10.49-r0`, and `tiff=4.7.2-r0` packages from the signed Alpine 3.24
+repository. These address CVE-2026-93990, CVE-2026-103111, and CVE-2026-4775.
+The immutable base digest remains pinned; package installation uses root only
+during build and the final runtime still uses `USER nginx`. No blanket upgrade,
+scanner exclusion, runtime privilege expansion, or production operation occurs.
+
+The signed Alpine index lists all three exact versions. An isolated container
+from the pinned base successfully installed all three packages and passed
+`nginx -t`; the session proxy CA was mounted only for that disposable test.
+Hosted image scanning remains required before qualifying the PR.
+
+The MinIO Quay authorization failure remains reproducible; the same historical
+Docker Hub tags also returned manifest HTTP 401. No unverified substitute image
+was adopted. Main ruleset update to actual hosted checks was denied HTTP 403;
+`windows-agent` and `validate` remain unsatisfiable required contexts.
