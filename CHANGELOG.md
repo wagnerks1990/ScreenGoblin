@@ -4,6 +4,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Synchronize a managed Wiki navigation index from protected main, with
+  revision-bound documentation links, credential-free PR validation, and
+  preservation of unmanaged Wiki pages.
+
 - Make the Android boot receiver's runtime action authorization explicit and
   regression-test its exact `BOOT_COMPLETED` allowlist. Narrow the documented
   CodeQL false-positive acceptance to the reviewed receiver source so unrelated

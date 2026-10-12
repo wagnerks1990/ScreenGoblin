@@ -20,3 +20,12 @@
 - [Agent-assisted hardening review (2026-09-11)](reviews/2026-09-11-agent-hardening.md)
 
 These documents describe the intended pre-production contract. Where prose and executable code disagree, code and tests are authoritative; open an issue to reconcile the documentation.
+
+## GitHub Wiki
+
+The Wiki sync workflow maintains `ScreenGoblin-Documentation.md` as a navigation
+index linking to approved documentation at the exact source commit. Other Wiki
+pages are preserved; a conflicting unmanaged index fails closed. Pull requests
+validate without credentials. Publication requires protected `main` and uses the
+repository `WIKI_TOKEN` secret only in the publishing step. The initialized Wiki
+can be refreshed by running **Wiki sync** from `main` after its changes merge.

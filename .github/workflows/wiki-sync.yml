@@ -1,0 +1,87 @@
+name: Wiki sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "deploy/scripts/render-wiki*"
+      - ".github/workflows/wiki-sync.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "deploy/scripts/render-wiki*"
+      - ".github/workflows/wiki-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - run: node --test deploy/scripts/render-wiki.test.mjs
+
+  publish:
+    needs: validate
+    if: >-
+      github.repository == 'wagnerks1990/ScreenGoblin' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Publish managed documentation index
+        env:
+          WIKI_TOKEN: ${{ secrets.WIKI_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$WIKI_TOKEN"
+          umask 077
+          workspace=$(mktemp -d)
+          trap 'rm -rf "$workspace"' EXIT
+          cat > "$workspace/askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "$WIKI_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 700 "$workspace/askpass"
+          export GIT_ASKPASS="$workspace/askpass" GIT_TERMINAL_PROMPT=0
+          git -c credential.helper= clone https://github.com/wagnerks1990/ScreenGoblin.wiki.git "$workspace/wiki"
+          node deploy/scripts/render-wiki.mjs "$workspace/wiki" "$GITHUB_SHA"
+          git -C "$workspace/wiki" add -- ScreenGoblin-Documentation.md
+          if git -C "$workspace/wiki" diff --cached --quiet; then
+            echo "Managed Wiki documentation is current."
+            exit 0
+          fi
+          git -C "$workspace/wiki" -c user.name='ScreenGoblin documentation' -c user.email='github-actions[bot]@users.noreply.github.com' commit -m "Sync documentation index from $GITHUB_SHA"
+          git -C "$workspace/wiki" -c credential.helper= push origin HEAD
