@@ -458,6 +458,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ### Fixed
 
+- Re-query the live Playback element in the scheduler regression while its
+  immediate manifest refresh replaces the keyed node, preventing a stale-element
+  assertion without changing heartbeat or telemetry coverage.
+
 - Make the Console Dashboard issue counts and explanations derive from one
   screen-list response, distinguish loading, failure, successful empty, live,
   and demonstration states, and provide a working refresh/retry without

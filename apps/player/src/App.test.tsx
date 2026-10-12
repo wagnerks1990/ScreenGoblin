@@ -167,7 +167,11 @@ describe("device revocation", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Playing content")).toBeInTheDocument();
+    // Recovery and the immediate manifest refresh can replace the Playback node.
+    // Query inside the retry so the assertion always inspects the current DOM.
+    await waitFor(() =>
+      expect(screen.getByText("Playing content")).toBeInTheDocument(),
+    );
     await waitFor(() => expect(mocks.heartbeat).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(mocks.playbackProps?.manifest).toMatchObject({
