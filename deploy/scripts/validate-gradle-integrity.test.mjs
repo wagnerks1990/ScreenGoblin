@@ -30,9 +30,10 @@ const securedBuildTools = [
   "com.google.protobuf:protobuf-java-util:3.25.5",
   "com.google.protobuf:protobuf-kotlin:3.25.5",
   "org.bitbucket.b_c:jose4j:0.9.6",
-  "org.bouncycastle:bcpkix-jdk18on:1.84",
-  "org.bouncycastle:bcprov-jdk18on:1.84",
-  "org.bouncycastle:bcutil-jdk18on:1.84",
+  "org.bouncycastle:bcpkix-jdk18on:1.85",
+  "org.bouncycastle:bcprov-jdk18on:1.85",
+  "org.bouncycastle:bcutil-jdk18on:1.85",
+  "org.apache.commons:commons-compress:1.28.0",
   "org.jdom:jdom2:2.0.6.1",
 ];
 const forcedBuildTools = securedBuildTools

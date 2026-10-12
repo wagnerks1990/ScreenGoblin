@@ -23,7 +23,9 @@ test("the API image installs and verifies nested workspace dependencies", () => 
     dockerfile,
     /COPY --from=build[^\n]+\/apps\/api\/node_modules\/\.prisma[^\n]+\.\/apps\/api\/node_modules\/\.prisma/,
   );
-  assert.match(dockerfile, /openssl=3\.0\.20-1~deb12u2/);
+  assert.match(dockerfile, /libpcre2-8-0=10\.42-1\+deb12u2/);
+  assert.match(dockerfile, /perl-base=5\.36\.0-7\+deb12u4/);
+  assert.match(dockerfile, /openssl=3\.0\.22-1~deb12u1/);
 
   assert.match(
     dockerfile,
