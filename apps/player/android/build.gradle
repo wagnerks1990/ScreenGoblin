@@ -108,6 +108,28 @@ allprojects {
             'org.jdom:jdom2:2.0.6.1'
         )
     }
+    // AGP lint creates detached configurations that are not visited by
+    // configurations.configureEach. Rewrite transitive metadata as well so
+    // those tool graphs request the same secured dependencies.
+    dependencies {
+        components {
+            all { details ->
+                details.allVariants {
+                    withDependencies { dependencies ->
+                        dependencies.each { dependency ->
+                            if (dependency.group == 'org.bouncycastle' &&
+                                dependency.name in ['bcpkix-jdk18on', 'bcprov-jdk18on', 'bcutil-jdk18on']) {
+                                dependency.version { require '1.85' }
+                            }
+                            if (dependency.group == 'org.apache.commons' && dependency.name == 'commons-compress') {
+                                dependency.version { require '1.28.0' }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     repositories {
         google()
         mavenCentral()
