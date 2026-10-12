@@ -1,7 +1,7 @@
 FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS build
 WORKDIR /app
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends openssl=3.0.20-1~deb12u2 \
+ && apt-get install --yes --no-install-recommends openssl=3.0.22-1~deb12u1 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json* tsconfig.base.json ./
@@ -30,8 +30,9 @@ ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001
 WORKDIR /app
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends \
-      libpcre2-8-0=10.42-1+deb12u1 \
-      openssl=3.0.20-1~deb12u2 \
+      libpcre2-8-0=10.42-1+deb12u2 \
+      openssl=3.0.22-1~deb12u1 \
+      perl-base=5.36.0-7+deb12u4 \
  && rm -rf /var/lib/apt/lists/* \
  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
