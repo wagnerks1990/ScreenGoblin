@@ -14,4 +14,4 @@ The reviewed repository documents remain the source of truth:
 - [Threat model](https://github.com/wagnerks1990/ScreenGoblin/blob/main/docs/THREAT_MODEL.md)
 - [Security reporting](https://github.com/wagnerks1990/ScreenGoblin/blob/main/SECURITY.md)
 
-This landing page is synchronized from reviewed, protected `main` using the repository's `WIKI_TOKEN` Actions secret. Other manually maintained Wiki pages are preserved. See [Wiki maintenance](https://github.com/wagnerks1990/ScreenGoblin/blob/main/docs/WIKI.md).
+This landing page is synchronized from reviewed, protected `main` using the `wiki-publication` environment's `WIKI_TOKEN` secret. Other manually maintained Wiki pages are preserved. See [Wiki maintenance](https://github.com/wagnerks1990/ScreenGoblin/blob/main/docs/WIKI.md).
