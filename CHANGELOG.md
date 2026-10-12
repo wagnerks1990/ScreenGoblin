@@ -4,6 +4,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Retain SARIF, SBOM, per-image security outcomes, and checksum-bound evidence
+  for every container when an earlier image fails vulnerability qualification.
+  The overall gate still fails and blocks release publication.
+
 - Make the Android boot receiver's runtime action authorization explicit and
   regression-test its exact `BOOT_COMPLETED` allowlist. Narrow the documented
   CodeQL false-positive acceptance to the reviewed receiver source so unrelated
