@@ -1,0 +1,75 @@
+name: Wiki documentation
+
+on:
+  pull_request:
+    paths: ["docs/wiki/**", ".github/workflows/wiki-sync.yml"]
+  push:
+    branches: [main]
+    paths: ["docs/wiki/**", ".github/workflows/wiki-sync.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-documentation
+  cancel-in-progress: false
+
+jobs:
+  validate-wiki:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate canonical documentation links
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+          pages = list(pathlib.Path("docs/wiki").glob("*.md"))
+          assert pages, "No wiki pages found"
+          assert pathlib.Path("docs/wiki/Home.md").is_file(), "Home.md required"
+          prefix = "https://github.com/wagnerks1990/ScreenGoblin/blob/main/"
+          for page in pages:
+              for target in re.findall(r"\]\(([^)]+)\)", page.read_text()):
+                  assert target.startswith(prefix), f"Unexpected link in {page}"
+                  path = pathlib.Path(target[len(prefix):].split("#", 1)[0])
+                  assert path.is_file(), f"Missing target {path}"
+          PY
+
+  sync-wiki:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: validate-wiki
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Publish tracked wiki pages
+        env:
+          WIKI_TOKEN: ${{ secrets.WIKI_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$WIKI_TOKEN" || { echo 'Missing repository secret WIKI_TOKEN'; exit 1; }
+          umask 077
+          askpass="$RUNNER_TEMP/wiki-askpass.sh"
+          cat > "$askpass" <<'SCRIPT'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$WIKI_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          SCRIPT
+          chmod 700 "$askpass"
+          export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
+          wiki="$RUNNER_TEMP/screengoblin-wiki"
+          git clone "https://github.com/${GITHUB_REPOSITORY}.wiki.git" "$wiki"
+          cp docs/wiki/*.md "$wiki/"
+          git -C "$wiki" config user.name 'github-actions[bot]'
+          git -C "$wiki" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$wiki" add -- '*.md'
+          if git -C "$wiki" diff --cached --quiet; then
+            echo 'Wiki is already synchronized.'
+            exit 0
+          fi
+          git -C "$wiki" commit -m 'Synchronize tracked ScreenGoblin documentation'
+          git -C "$wiki" push origin HEAD
