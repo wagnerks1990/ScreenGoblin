@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  existsSync,
+  symlinkSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -54,4 +62,34 @@ test("Wiki publication restricts credentials to protected main and excludes PRs"
     /git -C "\$workspace\/wiki" -c credential\.helper= push/,
   );
   assert.doesNotMatch(workflow, /https:\/\/[^\s]*\$\{?WIKI_TOKEN/);
+});
+
+test("Wiki rendering rejects symlinks without modifying their external target", () => {
+  const directory = mkdtempSync(join(tmpdir(), "screengoblin-wiki-symlink-"));
+  try {
+    const destination = join(directory, "wiki");
+    const outside = join(directory, "outside.md");
+    const original =
+      "<!-- ScreenGoblin managed documentation index -->\nOwner content\n";
+    writeFileSync(outside, original);
+    mkdirSync(destination);
+    symlinkSync(outside, join(destination, "ScreenGoblin-Documentation.md"));
+    assert.throws(
+      () => renderWiki(process.cwd(), destination, sha),
+      /regular file/,
+    );
+    assert.equal(readFileSync(outside, "utf8"), original);
+    rmSync(join(destination, "ScreenGoblin-Documentation.md"));
+    symlinkSync(
+      join(directory, "missing.md"),
+      join(destination, "ScreenGoblin-Documentation.md"),
+    );
+    assert.throws(
+      () => renderWiki(process.cwd(), destination, sha),
+      /regular file/,
+    );
+    assert.equal(existsSync(join(directory, "missing.md")), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

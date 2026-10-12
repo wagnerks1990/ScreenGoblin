@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -21,6 +27,13 @@ export function renderWiki(repository, destination, revision) {
   }
   const page = join(destination, "ScreenGoblin-Documentation.md");
   const marker = "<!-- ScreenGoblin managed documentation index -->";
+  try {
+    if (!lstatSync(page).isFile()) {
+      throw new Error("Managed Wiki destination must be a regular file");
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   if (existsSync(page) && !readFileSync(page, "utf8").startsWith(marker)) {
     throw new Error("Refusing to overwrite an unmanaged Wiki page");
   }
