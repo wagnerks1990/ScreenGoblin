@@ -43,7 +43,21 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check current protected-main commit
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current_sha" = "$GITHUB_SHA" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping stale Wiki synchronization commit."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish tracked wiki pages
+        if: steps.current.outputs.publish == 'true'
         env:
           WIKI_TOKEN: ${{ secrets.WIKI_TOKEN }}
         run: |
@@ -51,6 +65,7 @@ jobs:
           test -n "$WIKI_TOKEN" || { echo 'Missing repository secret WIKI_TOKEN'; exit 1; }
           umask 077
           askpass="$RUNNER_TEMP/wiki-askpass.sh"
+          trap 'unlink "$askpass" 2>/dev/null || true' EXIT
           cat > "$askpass" <<'SCRIPT'
           #!/bin/sh
           case "$1" in
