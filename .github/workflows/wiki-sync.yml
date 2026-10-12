@@ -1,0 +1,61 @@
+name: Wiki synchronization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wiki/Home.md"
+      - "docs/WIKI.md"
+      - ".github/workflows/wiki-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    environment: wiki-publication
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Synchronize approved Home and verify remote contents
+        env:
+          WIKI_TOKEN: ${{ secrets.WIKI_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$WIKI_TOKEN" || { echo 'WIKI_TOKEN is required.' >&2; exit 1; }
+          export GIT_ASKPASS="$RUNNER_TEMP/wiki-askpass" GIT_TERMINAL_PROMPT=0
+          trap 'rm -f "$GIT_ASKPASS"; rm -rf "$RUNNER_TEMP/hosted-wiki" "$RUNNER_TEMP/verified-wiki"' EXIT
+          cat > "$GIT_ASKPASS" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$WIKI_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 700 "$GIT_ASKPASS"
+          wiki_url="https://github.com/${GITHUB_REPOSITORY}.wiki.git"
+          git -c credential.helper= clone "$wiki_url" "$RUNNER_TEMP/hosted-wiki"
+          cp wiki/Home.md "$RUNNER_TEMP/hosted-wiki/Home.md"
+          cd "$RUNNER_TEMP/hosted-wiki"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Home.md
+          if git diff --cached --quiet; then
+            git -c credential.helper= push --dry-run origin HEAD
+          else
+            git commit -m 'Synchronize reviewed ScreenGoblin Wiki home'
+            git -c credential.helper= push origin HEAD
+          fi
+          git -c credential.helper= clone --depth 1 "$wiki_url" "$RUNNER_TEMP/verified-wiki"
+          cmp Home.md "$RUNNER_TEMP/verified-wiki/Home.md"
