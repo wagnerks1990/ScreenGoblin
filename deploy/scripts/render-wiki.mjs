@@ -1,9 +1,13 @@
 import {
-  lstatSync,
+  constants,
+  openSync,
+  closeSync,
+  fstatSync,
+  ftruncateSync,
+  writeSync,
   existsSync,
   mkdirSync,
   readFileSync,
-  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,27 +29,72 @@ export function renderWiki(repository, destination, revision) {
     if (!existsSync(join(repository, path)))
       throw new Error(`Missing approved documentation: ${path}`);
   }
-  const page = join(destination, "ScreenGoblin-Documentation.md");
+
   const marker = "<!-- ScreenGoblin managed documentation index -->";
-  try {
-    if (!lstatSync(page).isFile()) {
-      throw new Error("Managed Wiki destination must be a regular file");
-    }
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (existsSync(page) && !readFileSync(page, "utf8").startsWith(marker)) {
-    throw new Error("Refusing to overwrite an unmanaged Wiki page");
-  }
   mkdirSync(destination, { recursive: true });
   const links = sources.map(
     ([path, title]) =>
       `- [${title}](https://github.com/wagnerks1990/ScreenGoblin/blob/${revision}/${path})`,
   );
-  writeFileSync(
-    page,
-    `${marker}\n# ScreenGoblin documentation\n\nScreenGoblin is a pre-production prototype. Emergency publishing and production\npromotion remain subject to the documented release gates.\n\nThis index links to approved Git-tracked documentation at source revision\n\`${revision}\`. Repository documentation is authoritative.\n\n${links.join("\n")}\n\nThis page is managed by the repository Wiki synchronization workflow. Other Wiki\npages are preserved.\n`,
-  );
+  const content = `${marker}\n# ScreenGoblin documentation\n\nScreenGoblin is a pre-production prototype. Emergency publishing and production\npromotion remain subject to the documented release gates.\n\nThis index links to approved Git-tracked documentation at source revision\n\`${revision}\`. Repository documentation is authoritative.\n\n${links.join("\n")}\n\nThis page is managed by the repository Wiki synchronization workflow. Other Wiki\npages are preserved.\n`;
+  let descriptor;
+  let directoryDescriptor;
+  let created = false;
+  const flags = constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  try {
+    // CI runs on Linux; keep the directory anchored even if its pathname changes.
+    directoryDescriptor = openSync(
+      destination,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    const page = `/proc/self/fd/${directoryDescriptor}/ScreenGoblin-Documentation.md`;
+    try {
+      descriptor = openSync(
+        page,
+        flags | constants.O_CREAT | constants.O_EXCL,
+        0o600,
+      );
+      created = true;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      descriptor = openSync(page, flags);
+    }
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.nlink !== 1) {
+      throw new Error(
+        "Managed Wiki destination must be a regular file with one link",
+      );
+    }
+    if (!created && !readFileSync(descriptor, "utf8").startsWith(marker)) {
+      throw new Error("Refusing to overwrite an unmanaged Wiki page");
+    }
+    const bytes = Buffer.from(content);
+    let written = 0;
+    while (written < bytes.length) {
+      written += writeSync(
+        descriptor,
+        bytes,
+        written,
+        bytes.length - written,
+        written,
+      );
+    }
+    ftruncateSync(descriptor, written);
+  } catch (error) {
+    if (
+      error.code === "ELOOP" ||
+      error.code === "EISDIR" ||
+      error.code === "ENOTDIR"
+    ) {
+      throw new Error("Managed Wiki destination must be a regular file", {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+  }
 }
 
 if (

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
   mkdirSync,
   existsSync,
@@ -89,6 +91,61 @@ test("Wiki rendering rejects symlinks without modifying their external target", 
       /regular file/,
     );
     assert.equal(existsSync(join(directory, "missing.md")), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Wiki writes stay on the opened inode when the pathname becomes a symlink", () => {
+  const directory = mkdtempSync(join(tmpdir(), "screengoblin-wiki-race-"));
+  const originalStat = fs.fstatSync;
+  try {
+    const destination = join(directory, "wiki");
+    mkdirSync(destination);
+    const page = join(destination, "ScreenGoblin-Documentation.md");
+    const saved = join(destination, "original.md");
+    const outside = join(directory, "outside.md");
+    const original =
+      "<!-- ScreenGoblin managed documentation index -->\nOriginal\n";
+    writeFileSync(page, original);
+    writeFileSync(outside, original);
+    let swapped = false;
+    fs.fstatSync = (descriptor, options) => {
+      if (!swapped) {
+        swapped = true;
+        fs.renameSync(page, saved);
+        symlinkSync(outside, page);
+      }
+      return originalStat(descriptor, options);
+    };
+    syncBuiltinESMExports();
+    renderWiki(process.cwd(), destination, sha);
+    assert.equal(swapped, true);
+    assert.equal(readFileSync(outside, "utf8"), original);
+    assert.match(readFileSync(saved, "utf8"), /# ScreenGoblin documentation/);
+    assert.equal(fs.lstatSync(page).isSymbolicLink(), true);
+  } finally {
+    fs.fstatSync = originalStat;
+    syncBuiltinESMExports();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Wiki refuses a symlinked destination directory", () => {
+  const directory = mkdtempSync(join(tmpdir(), "screengoblin-wiki-directory-"));
+  try {
+    const outside = join(directory, "outside");
+    mkdirSync(outside);
+    const destination = join(directory, "wiki");
+    symlinkSync(outside, destination);
+    assert.throws(
+      () => renderWiki(process.cwd(), destination, sha),
+      /regular file/,
+    );
+    assert.equal(
+      existsSync(join(outside, "ScreenGoblin-Documentation.md")),
+      false,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
