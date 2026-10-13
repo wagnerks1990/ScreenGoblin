@@ -16,6 +16,7 @@ import test from "node:test";
 
 const workflows = [
   "ci.yml",
+  "wiki-sync.yml",
   "codeql.yml",
   "container-scan.yml",
   "dependency-review.yml",
