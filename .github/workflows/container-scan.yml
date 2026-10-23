@@ -104,22 +104,22 @@ jobs:
               xargs -0 sha256sum > SHA256SUMS
             sha256sum --check --strict SHA256SUMS
           )
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: success() && hashFiles('static-security-evidence/vulnerabilities.sarif') != ''
         with:
           sarif_file: static-security-evidence/vulnerabilities.sarif
           category: trivy-repository-vulnerabilities
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: success() && hashFiles('static-security-evidence/secrets.sarif') != ''
         with:
           sarif_file: static-security-evidence/secrets.sarif
           category: trivy-repository-secrets
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: success() && hashFiles('static-security-evidence/misconfigurations.sarif') != ''
         with:
           sarif_file: static-security-evidence/misconfigurations.sarif
           category: trivy-repository-misconfigurations
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: success()
         with:
           name: repository-security-evidence-${{ github.event.pull_request.head.sha || github.sha }}
@@ -145,22 +145,22 @@ jobs:
           RELEASE_EVIDENCE_ID: ${{ github.sha }}
           TRIVY_BIN: ${{ runner.temp }}/trivy
         run: deploy/scripts/build-release-evidence.sh
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: always() && hashFiles('container-scan-evidence/sarif/api.sarif') != ''
         with:
           sarif_file: container-scan-evidence/sarif/api.sarif
           category: trivy-final-image-api
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: always() && hashFiles('container-scan-evidence/sarif/console.sarif') != ''
         with:
           sarif_file: container-scan-evidence/sarif/console.sarif
           category: trivy-final-image-console
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: always() && hashFiles('container-scan-evidence/sarif/player-web.sarif') != ''
         with:
           sarif_file: container-scan-evidence/sarif/player-web.sarif
           category: trivy-final-image-player-web
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && hashFiles('container-scan-evidence/**') != ''
         with:
           name: container-scan-evidence
