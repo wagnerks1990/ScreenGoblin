@@ -13,6 +13,10 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 
 ## Architecture invariants
 
+- The API runtime pins Debian PCRE2 to `10.42-1+deb12u2`; the superseded
+  `deb12u1` revision is unavailable from the configured repositories. Keep
+  dependency versions explicit when refreshing container builds.
+
 - Players connect outbound over TLS. In `proof-v1`, Android creates a non-exportable Keystore P-256 identity, the server enrolls its canonical public key, and every manifest or heartbeat requires a fresh operation- and body-bound one-use proof. Production rejects the localhost-only `development-bearer` mode.
 - Production must reject documented placeholders and checked-in JWT/pairing
   test secrets, as well as the public all-zero Ed25519 test seed. Test fixtures
