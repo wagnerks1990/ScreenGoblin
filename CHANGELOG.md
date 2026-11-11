@@ -4,6 +4,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Refresh the API runtime's pinned Debian PCRE2 security revision after the
+  previous revision was removed from the package repositories, restoring fresh
+  container builds without relaxing dependency pinning.
+
 - Make the Android boot receiver's runtime action authorization explicit and
   regression-test its exact `BOOT_COMPLETED` allowlist. Narrow the documented
   CodeQL false-positive acceptance to the reviewed receiver source so unrelated

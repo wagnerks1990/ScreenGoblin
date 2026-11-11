@@ -30,7 +30,7 @@ ENV NODE_ENV=production HOST=0.0.0.0 PORT=3001
 WORKDIR /app
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends \
-      libpcre2-8-0=10.42-1+deb12u1 \
+      libpcre2-8-0=10.42-1+deb12u2 \
       openssl=3.0.20-1~deb12u2 \
  && rm -rf /var/lib/apt/lists/* \
  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
