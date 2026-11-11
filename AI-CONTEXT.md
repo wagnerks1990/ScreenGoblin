@@ -13,6 +13,11 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 
 ## Architecture invariants
 
+- Owner login-email changes use the offline `identity:change-email` command and
+  its audited transaction. It preserves passwords and bootstrap deadlines while
+  advancing authentication epochs and revoking sessions/pending issuer grants.
+  It provides no public email-change or mailbox-verification endpoint.
+
 - The API runtime pins Debian PCRE2 to `10.42-1+deb12u2`; the superseded
   `deb12u1` revision is unavailable from the configured repositories. Keep
   dependency versions explicit when refreshing container builds.

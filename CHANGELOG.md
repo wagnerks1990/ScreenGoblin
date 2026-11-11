@@ -4,6 +4,10 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Add an offline owner login-email maintenance command with strict input and
+  duplicate checks, per-membership audit, and atomic session/enrollment
+  revocation. Preserve user IDs, memberships, passwords, and bootstrap deadlines.
+
 - Refresh the API runtime's pinned Debian PCRE2 security revision after the
   previous revision was removed from the package repositories, restoring fresh
   container builds without relaxing dependency pinning.
