@@ -75,7 +75,9 @@ const liveRoles = new Set(["OWNER", "ADMIN", "PUBLISHER", "VIEWER"]);
 
 function demoAllowed() {
   return (
-    import.meta.env.DEV && !window.sessionStorage.getItem(invalidatedSessionKey)
+    import.meta.env.DEV &&
+    import.meta.env.MODE !== "production" &&
+    !window.sessionStorage.getItem(invalidatedSessionKey)
   );
 }
 

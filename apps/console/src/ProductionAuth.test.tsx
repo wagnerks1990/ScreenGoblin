@@ -38,6 +38,16 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 describe("production console sign-in boundary", () => {
+  it("requires sign-in for production build mode even when development flags are enabled", () => {
+    vi.stubEnv("DEV", true);
+    vi.stubEnv("MODE", "production");
+    renderApp();
+    expect(
+      screen.getByRole("heading", { name: "Sign in to ScreenGoblin" }),
+    ).toBeVisible();
+    expect(api.demoAllowed()).toBe(false);
+    expect(screen.queryByRole("navigation")).toBeNull();
+  });
   it.each([
     "/",
     "/dashboard",

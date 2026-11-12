@@ -42,7 +42,8 @@ const nav = [
 ] as const;
 
 export function App() {
-  const requireSignIn = !import.meta.env.DEV;
+  const requireSignIn =
+    !import.meta.env.DEV || import.meta.env.MODE === "production";
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [liveSession, setLiveSession] = useState(api.hasLiveSession());
