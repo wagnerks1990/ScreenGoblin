@@ -217,9 +217,17 @@ test("skip navigation and modal and drawer focus containment work in Chromium", 
   await expect(page.locator("#root")).toHaveAttribute("aria-hidden", "true");
   await expect(page.locator("#root")).toHaveJSProperty("inert", true);
   const drawerClose = drawer.getByRole("button", { name: "Close details" });
-  await drawerClose.focus();
+  const drawerLast = drawer
+    .locator(
+      "button:enabled, a[href], input:enabled, select:enabled, textarea:enabled, [tabindex='0']",
+    )
+    .last();
+  await drawerLast.focus();
   await page.keyboard.press("Tab");
   await expect(drawerClose).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(drawerLast).toBeFocused();
+  await page.keyboard.press("Tab");
   await page
     .locator("#root")
     .evaluate((root) =>
