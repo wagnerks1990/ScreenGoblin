@@ -36,7 +36,27 @@ async function loginAsSeededOwner(page: Page) {
   await page.goto("/dashboard");
   await page.getByLabel("Email").fill(owner.email);
   await page.getByLabel("Password").fill(owner.password);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  const submit = async () => {
+    const response = page.waitForResponse(
+      (result) =>
+        result.url() === `${apiBaseUrl}/auth/login` &&
+        result.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    return response;
+  };
+  let response = await submit();
+  if (response.status() === 429) {
+    // The full suite can exhaust the real shared login budget. Honor its
+    // cooldown rather than weakening the API limiter or skipping coverage.
+    const retrySeconds = Number(response.headers()["retry-after"]);
+    expect(Number.isFinite(retrySeconds) && retrySeconds > 0).toBe(true);
+    test.setTimeout(30_000 + Math.ceil(retrySeconds * 1000));
+    await page.waitForTimeout(Math.ceil(retrySeconds * 1000));
+    await page.getByLabel("Password").fill(owner.password);
+    response = await submit();
+  }
+  expect(response.status()).toBe(200);
   await expect(
     page.getByRole("button", { name: "Disconnect live" }),
   ).toBeVisible();
