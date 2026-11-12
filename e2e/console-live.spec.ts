@@ -34,10 +34,9 @@ async function clearBrowserSession(page: Page) {
 async function loginAsSeededOwner(page: Page) {
   const owner = requiredOwnerCredentials();
   await page.goto("/dashboard");
-  await page.getByRole("button", { name: /connect live/i }).click();
   await page.getByLabel("Email").fill(owner.email);
   await page.getByLabel("Password").fill(owner.password);
-  await page.getByRole("button", { name: "Connect live" }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Disconnect live" }),
   ).toBeVisible();
@@ -81,6 +80,58 @@ async function liveHeaders(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await clearBrowserSession(page);
+});
+
+test("public console routes require sign-in and a forged cached session is rejected", async ({
+  page,
+}) => {
+  const managementReads: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/api/v1/") && !path.startsWith("/api/v1/auth/"))
+      managementReads.push(path);
+  });
+  for (const path of [
+    "/",
+    "/dashboard",
+    "/screens",
+    "/media",
+    "/releases",
+    "/settings",
+    "/emergency",
+  ]) {
+    await page.goto(path);
+    await expect(
+      page.getByRole("heading", { name: "Sign in to ScreenGoblin" }),
+    ).toBeVisible();
+    await expect(page.getByRole("navigation")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Keep demo mode" }),
+    ).toHaveCount(0);
+  }
+  expect(managementReads).toEqual([]);
+  await page.evaluate(() => {
+    sessionStorage.setItem("sg_access_token", "invalid-cached-token");
+    sessionStorage.setItem(
+      "sg_session_user",
+      JSON.stringify({
+        id: "forged-user",
+        name: "Forged user",
+        email: "forged@example.test",
+        role: "OWNER",
+        organizationId: "forged-org",
+      }),
+    );
+  });
+  await page.reload();
+  await expect(page.getByRole("alert")).toContainText(
+    "saved session could not be verified",
+  );
+  await expect(page.getByRole("navigation")).toHaveCount(0);
+  expect(managementReads).toEqual([]);
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("sg_access_token")))
+    .toBeNull();
 });
 
 test("an owner connects to live fleet data, creates targeted enrollment authority, and disconnects", async ({
@@ -167,7 +218,7 @@ test("an owner connects to live fleet data, creates targeted enrollment authorit
 
   await page.getByRole("button", { name: "Disconnect live" }).click();
   await expect(
-    page.getByRole("button", { name: /demo data.*connect live/i }),
+    page.getByRole("heading", { name: "Sign in to ScreenGoblin" }),
   ).toBeVisible();
   await expect
     .poll(() =>
@@ -233,9 +284,10 @@ test("a screens 401 clears the live session and never substitutes demo fleet rec
   );
   await page.reload();
 
-  await expect(page.getByRole("alert")).toContainText(
-    "Live screen data is unavailable",
-  );
+  await expect(
+    page.getByRole("heading", { name: "Sign in to ScreenGoblin" }),
+  ).toBeVisible();
+  await expect(page.getByRole("navigation")).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(() => ({

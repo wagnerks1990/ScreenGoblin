@@ -17,10 +17,9 @@ function requiredOwnerCredentials() {
 
 async function loginAsSeededOwner(page: Page) {
   const owner = requiredOwnerCredentials();
-  await page.getByRole("button", { name: /connect live/i }).click();
   await page.getByLabel("Email").fill(owner.email);
   await page.getByLabel("Password").fill(owner.password);
-  await page.getByRole("button", { name: "Connect live" }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Disconnect live" }),
   ).toBeVisible();
@@ -67,10 +66,9 @@ test("bootstrap password rotation meets automated WCAG 2.1 A/AA checks", async (
       }),
     });
   });
-  await page.getByRole("button", { name: /connect live/i }).click();
   await page.getByLabel("Email").fill("owner@example.test");
   await page.getByLabel("Password").fill("bootstrap-password");
-  await page.getByRole("button", { name: "Connect live" }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
   await expect(
     page.getByRole("heading", { name: "Change bootstrap password" }),
@@ -82,34 +80,17 @@ test("bootstrap password rotation meets automated WCAG 2.1 A/AA checks", async (
   ).resolves.toBeNull();
 });
 
-test("demo, dialog, drawer, and live fleet states meet automated WCAG 2.1 A/AA checks", async ({
+test("sign-in and live workspace states meet automated WCAG 2.1 A/AA checks", async ({
   page,
 }) => {
   await page.goto("/dashboard");
   await expect(
-    page.getByRole("heading", { name: /operations overview/i }),
+    page.getByRole("heading", { name: "Sign in to ScreenGoblin" }),
   ).toBeVisible();
-  await expectNoWcag21AAViolations(page, "demo dashboard");
-
-  await page.getByRole("button", { name: /connect live/i }).click();
-  await expect(
-    page.getByRole("dialog", { name: /connect to screengoblin/i }),
-  ).toBeVisible();
-  await expectNoWcag21AAViolations(page, "login dialog");
-  await page.getByRole("button", { name: "Keep demo mode" }).click();
-
-  await page.getByRole("link", { name: "Screen fleet" }).click();
-  await expect(
-    page.getByText("Clearly labeled demonstration data"),
-  ).toBeVisible();
-  await expectNoWcag21AAViolations(page, "demo fleet");
-
-  await page.getByRole("button", { name: "View Main Lobby" }).click();
-  await expect(page.getByRole("dialog", { name: "Main Lobby" })).toBeVisible();
-  await expectNoWcag21AAViolations(page, "open fleet drawer");
-  await page.getByRole("button", { name: "Close details" }).click();
-
+  await expectNoWcag21AAViolations(page, "sign-in page");
+  await expect(page.getByRole("navigation")).toHaveCount(0);
   await loginAsSeededOwner(page);
+  await page.getByRole("link", { name: "Screen fleet" }).click();
   await expect(page.getByText("Live API data")).toBeVisible();
   await expectNoWcag21AAViolations(page, "live fleet");
 
@@ -157,6 +138,13 @@ test("skip navigation and modal and drawer focus containment work in Chromium", 
   page,
 }) => {
   await page.goto("/dashboard");
+  await page.keyboard.press("Tab");
+  await expect(page.getByLabel("Email")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByLabel("Password")).toBeFocused();
+  await loginAsSeededOwner(page);
+  await page.reload();
+  await expect(page.getByRole("navigation")).toBeVisible();
   const skipLink = page.getByRole("link", { name: "Skip to content" });
   await page.keyboard.press("Tab");
   await expect(skipLink).toBeFocused();
@@ -165,14 +153,37 @@ test("skip navigation and modal and drawer focus containment work in Chromium", 
   await expect(page).toHaveURL(/#main-content$/);
   await expect(page.locator("#main-content")).toBeFocused();
 
-  const modalOpener = page.getByRole("button", { name: /connect live/i });
+  await page.route("**/api/v1/screens", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: [
+          {
+            id: "keyboard-screen",
+            name: "Keyboard test screen",
+            location: "Test location",
+            status: "offline",
+            orientation: "landscape",
+            resolution: "1920 × 1080",
+            lastSeenAt: null,
+            playerVersion: "1.0.0",
+            tags: [],
+          },
+        ],
+      }),
+    }),
+  );
+  await page.getByRole("link", { name: "Screen fleet" }).click();
+  const modalOpener = page.getByRole("button", { name: "Pair a screen" });
   await modalOpener.click();
-  const modal = page.getByRole("dialog", { name: /connect to screengoblin/i });
+  const modal = page.getByRole("dialog", { name: "Pair a screen" });
   await expect(modal).toBeFocused();
+  await expectNoWcag21AAViolations(page, "authenticated enrollment dialog");
   await expect(page.locator("#root")).toHaveAttribute("aria-hidden", "true");
   await expect(page.locator("#root")).toHaveJSProperty("inert", true);
   const modalClose = modal.getByRole("button", { name: "Close dialog" });
-  const modalLast = modal.getByRole("button", { name: "Keep demo mode" });
+  const modalLast = modal.getByRole("button", { name: "Cancel", exact: true });
   await modalClose.focus();
   await page.keyboard.press("Shift+Tab");
   await expect(modalLast).toBeFocused();
@@ -196,10 +207,13 @@ test("skip navigation and modal and drawer focus containment work in Chromium", 
   await expect(modalOpener).toBeFocused();
 
   await page.getByRole("link", { name: "Screen fleet" }).click();
-  const drawerOpener = page.getByRole("button", { name: "View Main Lobby" });
+  const drawerOpener = page.getByRole("button", {
+    name: "View Keyboard test screen",
+  });
   await drawerOpener.click();
-  const drawer = page.getByRole("dialog", { name: "Main Lobby" });
+  const drawer = page.getByRole("dialog", { name: "Keyboard test screen" });
   await expect(drawer).toBeFocused();
+  await expectNoWcag21AAViolations(page, "authenticated fleet drawer");
   await expect(page.locator("#root")).toHaveAttribute("aria-hidden", "true");
   await expect(page.locator("#root")).toHaveJSProperty("inert", true);
   const drawerClose = drawer.getByRole("button", { name: "Close details" });

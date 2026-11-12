@@ -4,6 +4,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Require sign-in before rendering any production Console workspace route,
+  verify saved sessions with the API, and return to sign-in on logout/session
+  rejection. Limit demo fallback to development builds while preserving Player
+  authentication and API routing. Cover the production gate and failure paths
+  with component and Chromium accessibility/live-flow tests.
+
 - Make the Android boot receiver's runtime action authorization explicit and
   regression-test its exact `BOOT_COMPLETED` allowlist. Narrow the documented
   CodeQL false-positive acceptance to the reviewed receiver source so unrelated

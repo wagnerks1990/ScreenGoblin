@@ -1,5 +1,10 @@
 # API overview
 
+Production Console startup validates stored session identity using
+`GET /api/v1/auth/me` before rendering management routes. There are no new API
+permissions, endpoints, or device-contract changes; management authentication
+and Player proof/media authorization remain server-enforced.
+
 ## Conventions
 
 - Base path: `/api/v1` behind the reverse proxy.

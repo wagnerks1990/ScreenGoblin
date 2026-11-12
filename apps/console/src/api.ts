@@ -73,6 +73,12 @@ const invalidatedSessionKey = "sg_live_session_invalidated";
 const mutationTimeoutMs = 10_000;
 const liveRoles = new Set(["OWNER", "ADMIN", "PUBLISHER", "VIEWER"]);
 
+function demoAllowed() {
+  return (
+    import.meta.env.DEV && !window.sessionStorage.getItem(invalidatedSessionKey)
+  );
+}
+
 function isLiveUser(value: unknown): value is LiveSession["user"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
@@ -164,6 +170,7 @@ async function request<T>(path: string, fallback: T): Promise<ApiResult<T>> {
   if (!window.sessionStorage.getItem("sg_access_token")) {
     if (window.sessionStorage.getItem(invalidatedSessionKey))
       throw new Error("Live session expired; sign in again");
+    if (!demoAllowed()) throw new Error("Sign in to access ScreenGoblin");
     return { data: fallback, source: "demo" };
   }
   return { data: await authenticatedRequest<T>(path), source: "live" };
@@ -226,7 +233,33 @@ async function mutate<T>(
 export const api = {
   hasLiveSession: () =>
     Boolean(window.sessionStorage.getItem("sg_access_token")),
-  demoAllowed: () => !window.sessionStorage.getItem(invalidatedSessionKey),
+  demoAllowed,
+  verifySession: async (): Promise<boolean> => {
+    const token = window.sessionStorage.getItem("sg_access_token");
+    const cached = api.currentUser();
+    if (!token || !cached) {
+      clearSession(true);
+      throw new Error("Sign in to access ScreenGoblin");
+    }
+    const result = await authenticatedRequest<{
+      user: Record<string, unknown>;
+    }>("/auth/me");
+    if (window.sessionStorage.getItem("sg_access_token") !== token)
+      return false;
+    if (
+      !result?.user ||
+      result.user.sub !== cached.id ||
+      result.user.organizationId !== cached.organizationId ||
+      result.user.role !== cached.role ||
+      result.user.email !== cached.email
+    ) {
+      clearSession(true);
+      throw new Error(
+        "Your saved session could not be verified. Sign in again.",
+      );
+    }
+    return true;
+  },
   currentUser: (): LiveSession["user"] | undefined => {
     const raw = window.sessionStorage.getItem("sg_session_user");
     if (!raw) return undefined;
