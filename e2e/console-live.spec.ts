@@ -353,10 +353,19 @@ test("authenticated playlists render live definitions without fixture or mutatio
     ).toHaveCount(0);
     await expect(pageContent.getByText(/Assigned to/i)).toHaveCount(0);
   } finally {
-    const removed = await page.request.delete(
-      `${apiBaseUrl}/playlists/${encodeURIComponent(playlist.id)}`,
-      { headers },
-    );
+    const cleanup = () =>
+      page.request.delete(
+        `${apiBaseUrl}/playlists/${encodeURIComponent(playlist.id)}`,
+        { headers },
+      );
+    let removed = await cleanup();
+    if (removed.status() === 429) {
+      const retrySeconds = Number(removed.headers()["retry-after"] ?? 60);
+      expect(Number.isFinite(retrySeconds) && retrySeconds > 0).toBe(true);
+      test.setTimeout(30_000 + Math.ceil(retrySeconds * 1000));
+      await page.waitForTimeout(Math.ceil(retrySeconds * 1000));
+      removed = await cleanup();
+    }
     expect(removed.status()).toBe(204);
   }
 });

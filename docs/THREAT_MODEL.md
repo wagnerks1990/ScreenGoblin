@@ -16,6 +16,13 @@ public workspace/demo exposure, but is not a server authorization control:
 management APIs still require live tenant-scoped sessions, and Players retain
 their independent enrollment/proof/capability authentication.
 
+The offline owner-email command is a trusted-host operator boundary, not a
+public API or mailbox-verification flow. It requires explicit acknowledgement
+and an active existing owner, rejects occupied destinations, locks identity and
+memberships, preserves password/bootstrap restrictions, and atomically revokes
+sessions and pending enrollment authority with per-tenant audit. Host compromise
+and mistaken operator identity verification remain risks.
+
 - User browser to public reverse proxy/API.
 - API to PostgreSQL, Redis, and object storage on the private container network.
 - Untrusted player networks to the public API and media endpoint.
@@ -329,3 +336,13 @@ ingestion state machine, separate quarantine authority, fail-closed scanner,
 reader-visible promotion transaction, deterministic orphan reconciliation, and
 safe-derivative gates are documented in `MEDIA_INGESTION_DESIGN.md`; this design
 does not complete the upload pre-production gate.
+
+## Email recovery and provider boundary
+
+Optional mail makes the provisioned account mailbox recovery authority. Protect and verify mailbox ownership. Non-enumerating rate-limited requests use hashed expiring single-use capabilities checked against the current account epoch. Recovery atomically revokes sessions and pending issuer authority across tenants. Credentials stay on the API; the encrypted outbox and signed raw-body webhooks import only tenant-mapped metadata. Inbound mail cannot publish or control devices. Provider/mailbox compromise, in-flight sends and delivery outages remain risks. See [mail details](MAIL.md).
+
+The Resend wiring refreshes the exact server-source hash in the existing SigV4
+false-positive gate after reviewing its unchanged S3 constructor arguments and
+HMAC derivation. The delivery implementation, test constructor sites, SARIF rule,
+message, region and flow allowlist remain exact. This does not exempt mail code
+or new findings and does not establish a fresh CodeQL scan result.

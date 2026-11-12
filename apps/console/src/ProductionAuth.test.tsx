@@ -31,6 +31,9 @@ function renderApp(path = "/dashboard") {
 beforeEach(() => {
   sessionStorage.clear();
   vi.stubEnv("DEV", false);
+  vi.spyOn(api, "recoveryOptions").mockResolvedValue({
+    passwordResetEnabled: false,
+  });
 });
 afterEach(() => {
   vi.unstubAllGlobals();

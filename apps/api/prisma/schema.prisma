@@ -108,6 +108,7 @@ enum UserSessionPurpose {
 }
 
 model Organization {
+  mailInbox              MailInbox?
   id                     String                  @id @default(cuid())
   name                   String
   slug                   String                  @unique
@@ -172,29 +173,32 @@ model Location {
 }
 
 model User {
-  id                         String       @id @default(cuid())
+  passwordResets             PasswordResetRequest[]
+  id                         String                 @id @default(cuid())
   /// A custom migration also enforces UNIQUE (LOWER(email)); Prisma cannot
   /// currently express this functional index in the schema DSL.
-  email                      String       @unique
+  email                      String                 @unique
   name                       String
   passwordHash               String
-  authenticationEpoch        Int          @default(0)
+  authenticationEpoch        Int                    @default(0)
   bootstrapPasswordExpiresAt DateTime?
   disabledAt                 DateTime?
-  createdAt                  DateTime     @default(now())
-  updatedAt                  DateTime     @updatedAt
+  createdAt                  DateTime               @default(now())
+  updatedAt                  DateTime               @updatedAt
   memberships                Membership[]
   audits                     AuditEvent[]
 }
 
 model Membership {
-  id                 String        @id @default(cuid())
+  mailPreference     MailPreference?
+  mailJobs           MailJob[]
+  id                 String          @id @default(cuid())
   organizationId     String
   userId             String
   role               OrgRole
-  authorizationEpoch Int           @default(0)
-  organization       Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authorizationEpoch Int             @default(0)
+  organization       Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   userSessions       UserSession[]
 
   @@unique([organizationId, userId])
@@ -252,6 +256,8 @@ model UserSession {
 }
 
 model Screen {
+  mailJobs                 MailJob[]
+  fleetMailState           FleetMailState?
   id                       String                    @id @default(cuid())
   organizationId           String
   name                     String
@@ -787,4 +793,120 @@ model AuditEvent {
   actorUser      User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt, id])
+}
+
+enum MailKind {
+  PASSWORD_RESET
+  PASSWORD_CHANGED
+  SCREEN_OFFLINE
+  SCREEN_RECOVERED
+  TEST
+}
+
+enum MailStatus {
+  PENDING
+  SENDING
+  ACCEPTED
+  DELIVERED
+  FAILED
+  BOUNCED
+  COMPLAINED
+  CANCELLED
+}
+
+model PasswordResetRequest {
+  id                  String    @id @default(cuid())
+  userId              String
+  tokenHash           String    @unique @db.VarChar(64)
+  authenticationEpoch Int
+  expiresAt           DateTime
+  consumedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([userId, expiresAt])
+}
+
+model MailPreference {
+  organizationId       String
+  userId               String
+  offlineAlertsEnabled Boolean    @default(false)
+  updatedAt            DateTime   @updatedAt
+  membership           Membership @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Cascade)
+
+  @@id([organizationId, userId])
+}
+
+model MailInbox {
+  organizationId String               @id
+  address        String               @unique @db.VarChar(254)
+  enabled        Boolean              @default(true)
+  updatedAt      DateTime             @updatedAt
+  organization   Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  receipts       InboundMailReceipt[]
+}
+
+model InboundMailReceipt {
+  id              String    @id @default(cuid())
+  organizationId  String
+  providerEmailId String    @db.VarChar(64)
+  eventHash       String    @db.VarChar(64)
+  receivedAt      DateTime  @default(now())
+  inbox           MailInbox @relation(fields: [organizationId], references: [organizationId], onDelete: Cascade)
+
+  @@unique([organizationId, providerEmailId])
+  @@unique([organizationId, eventHash])
+  @@index([organizationId, receivedAt])
+}
+
+model MailJob {
+  screenId            String?
+  incidentId          String?    @db.VarChar(36)
+  screen              Screen?    @relation(fields: [screenId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  id                  String     @id @default(uuid())
+  organizationId      String
+  userId              String
+  authenticationEpoch Int
+  kind                MailKind
+  status              MailStatus @default(PENDING)
+  dedupeKey           String     @unique @db.VarChar(64)
+  payloadEncrypted    String?
+  resetTokenHash      String?    @db.VarChar(64)
+  providerEmailId     String?    @unique @db.VarChar(64)
+  attempts            Int        @default(0)
+  availableAt         DateTime   @default(now())
+  expiresAt           DateTime
+  leaseToken          String?    @db.VarChar(36)
+  lockedUntil         DateTime?
+  failureCode         String?    @db.VarChar(40)
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  membership          Membership @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@index([organizationId, createdAt])
+  @@index([expiresAt])
+}
+
+model FleetMailState {
+  screenId       String   @id
+  organizationId String
+  offline        Boolean
+  incidentId     String   @db.VarChar(36)
+  checkedAt      DateTime @default(now())
+  screen         Screen   @relation(fields: [screenId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([screenId, organizationId])
+  @@index([checkedAt])
+}
+
+model MailDeliveryReceipt {
+  eventHash       String     @id @db.VarChar(64)
+  providerEmailId String     @db.VarChar(64)
+  status          MailStatus
+  receivedAt      DateTime   @default(now())
+
+  @@index([providerEmailId, receivedAt])
+  @@index([receivedAt])
 }

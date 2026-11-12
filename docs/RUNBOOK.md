@@ -454,6 +454,26 @@ After containment, rotate exposed secrets, retain audit/log evidence, identify a
 
 ## Routine maintenance
 
+### Owner login email change
+
+An authorized host operator can run `npm run identity:change-email -w
+@screengoblin/api` from a matching build environment using the non-owning
+runtime `DATABASE_URL`. Back up the database first. Supply
+`LOGIN_EMAIL_CHANGE_ACKNOWLEDGEMENT=I_UNDERSTAND_THIS_CHANGES_AN_OWNER_LOGIN`,
+`LOGIN_EMAIL_CHANGE_CURRENT_EMAIL`, `LOGIN_EMAIL_CHANGE_NEW_EMAIL`, and a
+non-sensitive `LOGIN_EMAIL_CHANGE_REASON` through a private environment file.
+Keep account addresses and credentials out of source, command history, and logs.
+The target must be one active existing owner; the destination must be unused.
+
+The transaction preserves user ID, memberships, password hash, and bootstrap
+deadline; advances the authentication epoch; revokes all sessions and pending
+issuer enrollment authority; and audits every membership without either email.
+Any failure aborts the transaction. Sign in using the new address. Bootstrap
+accounts must still change their password through the HTTPS Console; this
+command does not reset passwords or extend deadlines. To reverse the address
+change, run it with the addresses exchanged; never restore revoked authority.
+Delete the private input file afterward and update operator records privately.
+
 Successful device-challenge issuance opportunistically removes at most 100
 challenges whose expiry is at least 24 hours old. Successful authorized
 schedule publication similarly clears at most 100
@@ -480,3 +500,7 @@ is insufficient to keep up with retention.
   automatic credential rotation. Hardware/application attestation, old/new key
   overlap, verified Keystore/media erasure, offline recall, and representative
   physical-device evidence remain tracked release gates.
+
+## Optional mail rollout
+
+Follow [the mail runbook](MAIL.md) for protected configuration, additive migration and runtime grants, image rollback, DNS/webhook checks and explicit delivery tests. Mail is disabled by default; never use a full-access setup key at runtime.

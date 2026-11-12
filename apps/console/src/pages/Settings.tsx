@@ -9,6 +9,7 @@ import {
   Users,
 } from "lucide-react";
 import { PageHeader, Panel } from "../components";
+import { MailSettings } from "./MailSettings";
 
 const tabs = [
   ["Workspace", Building2],
@@ -26,7 +27,7 @@ export function SettingsPage() {
       <PageHeader
         eyebrow="Administration"
         title="Settings"
-        description="Review settings areas reserved for a future managed configuration workflow."
+        description="Manage email preferences and review the availability of workspace settings."
       />
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings sections">
@@ -45,34 +46,42 @@ export function SettingsPage() {
           <div className="panel-heading">
             <div>
               <h2>{tab}</h2>
-              <p>Read-only prototype status</p>
+              <p>
+                {tab === "Notifications"
+                  ? "Account email and operational notifications"
+                  : "Read-only prototype status"}
+              </p>
             </div>
           </div>
-          <div className="placeholder-settings" role="status">
-            <LockKeyhole aria-hidden="true" />
-            <h3>{tab} settings are unavailable</h3>
-            <p>
-              No {tab.toLowerCase()} settings can be changed or saved from this
-              prototype.
-            </p>
-            {tab === "Workspace" && (
-              <>
-                <p>
-                  <b>
-                    Immutable ordinary-release approval is enforced by the API
-                    and operated from Release review. Scoped grants, MFA,
-                    rejection, and rollback remain unavailable.
-                  </b>
-                </p>
-                <p>
-                  <b>
-                    Proof-of-play collection is not configured or independently
-                    verified.
-                  </b>
-                </p>
-              </>
-            )}
-          </div>
+          {tab === "Notifications" ? (
+            <MailSettings />
+          ) : (
+            <div className="placeholder-settings" role="status">
+              <LockKeyhole aria-hidden="true" />
+              <h3>{tab} settings are unavailable</h3>
+              <p>
+                No {tab.toLowerCase()} settings can be changed or saved from
+                this prototype.
+              </p>
+              {tab === "Workspace" && (
+                <>
+                  <p>
+                    <b>
+                      Immutable ordinary-release approval is enforced by the API
+                      and operated from Release review. Scoped grants, MFA,
+                      rejection, and rollback remain unavailable.
+                    </b>
+                  </p>
+                  <p>
+                    <b>
+                      Proof-of-play collection is not configured or
+                      independently verified.
+                    </b>
+                  </p>
+                </>
+              )}
+            </div>
+          )}
         </Panel>
       </div>
     </>

@@ -27,7 +27,7 @@ sigv4_finding_count="$(jq -s \
   "${sarif_files[@]}")"
 if [[ "${sigv4_constructor_sources[*]}" == "${expected_sigv4_sources[*]}" ]] \
   && [[ "$sigv4_finding_count" == "1" ]] \
-  && [[ "$(git hash-object apps/api/src/server.ts)" == "9b2503ca2eafc4b753c6859c76d5f7d20e3257d0" ]] \
+  && [[ "$(git hash-object apps/api/src/server.ts)" == "d392f2f0b5810a42f24df709db64a9bdbeda6558" ]] \
   && [[ "$(git hash-object apps/api/test/media-delivery.test.ts)" == "da0c876703f7e5c9a863f9b48ba39a115ebae777" ]] \
   && [[ "$(git hash-object apps/api/src/media/delivery.ts)" == "29148e088df4c95a8f8d7d3b5cb456f22ed6324b" ]]; then
   approved_sigv4=true

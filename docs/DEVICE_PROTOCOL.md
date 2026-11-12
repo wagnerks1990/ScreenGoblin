@@ -336,3 +336,7 @@ evidence remain pre-production gates.
 configuration fails closed for any other value. `development-bearer` exists only
 for non-production browser/PWA work against localhost; it preserves the legacy
 `X-Device-Token` path and must not be used for a pilot or fleet deployment.
+
+## Operational email
+
+Optional email observes existing heartbeat timestamps only. It adds no device endpoint, credential, inbound connection, playback dependency or emergency authority. Signed manifests and last-known-good playback are unchanged.

@@ -184,6 +184,14 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TRUST_PROXY_RANGES: loopback,linklocal,uniquelocal
       EMERGENCY_FEATURE_ENABLED: ${EMERGENCY_FEATURE_ENABLED:-false}
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
+      MAIL_ENCRYPTION_KEY: ${MAIL_ENCRYPTION_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_REPLY_TO: ${MAIL_REPLY_TO:-}
+      MAIL_RECEIVING_DOMAIN: ${MAIL_RECEIVING_DOMAIN:-}
+      MAIL_OFFLINE_MINUTES: ${MAIL_OFFLINE_MINUTES:-10}
     depends_on:
       postgres:
         condition: service_healthy

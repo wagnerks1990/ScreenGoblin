@@ -4,11 +4,25 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Add optional Resend recovery, opt-in offline/recovery alerts, support-mail
+  receipts and Notifications history. Use expiring hashed capabilities, atomic
+  session/enrollment revocation, an encrypted leased outbox, domain-restricted
+  sending and signed tenant-scoped webhooks. Inbound mail cannot publish or
+  control devices. Preserve all preproduction and emergency gates.
+
 - Require sign-in before rendering any production Console workspace route,
   verify saved sessions with the API, and return to sign-in on logout/session
   rejection. Limit demo fallback to development builds while preserving Player
   authentication and API routing. Cover the production gate and failure paths
   with component and Chromium accessibility/live-flow tests.
+
+- Add an offline owner login-email maintenance command with strict input and
+  duplicate checks, per-membership audit, and atomic session/enrollment
+  revocation. Preserve user IDs, memberships, passwords, and bootstrap deadlines.
+
+- Refresh the API runtime's pinned Debian PCRE2 security revision after the
+  previous revision was removed from the package repositories, restoring fresh
+  container builds without relaxing dependency pinning.
 
 - Make the Android boot receiver's runtime action authorization explicit and
   regression-test its exact `BOOT_COMPLETED` allowlist. Narrow the documented

@@ -303,6 +303,54 @@
           "method": "GET",
           "template": "/api/v1/device/media/:assetId",
           "seedPath": "/api/v1/device/media/dast-probe"
+        },
+        {
+          "label": "auth-recovery-options",
+          "template": "/api/v1/auth/recovery-options",
+          "seedPath": "/api/v1/auth/recovery-options",
+          "method": "GET"
+        },
+        {
+          "label": "auth-password-reset-request",
+          "template": "/api/v1/auth/password-reset/request",
+          "seedPath": "/api/v1/auth/password-reset/request",
+          "method": "POST"
+        },
+        {
+          "label": "auth-password-reset-confirm",
+          "template": "/api/v1/auth/password-reset/confirm",
+          "seedPath": "/api/v1/auth/password-reset/confirm",
+          "method": "POST"
+        },
+        {
+          "label": "mail-overview",
+          "template": "/api/v1/mail",
+          "seedPath": "/api/v1/mail",
+          "method": "GET"
+        },
+        {
+          "label": "mail-preferences",
+          "template": "/api/v1/mail/preferences",
+          "seedPath": "/api/v1/mail/preferences",
+          "method": "PATCH"
+        },
+        {
+          "label": "mail-inbox",
+          "template": "/api/v1/mail/inbox",
+          "seedPath": "/api/v1/mail/inbox",
+          "method": "PATCH"
+        },
+        {
+          "label": "mail-test",
+          "template": "/api/v1/mail/test",
+          "seedPath": "/api/v1/mail/test",
+          "method": "POST"
+        },
+        {
+          "label": "mail-resend-webhook",
+          "template": "/api/v1/webhooks/resend",
+          "seedPath": "/api/v1/webhooks/resend",
+          "method": "POST"
         }
       ]
     },

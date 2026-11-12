@@ -6,6 +6,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mediaStorageKey } from "../src/media/delivery.js";
 import { PrismaStore } from "../src/store/prisma.js";
 import {
+  changeOwnerLoginEmail,
+  LOGIN_EMAIL_CHANGE_ACKNOWLEDGEMENT,
+} from "../src/identity/change-login-email.js";
+import {
   DATABASE_MAINTENANCE_BATCH_SIZE,
   DEVICE_AUTH_CHALLENGE_RETENTION_MS,
   LOGIN_FAILURE_MAX_RECORDS,
@@ -635,6 +639,147 @@ const stageReenrollmentCandidate = async (
     throw new Error("re-enrollment candidate was not staged");
   return { paired, actor, grant: grant.pairing, credential, candidate };
 };
+
+describe("offline owner login email change PostgreSQL integration", () => {
+  const changeInput = (currentEmail: string, newEmail: string) => ({
+    acknowledgement: LOGIN_EMAIL_CHANGE_ACKNOWLEDGEMENT,
+    currentEmail,
+    newEmail,
+    reason: "Operator requested login email change",
+  });
+  it("changes only the intended identity and revokes its cross-tenant authority", async () => {
+    const fixture = await createBootstrapRecoveryFixture(
+      "email-change",
+      undefined,
+      true,
+    );
+    const foreign = await createBootstrapRecoveryFixture("email-foreign");
+    const newEmail = "replacement@example.test";
+    await expect(
+      changeOwnerLoginEmail(prisma, changeInput(fixture.actor.email, newEmail)),
+    ).resolves.toEqual({ affectedOrganizationCount: 2 });
+    const actor = await prisma.user.findUniqueOrThrow({
+      where: { id: fixture.actor.id },
+    });
+    expect(actor).toMatchObject({
+      email: newEmail,
+      passwordHash: fixture.actor.passwordHash,
+      authenticationEpoch: 1,
+      bootstrapPasswordExpiresAt: null,
+    });
+    expect(
+      await prisma.userSession.count({
+        where: { userId: actor.id, revokedAt: null },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.pairingCode.findUniqueOrThrow({
+        where: { id: fixture.grant.id },
+      }),
+    ).toMatchObject({ status: "REVOKED" });
+    expect(
+      (
+        await prisma.pairingAttempt.findUniqueOrThrow({
+          where: { id: fixture.attempt.id },
+        })
+      ).cancelledAt,
+    ).not.toBeNull();
+    const audits = await prisma.auditEvent.findMany({
+      where: { action: "identity.login_email_changed" },
+    });
+    expect(audits.map((a) => a.organizationId).sort()).toEqual(
+      fixture.organizations.map((o) => o.id).sort(),
+    );
+    expect(JSON.stringify(audits.map((a) => a.metadata))).not.toContain("@");
+    expect(
+      await prisma.user.findUniqueOrThrow({ where: { id: foreign.actor.id } }),
+    ).toMatchObject({ email: foreign.actor.email, authenticationEpoch: 0 });
+    expect(
+      await prisma.userSession.count({
+        where: { userId: foreign.actor.id, revokedAt: null },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.pairingCode.findUniqueOrThrow({
+        where: { id: foreign.grant.id },
+      }),
+    ).toMatchObject({ status: "PENDING" });
+    expect(await store.findUserByEmail(fixture.actor.email)).toBeNull();
+    expect((await store.findUserByEmail(newEmail))?.id).toBe(actor.id);
+  });
+  it("rejects an occupied destination without changing the target", async () => {
+    const fixture = await createBootstrapRecoveryFixture("email-conflict");
+    const foreign = await createBootstrapRecoveryFixture(
+      "email-conflict-foreign",
+    );
+    await expect(
+      changeOwnerLoginEmail(
+        prisma,
+        changeInput(fixture.actor.email, foreign.actor.email.toUpperCase()),
+      ),
+    ).rejects.toThrow("unavailable");
+    expect(
+      await prisma.user.findUniqueOrThrow({ where: { id: fixture.actor.id } }),
+    ).toMatchObject({ email: fixture.actor.email, authenticationEpoch: 0 });
+    expect(
+      await prisma.userSession.count({
+        where: { userId: fixture.actor.id, revokedAt: null },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.auditEvent.count({
+        where: { action: "identity.login_email_changed" },
+      }),
+    ).toBe(0);
+  });
+  it("rolls back email, epoch, session and enrollment revocation on audit failure", async () => {
+    const fixture = await createBootstrapRecoveryFixture(
+      "email-audit-rollback",
+    );
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "AuditEvent" ADD CONSTRAINT "integration_reject_email_change" CHECK ("action" <> \'identity.login_email_changed\')',
+    );
+    try {
+      await expect(
+        changeOwnerLoginEmail(
+          prisma,
+          changeInput(fixture.actor.email, "rollback@example.test"),
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "AuditEvent" DROP CONSTRAINT "integration_reject_email_change"',
+      );
+    }
+    expect(
+      await prisma.user.findUniqueOrThrow({ where: { id: fixture.actor.id } }),
+    ).toMatchObject({
+      email: fixture.actor.email,
+      passwordHash: fixture.actor.passwordHash,
+      authenticationEpoch: 0,
+    });
+    expect(
+      await prisma.userSession.count({
+        where: { userId: fixture.actor.id, revokedAt: null },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.pairingCode.findUniqueOrThrow({
+        where: { id: fixture.grant.id },
+      }),
+    ).toMatchObject({ status: "PENDING" });
+    expect(
+      await prisma.pairingAttempt.findUniqueOrThrow({
+        where: { id: fixture.attempt.id },
+      }),
+    ).toMatchObject({ cancelledAt: null });
+    expect(
+      await prisma.auditEvent.count({
+        where: { action: "identity.login_email_changed" },
+      }),
+    ).toBe(0);
+  });
+});
 
 beforeAll(async () => {
   await store.ping();
