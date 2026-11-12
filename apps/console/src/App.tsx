@@ -42,6 +42,8 @@ const nav = [
 ] as const;
 
 export function App() {
+  const requireSignIn =
+    !import.meta.env.DEV || import.meta.env.MODE === "production";
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [liveSession, setLiveSession] = useState(api.hasLiveSession());
@@ -53,6 +55,10 @@ export function App() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutStatus, setLogoutStatus] = useState("");
+  const [sessionVerified, setSessionVerified] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(
+    requireSignIn && api.hasLiveSession(),
+  );
   const [bootstrapAction, setBootstrapAction] =
     useState<BootstrapPasswordAction>();
   const location = useLocation();
@@ -62,10 +68,32 @@ export function App() {
   const dataMode = liveSession ? "live" : demoAllowed ? "demo" : "failed";
   useEffect(() => setMobileOpen(false), [location.pathname]);
   useEffect(() => {
+    if (!requireSignIn || !api.hasLiveSession()) return;
+    let active = true;
+    void api
+      .verifySession()
+      .then((verified) => {
+        if (active) setSessionVerified(verified);
+      })
+      .catch(() => {
+        if (active)
+          setLoginError(
+            "Your saved session could not be verified. Sign in again.",
+          );
+      })
+      .finally(() => {
+        if (active) setCheckingSession(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [requireSignIn]);
+  useEffect(() => {
     const refreshSession = () => {
       setLiveSession(api.hasLiveSession());
       setDemoAllowed(api.demoAllowed());
       setSessionUser(api.currentUser());
+      if (!api.hasLiveSession()) setSessionVerified(false);
     };
     window.addEventListener("screengoblin:session-changed", refreshSession);
     return () =>
@@ -85,7 +113,8 @@ export function App() {
         return;
       }
       setLiveSession(true);
-      setDemoAllowed(true);
+      setSessionVerified(true);
+      setDemoAllowed(api.demoAllowed());
       setSessionUser(session.user);
       setEmail("");
       setPassword("");
@@ -130,6 +159,71 @@ export function App() {
           await api.abandonBootstrapPassword(restrictedToken);
         }}
       />
+    );
+  }
+  if (requireSignIn && (!liveSession || !sessionVerified)) {
+    return (
+      <main className="bootstrap-password-page">
+        <form
+          className="bootstrap-password-card"
+          aria-labelledby="sign-in-title"
+          aria-describedby="sign-in-intro"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!loggingIn && !checkingSession) void connectLive();
+          }}
+        >
+          <img
+            src="/brand/ScreenGoblin_Horizontal_Transparent_Master.png"
+            alt="ScreenGoblin"
+          />
+          <p className="eyebrow">Management console</p>
+          <h1 id="sign-in-title">Sign in to ScreenGoblin</h1>
+          <p id="sign-in-intro">
+            Sign in with your account to manage your screens and content.
+          </p>
+          {checkingSession ? (
+            <p role="status">Checking your session…</p>
+          ) : (
+            <>
+              <Field label="Email">
+                <input
+                  type="email"
+                  autoComplete="username"
+                  required
+                  value={email}
+                  disabled={loggingIn}
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+              </Field>
+              <Field label="Password">
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  disabled={loggingIn}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </Field>
+              {loginError && (
+                <p className="error-message" role="alert">
+                  {loginError}
+                </p>
+              )}
+              {logoutStatus && <p role="status">{logoutStatus}</p>}
+              <div className="bootstrap-password-actions">
+                <Button
+                  type="submit"
+                  disabled={loggingIn || !email || password.length < 8}
+                >
+                  {loggingIn ? "Signing in…" : "Sign in"}
+                </Button>
+              </div>
+            </>
+          )}
+        </form>
+      </main>
     );
   }
   return (

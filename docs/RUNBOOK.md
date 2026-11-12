@@ -8,6 +8,15 @@ The signage VLAN should deny client-to-client traffic, management-plane access, 
 
 ## Deploy
 
+After a Console update, use a fresh browser context to verify that the public
+root and direct workspace URLs show only sign-in, make no management data reads,
+and offer no demo bypass. Verify saved-session rejection, login, reload, logout,
+and bootstrap rotation. API/network failures must not reveal the workspace or
+substitute demo data. A Console-only rollout can recreate only the Console
+service with `--no-deps`, preserving API/Player availability; retain its prior
+image/configuration for rollback. Do not add a proxy-wide password requirement
+that would interfere with independently authenticated Player API connections.
+
 1. Review the release notes, database migrations, and rollback compatibility.
    Confirm production has distinct random PostgreSQL credentials:
    `MIGRATION_DATABASE_URL` uses the protected schema owner only for migrations

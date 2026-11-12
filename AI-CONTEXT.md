@@ -13,6 +13,12 @@ The explicit scheduling model is: what plays = playlist; where = screen/location
 
 ## Architecture invariants
 
+- Production Console builds require sign-in and API verification of stored
+  session principals before mounting workspace routes. Demo fallback is
+  development-only; logout/session rejection returns to the sign-in page.
+  This UI gate never replaces server tenant authorization or Player proof/media
+  capability checks, and must not introduce proxy-wide browser authentication.
+
 - Players connect outbound over TLS. In `proof-v1`, Android creates a non-exportable Keystore P-256 identity, the server enrolls its canonical public key, and every manifest or heartbeat requires a fresh operation- and body-bound one-use proof. Production rejects the localhost-only `development-bearer` mode.
 - Production must reject documented placeholders and checked-in JWT/pairing
   test secrets, as well as the public all-zero Ed25519 test seed. Test fixtures

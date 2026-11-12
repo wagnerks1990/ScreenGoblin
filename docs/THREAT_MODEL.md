@@ -8,6 +8,14 @@ ScreenGoblin is not currently a certified emergency-notification or life-safety 
 
 ## Trust boundaries
 
+Production Console routes are gated by sign-in. A stored token/principal must
+match the API's current `/auth/me` result before rendering the workspace; failed
+verification keeps it hidden. Logout and API session rejection return to sign-in.
+Demo API fallback is restricted to development builds. This UI boundary avoids
+public workspace/demo exposure, but is not a server authorization control:
+management APIs still require live tenant-scoped sessions, and Players retain
+their independent enrollment/proof/capability authentication.
+
 - User browser to public reverse proxy/API.
 - API to PostgreSQL, Redis, and object storage on the private container network.
 - Untrusted player networks to the public API and media endpoint.

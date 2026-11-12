@@ -41,6 +41,12 @@ tests, and production builds, so it works from a clean `npm ci` checkout.
 
 ## Container deployment
 
+Production Console builds show only a sign-in page until authentication succeeds.
+Saved browser sessions are verified against the API before workspace routes are
+rendered; logout, session expiry, and failed verification cannot reopen demo data.
+The demo workspace is limited to the Vite development server. This browser gate
+does not replace server authorization or change the authenticated Player protocol.
+
 The supplied Compose stack is intended for one pre-production host. It runs Caddy, the console, a browser-hosted player build, the API, PostgreSQL, Redis, and MinIO.
 
 ```bash
