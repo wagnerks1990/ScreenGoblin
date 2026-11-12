@@ -49,7 +49,8 @@ async function loginAsSeededOwner(page: Page) {
   if (response.status() === 429) {
     // The full suite can exhaust the real shared login budget. Honor its
     // cooldown rather than weakening the API limiter or skipping coverage.
-    const retrySeconds = Number(response.headers()["retry-after"]);
+    // Login budgets use a 60-second window and need not return Retry-After.
+    const retrySeconds = Number(response.headers()["retry-after"] ?? 60);
     expect(Number.isFinite(retrySeconds) && retrySeconds > 0).toBe(true);
     test.setTimeout(30_000 + Math.ceil(retrySeconds * 1000));
     await page.waitForTimeout(Math.ceil(retrySeconds * 1000));
