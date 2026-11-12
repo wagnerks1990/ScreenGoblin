@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   NavLink,
+  Link,
   Navigate,
   Route,
   Routes,
@@ -31,6 +32,7 @@ import { Modal, Button, Field } from "./components";
 import { api } from "./api";
 import type { BootstrapPasswordAction } from "./api";
 import { BootstrapPasswordRotation } from "./BootstrapPasswordRotation";
+import { PasswordRecovery } from "./PasswordRecovery";
 
 const nav = [
   ["/dashboard", "Overview", LayoutDashboard],
@@ -59,6 +61,7 @@ export function App() {
   const [checkingSession, setCheckingSession] = useState(
     requireSignIn && api.hasLiveSession(),
   );
+  const [emailRecoveryEnabled, setEmailRecoveryEnabled] = useState<boolean>();
   const [bootstrapAction, setBootstrapAction] =
     useState<BootstrapPasswordAction>();
   const location = useLocation();
@@ -67,6 +70,21 @@ export function App() {
     ["OWNER", "ADMIN"].includes(sessionUser?.role ?? "");
   const dataMode = liveSession ? "live" : demoAllowed ? "demo" : "failed";
   useEffect(() => setMobileOpen(false), [location.pathname]);
+  useEffect(() => {
+    if (!requireSignIn) return;
+    let active = true;
+    void api
+      .recoveryOptions()
+      .then((result) => {
+        if (active) setEmailRecoveryEnabled(result.passwordResetEnabled);
+      })
+      .catch(() => {
+        if (active) setEmailRecoveryEnabled(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [requireSignIn]);
   useEffect(() => {
     if (!requireSignIn || !api.hasLiveSession()) return;
     let active = true;
@@ -139,6 +157,18 @@ export function App() {
       );
     setLoggingOut(false);
   };
+  if (
+    requireSignIn &&
+    (location.pathname === "/forgot-password" ||
+      location.pathname === "/reset-password")
+  )
+    return (
+      <PasswordRecovery
+        key={location.pathname}
+        confirm={location.pathname === "/reset-password"}
+        enabled={emailRecoveryEnabled}
+      />
+    );
   if (bootstrapAction) {
     return (
       <BootstrapPasswordRotation
@@ -220,6 +250,11 @@ export function App() {
                   {loggingIn ? "Signing in…" : "Sign in"}
                 </Button>
               </div>
+              {emailRecoveryEnabled && (
+                <p>
+                  <Link to="/forgot-password">Forgot password?</Link>
+                </p>
+              )}
             </>
           )}
         </form>

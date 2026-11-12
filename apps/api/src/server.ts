@@ -3,6 +3,10 @@ import { buildApp } from "./app.js";
 import { loadConfig, parseMediaAllowedOrigins } from "./config.js";
 import { Redis } from "ioredis";
 import { S3MediaObjectStore } from "./media/delivery.js";
+import { PrismaStore } from "./store/prisma.js";
+import { loadMailConfig } from "./mail/config.js";
+import { MailService } from "./mail/service.js";
+import { ResendTransport } from "./mail/transport.js";
 const config = loadConfig();
 const mediaObjectStore = new S3MediaObjectStore(
   config.S3_ENDPOINT,
@@ -31,7 +35,18 @@ if (redis) {
     throw new Error("Redis request-protection backend is unavailable");
   }
 }
+const store = new PrismaStore();
+const mailConfig = loadMailConfig(process.env, config.PUBLIC_API_URL);
+const mail = mailConfig
+  ? new MailService(
+      store.prisma,
+      mailConfig,
+      new ResendTransport(mailConfig.apiKey),
+    )
+  : undefined;
 const app = await buildApp({
+  store,
+  ...(mail ? { mail } : {}),
   jwtSecret: config.JWT_SECRET,
   manifestSigningPrivateKey: config.MANIFEST_SIGNING_PRIVATE_KEY,
   pairingCodePepper: config.PAIRING_CODE_PEPPER,
@@ -66,6 +81,7 @@ process.once("SIGTERM", () => void shutdown("SIGTERM"));
 process.once("SIGINT", () => void shutdown("SIGINT"));
 try {
   await app.listen({ host: config.HOST, port: config.PORT });
+  mail?.start(() => app.log.error("Email background processing failed"));
 } catch (error) {
   app.log.fatal(error);
   process.exit(1);

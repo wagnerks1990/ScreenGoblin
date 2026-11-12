@@ -336,3 +336,13 @@ ingestion state machine, separate quarantine authority, fail-closed scanner,
 reader-visible promotion transaction, deterministic orphan reconciliation, and
 safe-derivative gates are documented in `MEDIA_INGESTION_DESIGN.md`; this design
 does not complete the upload pre-production gate.
+
+## Email recovery and provider boundary
+
+Optional mail makes the provisioned account mailbox recovery authority. Protect and verify mailbox ownership. Non-enumerating rate-limited requests use hashed expiring single-use capabilities checked against the current account epoch. Recovery atomically revokes sessions and pending issuer authority across tenants. Credentials stay on the API; the encrypted outbox and signed raw-body webhooks import only tenant-mapped metadata. Inbound mail cannot publish or control devices. Provider/mailbox compromise, in-flight sends and delivery outages remain risks. See [mail details](MAIL.md).
+
+The Resend wiring refreshes the exact server-source hash in the existing SigV4
+false-positive gate after reviewing its unchanged S3 constructor arguments and
+HMAC derivation. The delivery implementation, test constructor sites, SARIF rule,
+message, region and flow allowlist remain exact. This does not exempt mail code
+or new findings and does not establish a fresh CodeQL scan result.

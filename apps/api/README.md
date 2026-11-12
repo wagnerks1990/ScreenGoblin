@@ -243,3 +243,5 @@ npm run build -w @screengoblin/api
 ```
 
 Tests use the in-memory store and Fastify injection; they do not require a live database. Apply migrations and run a PostgreSQL-backed smoke test before deployment.
+
+Optional Resend communications are configured only on the API. See [mail configuration and security](../../docs/MAIL.md) for migration, signed webhook, encrypted outbox, recovery authority and retention limits.

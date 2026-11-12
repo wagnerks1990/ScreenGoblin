@@ -373,6 +373,40 @@ a:focus-visible {
   color: var(--text-muted);
 }
 
+.mail-settings {
+  padding: 0 18px 18px;
+  overflow-wrap: anywhere;
+}
+.mail-settings section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.mail-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 16px 0;
+}
+.mail-toggle input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+}
+.mail-settings button {
+  margin: 8px 8px 8px 0;
+}
+.mail-settings table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  margin-top: 16px;
+  text-align: left;
+}
+.mail-settings th,
+.mail-settings td {
+  padding: 8px;
+}
+
 .error-message {
   color: #fecaca;
 }
@@ -2101,6 +2135,7 @@ td b {
   color: var(--green);
 }
 .settings-panel {
+  min-width: 0;
   max-width: 800px;
 }
 .settings-panel > .form-row,

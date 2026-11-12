@@ -39,6 +39,18 @@ export interface LogoutResult {
   revocationConfirmed: boolean;
 }
 
+export interface MailOverview {
+  configured: boolean;
+  receivingConfigured: boolean;
+  workerHealthy: boolean;
+  offlineMinutes: number;
+  from?: string;
+  inbox?: { address: string; enabled: boolean } | null;
+  offlineAlertsEnabled: boolean;
+  jobs: Array<{ id: string; kind: string; status: string; createdAt: string }>;
+  received: Array<{ id: string; providerEmailId: string; receivedAt: string }>;
+}
+
 export type DeviceReenrollmentGrant = DeviceEnrollmentGrant;
 
 export interface DeviceReenrollmentCandidate {
@@ -232,7 +244,72 @@ async function mutate<T>(
   }
 }
 
+async function publicMailRequest<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(baseUrl + path, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    const result = (await response.json().catch(() => undefined)) as
+      { error?: { message?: string; code?: string } } | undefined;
+    throw new ApiRequestError(
+      result?.error?.message ?? "Account recovery is unavailable",
+      response.status,
+      result?.error?.code,
+    );
+  }
+  return response.status === 204
+    ? (undefined as T)
+    : (response.json() as Promise<T>);
+}
+
 export const api = {
+  recoveryOptions: async (): Promise<{ passwordResetEnabled: boolean }> => {
+    const response = await fetch(`${baseUrl}/auth/recovery-options`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error("Account recovery is unavailable");
+    const value: unknown = await response.json();
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !("passwordResetEnabled" in value) ||
+      typeof value.passwordResetEnabled !== "boolean"
+    )
+      throw new Error("Account recovery is unavailable");
+    return { passwordResetEnabled: value.passwordResetEnabled };
+  },
+  requestPasswordReset: (email: string) =>
+    publicMailRequest<{ message: string }>("/auth/password-reset/request", {
+      email,
+    }),
+  confirmPasswordReset: async (token: string, newPassword: string) => {
+    await publicMailRequest<void>("/auth/password-reset/confirm", {
+      token,
+      newPassword,
+    });
+    clearSession(false);
+  },
+  mailOverview: () => authenticatedRequest<MailOverview>("/mail"),
+  mailPreferences: (offlineAlertsEnabled: boolean) =>
+    mutate<void>("/mail/preferences", {
+      method: "PATCH",
+      body: JSON.stringify({ offlineAlertsEnabled }),
+    }),
+  mailInbox: (localPart: string, enabled: boolean) =>
+    mutate<void>("/mail/inbox", {
+      method: "PATCH",
+      body: JSON.stringify({ localPart, enabled }),
+    }),
+  mailTest: (key: string) =>
+    mutate<{ id: string }>(
+      "/mail/test",
+      { method: "POST", headers: { "Idempotency-Key": key } },
+      { operation: "Email test", idempotencyKey: key },
+    ),
   hasLiveSession: () =>
     Boolean(window.sessionStorage.getItem("sg_access_token")),
   demoAllowed,

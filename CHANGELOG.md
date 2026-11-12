@@ -4,6 +4,12 @@ All notable changes are documented here. ScreenGoblin follows semantic versionin
 
 ## Unreleased
 
+- Add optional Resend recovery, opt-in offline/recovery alerts, support-mail
+  receipts and Notifications history. Use expiring hashed capabilities, atomic
+  session/enrollment revocation, an encrypted leased outbox, domain-restricted
+  sending and signed tenant-scoped webhooks. Inbound mail cannot publish or
+  control devices. Preserve all preproduction and emergency gates.
+
 - Require sign-in before rendering any production Console workspace route,
   verify saved sessions with the API, and return to sign-in on logout/session
   rejection. Limit demo fallback to development builds while preserving Player

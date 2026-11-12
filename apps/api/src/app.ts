@@ -21,6 +21,8 @@ import { auditRoutes } from "./routes/audits.js";
 import { locationRoutes } from "./routes/locations.js";
 import { deviceRoutes, pairingAdminRoutes } from "./routes/devices.js";
 import { mediaDeliveryRoutes } from "./routes/media-delivery.js";
+import { createMailRoutes } from "./routes/mail.js";
+import type { MailApi } from "./mail/service.js";
 import type { MediaObjectStore } from "./media/delivery.js";
 import {
   MemoryRateLimitBudget,
@@ -30,6 +32,7 @@ import {
 } from "./utils/rate-limit.js";
 
 export interface BuildOptions {
+  mail?: MailApi;
   store?: DataStore;
   jwtSecret: string;
   manifestSigningPrivateKey: string;
@@ -84,6 +87,9 @@ export async function buildApp(
             "body.password",
             "body.currentPassword",
             "body.newPassword",
+            "body.token",
+            "req.body.token",
+            "req.headers.svix-signature",
             "req.url",
           ],
           ...(options.loggerStream ? { stream: options.loggerStream } : {}),
@@ -116,6 +122,7 @@ export async function buildApp(
     ...(options.publicApiUrl ? { publicApiUrl: options.publicApiUrl } : {}),
   });
   app.addHook("onClose", async () => {
+    await options.mail?.close?.();
     await app.store.close?.();
     if (options.redis && options.closeRedisOnClose) await options.redis.quit();
   });
@@ -215,6 +222,7 @@ export async function buildApp(
   await app.register(
     async (api) => {
       await api.register(authRoutes);
+      await api.register(createMailRoutes(options.mail));
       await api.register(screenRoutes);
       await api.register(mediaRoutes);
       await api.register(playlistRoutes);

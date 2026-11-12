@@ -110,3 +110,5 @@ The web player is the shared playback core. When the Android wrapper is present,
 ## License and support
 
 ScreenGoblin is licensed under the [MIT License](LICENSE). Security issues should be reported privately as described in [SECURITY.md](SECURITY.md). General contributions follow [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Optional password recovery, opt-in screen alerts and support-mail receipts use Resend. See [mail setup and limitations](docs/MAIL.md); mail stays disabled until credentials, DNS and rollout checks pass.

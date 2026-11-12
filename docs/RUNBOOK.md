@@ -500,3 +500,7 @@ is insufficient to keep up with retention.
   automatic credential rotation. Hardware/application attestation, old/new key
   overlap, verified Keystore/media erasure, offline recall, and representative
   physical-device evidence remain tracked release gates.
+
+## Optional mail rollout
+
+Follow [the mail runbook](MAIL.md) for protected configuration, additive migration and runtime grants, image rollback, DNS/webhook checks and explicit delivery tests. Mail is disabled by default; never use a full-access setup key at runtime.

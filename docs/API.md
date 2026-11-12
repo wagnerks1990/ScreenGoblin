@@ -1,9 +1,9 @@
 # API overview
 
 Production Console startup validates stored session identity using
-`GET /api/v1/auth/me` before rendering management routes. There are no new API
-permissions, endpoints, or device-contract changes; management authentication
-and Player proof/media authorization remain server-enforced.
+`GET /api/v1/auth/me` before rendering management routes. Management authentication and Player proof/media authorization remain
+server-enforced. Optional mail endpoints are documented below; device contracts
+are unchanged.
 
 Owner login-email maintenance is an offline operator command, not a public API.
 See the runbook for its acknowledgement, identity checks, transactional audit,
@@ -352,3 +352,24 @@ Health responses must not disclose credentials, connection strings, stack traces
 ## Compatibility policy
 
 Additive fields are backwards-compatible and clients must ignore fields they do not understand. Removing or changing a field requires a versioned endpoint or a supported migration period. The oldest supported player release must be included in manifest compatibility tests before a server release.
+
+## Optional mail endpoints
+
+See [configuration, limits and trust boundaries](MAIL.md). Paths use `/api/v1`.
+Mail is disabled by default; tenant and recipient come from the current session.
+
+| Method and path                     | Authority and response                                                                                                                                                    |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /auth/recovery-options`        | Public; `{passwordResetEnabled:boolean}` only.                                                                                                                            |
+| `POST /auth/password-reset/request` | Public strict `{email}`; generic 202; source 10/account 3 per 15 minutes.                                                                                                 |
+| `POST /auth/password-reset/confirm` | Public strict `{token,newPassword}`; source 10/15 minutes; success 204; invalid/expired/used link 400; unavailable 503. Password 16+ code points, at most 72 UTF-8 bytes. |
+| `GET /mail`                         | Full owner/admin; scoped preferences and 30 recent rows per history; disabled returns configured=false. No keys or mail contents.                                         |
+| `PATCH /mail/preferences`           | Full owner/admin, self only; strict `{offlineAlertsEnabled:boolean}`, 204.                                                                                                |
+| `PATCH /mail/inbox`                 | Full owner/admin; strict `{localPart,enabled}`; lowercase alphanumeric/hyphen name up to 32, unique on configured domain; 204.                                            |
+| `POST /mail/test`                   | Full owner/admin, own sign-in address only; required UUIDv4 Idempotency-Key; 3/hour per account; 202 job ID.                                                              |
+| `POST /webhooks/resend`             | Verified Svix signature, timestamp and exact raw UTF-8 JSON <=64 KiB; 204; invalid signature 401; disabled 404. No session authority.                                     |
+
+Reset bodies are limited to 4 KiB. Events accepted are received, delivered,
+bounced, complained and failed. Exact enabled inbox mappings control receipts.
+Unknown mailboxes and provider IDs never grant tenant access. Provider acceptance
+is distinct from actual inbox delivery.

@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaStore } from "../src/store/prisma.js";
+import { MailService } from "../src/mail/service.js";
 
 const runtimeDatabaseUrl = process.env.DATABASE_URL;
 const ownerDatabaseUrl = process.env.OWNER_DATABASE_URL;
@@ -234,6 +235,63 @@ describe("least-privilege PostgreSQL runtime role", () => {
         expect.objectContaining({ action: "release.candidate.created" }),
       ]),
     );
+  });
+
+  it("supports encrypted mail and signed-receipt persistence without schema-owner authority", async () => {
+    const tokenHash = lowercaseDigest();
+    await runtimePrisma.userSession.create({
+      data: {
+        userId: actorUserId,
+        organizationId,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000),
+        purpose: "FULL",
+        authenticationEpoch: 0,
+        authorizationEpoch: 0,
+      },
+    });
+    const providerId = randomUUID();
+    const mail = new MailService(
+      runtimePrisma,
+      {
+        apiKey: "re_test_only_never_live_key",
+        webhookSecret: "whsec_" + randomBytes(32).toString("base64"),
+        encryptionKey: randomBytes(32).toString("base64url"),
+        from: "no-reply@example.test",
+        replyTo: "support@example.test",
+        receivingDomain: "example.test",
+        publicOrigin: "https://signage.example.test",
+        offlineMinutes: 10,
+      },
+      { send: async () => ({ accepted: true, providerId }) },
+    );
+    const principal = { userId: actorUserId, organizationId, tokenHash };
+    await mail.preferences(principal, true);
+    await mail.inbox(principal, "support", true);
+    const job = await mail.test(principal, randomUUID());
+    await mail.tick();
+    await mail.webhook("runtime-delivery-" + randomUUID(), {
+      type: "email.delivered",
+      data: { email_id: providerId },
+    });
+    const inboundId = randomUUID();
+    await mail.webhook("runtime-inbound-" + randomUUID(), {
+      type: "email.received",
+      data: { email_id: inboundId, to: ["support@example.test"] },
+    });
+    const result = await mail.overview(principal);
+    expect(result.jobs.find((row) => row.id === job.id)?.status).toBe(
+      "DELIVERED",
+    );
+    expect(
+      result.received.some((row) => row.providerEmailId === inboundId),
+    ).toBe(true);
+    expect(result.offlineAlertsEnabled).toBe(true);
+    expect(
+      (await runtimePrisma.mailJob.findUniqueOrThrow({ where: { id: job.id } }))
+        .payloadEncrypted,
+    ).toBeNull();
+    await mail.close();
   });
 
   it("denies database escape, migration, evidence mutation, and root deletion operations", async () => {

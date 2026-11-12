@@ -264,3 +264,7 @@ artifact. Manual dispatches remain unsigned and unprivileged. This provenance
 binds the evidence archive digest, not an immutable registry promotion, direct
 OCI/APK signatures, production signing custody, or approval. Repository CI also blocks secret and IaC/configuration findings and enforces exact dependency-license policy with narrow, expiring, fail-closed exceptions. Successful static reports and sanitized lockfile-license evidence are checksum-bound; they do not constitute DAST or production-runtime monitoring. Green automated
 tests alone do not establish pre-production readiness.
+
+## Optional communications
+
+Resend mail is disabled by default; see `docs/MAIL.md`. Recovery uses hashed expiring one-use tokens and global session/pending-issuer revocation. Owner/admin Notifications manage self-only opt-in alerts, an exact tenant mailbox and self-only test sends. Signed webhooks import receipts only; mail cannot issue commands. Preserve encrypted bounded retries, tenant isolation, additive rollback and all preproduction/emergency gates. Provider acceptance does not prove inbox delivery.
