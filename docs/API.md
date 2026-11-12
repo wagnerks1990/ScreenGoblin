@@ -5,6 +5,10 @@ Production Console startup validates stored session identity using
 permissions, endpoints, or device-contract changes; management authentication
 and Player proof/media authorization remain server-enforced.
 
+Owner login-email maintenance is an offline operator command, not a public API.
+See the runbook for its acknowledgement, identity checks, transactional audit,
+and global session/enrollment revocation. Device contracts are unchanged.
+
 ## Conventions
 
 - Base path: `/api/v1` behind the reverse proxy.

@@ -16,6 +16,13 @@ public workspace/demo exposure, but is not a server authorization control:
 management APIs still require live tenant-scoped sessions, and Players retain
 their independent enrollment/proof/capability authentication.
 
+The offline owner-email command is a trusted-host operator boundary, not a
+public API or mailbox-verification flow. It requires explicit acknowledgement
+and an active existing owner, rejects occupied destinations, locks identity and
+memberships, preserves password/bootstrap restrictions, and atomically revokes
+sessions and pending enrollment authority with per-tenant audit. Host compromise
+and mistaken operator identity verification remain risks.
+
 - User browser to public reverse proxy/API.
 - API to PostgreSQL, Redis, and object storage on the private container network.
 - Untrusted player networks to the public API and media endpoint.
