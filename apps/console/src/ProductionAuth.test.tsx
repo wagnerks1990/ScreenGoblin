@@ -94,9 +94,7 @@ describe("production console sign-in boundary", () => {
     const actor = userEvent.setup();
     await actor.type(screen.getByLabelText("Email"), user.email);
     await actor.type(screen.getByLabelText("Password"), "wrong-password");
-    await actor.click(
-      screen.getByRole("button", { name: "Sign in", exact: true }),
-    );
+    await actor.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Email or password is incorrect",
     );
@@ -117,9 +115,7 @@ describe("production console sign-in boundary", () => {
     const actor = userEvent.setup();
     await actor.type(screen.getByLabelText("Email"), user.email);
     await actor.type(screen.getByLabelText("Password"), "temporary-password");
-    await actor.click(
-      screen.getByRole("button", { name: "Sign in", exact: true }),
-    );
+    await actor.click(screen.getByRole("button", { name: "Sign in" }));
     expect(
       await screen.findByRole("heading", { name: "Change bootstrap password" }),
     ).toBeVisible();
@@ -143,9 +139,7 @@ describe("production console sign-in boundary", () => {
     const actor = userEvent.setup();
     await actor.type(screen.getByLabelText("Email"), user.email);
     await actor.type(screen.getByLabelText("Password"), "owner-password");
-    await actor.click(
-      screen.getByRole("button", { name: "Sign in", exact: true }),
-    );
+    await actor.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("navigation")).toBeVisible();
     expect(await screen.findByText(/^Live API data/)).toBeVisible();
     await actor.click(screen.getByRole("button", { name: "Disconnect live" }));
