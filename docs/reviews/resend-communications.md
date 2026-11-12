@@ -7,8 +7,8 @@ gates remain unchanged and are not certified complete by this review.
 ## Executed checks
 
 - Clean LF source export, pinned Node 22 Linux container: `npm ci` and
-  `npm run validate` passed. Repository 136, API 388, Console 123, Player 235:
-  **882 tests passed, zero failed/skipped**. Builds, lint, types, formatting,
+  `npm run validate` passed. Repository 136, API 389, Console 123, Player 235:
+  **883 tests passed, zero failed/skipped**. Builds, lint, types, formatting,
   static dependency/license policy and container/Gradle input integrity passed.
 - Disposable loopback PostgreSQL 17: all migrations and
   `npm run test:integration -w @screengoblin/api` passed: **91 tests**, including
@@ -47,3 +47,8 @@ actual user recovery session, or physical screen behavior. Complete explicit
 self-addressed send/inbox and non-sensitive inbound acceptance checks separately.
 Never email reset tokens, runtime credentials, student data or operational screen
 content in validation reports. Retain the documented additive rollback path.
+
+A protected runtime preflight rejected the provider's valid 24-byte webhook
+signing secret before live mutation. Configuration now accepts provider-issued
+192-bit keys, with regressions for short/malformed/uniform secrets and exact-body
+signature tampering. This does not reduce signature or timestamp enforcement.

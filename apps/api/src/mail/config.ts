@@ -28,7 +28,7 @@ export function loadMailConfig(
       .parse(env.RESEND_API_KEY);
     const webhookSecret = z
       .string()
-      .startsWith("whsec_")
+      .regex(/^whsec_[A-Za-z0-9+/]+={0,2}$/)
       .max(300)
       .parse(env.RESEND_WEBHOOK_SECRET);
     const encryptionKey = z
@@ -37,7 +37,7 @@ export function loadMailConfig(
       .parse(env.MAIL_ENCRYPTION_KEY);
     if (
       Buffer.from(encryptionKey, "base64url").length !== 32 ||
-      Buffer.from(webhookSecret.slice(6), "base64").length < 32
+      Buffer.from(webhookSecret.slice(6), "base64").length < 24
     )
       throw new Error();
     if (

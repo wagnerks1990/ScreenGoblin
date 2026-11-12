@@ -65,6 +65,56 @@ describe("mail capabilities and webhook boundary", () => {
       ),
     ).toThrow();
   });
+  it("accepts provider-issued 192-bit webhook keys and still rejects short or malformed keys", () => {
+    const providerSecret = "whsec_" + randomBytes(24).toString("base64");
+    const settings = {
+      NODE_ENV: "production",
+      MAIL_ENABLED: "true",
+      MAIL_RECEIVING_DOMAIN: "example.test",
+      MAIL_FROM: payload.from,
+      MAIL_REPLY_TO: payload.reply_to,
+      RESEND_API_KEY: "re_runtime_not_a_real_secret",
+      RESEND_WEBHOOK_SECRET: providerSecret,
+      MAIL_ENCRYPTION_KEY: key,
+    };
+    expect(
+      loadMailConfig(settings, "https://example.test")?.webhookSecret,
+    ).toBe(providerSecret);
+    for (const invalid of [
+      "whsec_" + randomBytes(23).toString("base64"),
+      providerSecret + "!",
+      "whsec_" + Buffer.alloc(24).toString("base64"),
+    ])
+      expect(() =>
+        loadMailConfig(
+          { ...settings, RESEND_WEBHOOK_SECRET: invalid },
+          "https://example.test",
+        ),
+      ).toThrow("Mail configuration is invalid");
+    const body = Buffer.from(
+      JSON.stringify({
+        type: "email.delivered",
+        data: { email_id: randomUUID() },
+      }),
+    );
+    const id = "msg_provider_key_test",
+      timestamp = new Date();
+    const headers = {
+      "svix-id": id,
+      "svix-timestamp": String(Math.floor(timestamp.getTime() / 1000)),
+      "svix-signature": new Webhook(providerSecret).sign(id, timestamp, body),
+    };
+    expect(verifyMailWebhook(body, headers, providerSecret).event.type).toBe(
+      "email.delivered",
+    );
+    expect(() =>
+      verifyMailWebhook(
+        Buffer.concat([body, Buffer.from(" ")]),
+        headers,
+        providerSecret,
+      ),
+    ).toThrow("verification failed");
+  });
   it("encrypts queued recipients and content with random nonces and job-bound authentication", () => {
     const job = randomUUID(),
       encrypted = encryptPayload(payload, key, job);
