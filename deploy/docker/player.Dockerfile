@@ -1,4 +1,4 @@
-FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS build
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS build
 WORKDIR /app
 ARG VITE_API_URL=https://signage.example.org
 ENV VITE_API_URL=$VITE_API_URL
